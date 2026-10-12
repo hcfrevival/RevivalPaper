@@ -1,0 +1,46 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: j-rockwell <john@llewkcor.com>
+Date: Mon, 12 Oct 2026 14:54:51 -0700
+Subject: [PATCH] Legacy attack damage
+
+A player hit with a legacy weapon uses 1.7.10 damage, Sharpness, crits and
+no sweep. The rules live in gg.hcfrevival.revival.combat.LegacyAttack;
+this patch only calls into them.
+
+diff --git a/net/minecraft/world/entity/player/Player.java b/net/minecraft/world/entity/player/Player.java
+index 6cbbfadaa6dd3ddecb215ecea85c08d81eb02185..f391523e9de898f33f1c990a06bffb03c5b24e74 100644
+--- a/net/minecraft/world/entity/player/Player.java
++++ b/net/minecraft/world/entity/player/Player.java
+@@ -1084,6 +1084,13 @@ public abstract class Player extends Avatar implements ContainerUser {
+             float attackStrengthScale = this.getAttackStrengthScale(0.5F);
+             float magicBoost = attackStrengthScale * (this.getEnchantedDamage(entity, baseDamage, damageSource) - baseDamage);
+             baseDamage *= this.baseDamageScaleFactor();
++            // Revival start - Legacy attack damage
++            final gg.hcfrevival.revival.config.LegacyCombatSettings legacyCombat = gg.hcfrevival.revival.combat.LegacyAttack.settings(this, attackingItemStack);
++            if (legacyCombat != null) {
++                baseDamage = gg.hcfrevival.revival.combat.LegacyAttack.attackDamage(this, attackingItemStack, legacyCombat);
++                magicBoost = gg.hcfrevival.revival.combat.LegacyAttack.enchantmentDamage(this, entity, attackingItemStack, damageSource, legacyCombat);
++            }
++            // Revival end - Legacy attack damage
+             this.onAttack(entity); // Paper
+             final float dmgFinal = magicBoost; // Paper - damage events
+             if (!this.deflectProjectile(entity, () -> !org.bukkit.craftbukkit.event.CraftEventFactory.handleNonLivingEntityDamageEvent(entity, dmgSourceFinal, dmgFinal, false))) {
+@@ -1098,15 +1105,15 @@ public abstract class Player extends Avatar implements ContainerUser {
+                     }
+ 
+                     baseDamage += attackingItemStack.getItem().getAttackDamageBonus(entity, baseDamage, damageSource);
+-                    boolean criticalAttack = fullStrengthAttack && this.canCriticalAttack(entity);
++                    boolean criticalAttack = legacyCombat != null ? gg.hcfrevival.revival.combat.LegacyAttack.canCriticalAttack(this, entity) : fullStrengthAttack && this.canCriticalAttack(entity); // Revival - Legacy attack damage
+                     criticalAttack = criticalAttack && !this.level().paperConfig().entities.behavior.disablePlayerCrits; // Paper - Toggleable player crits
+                     if (criticalAttack) {
+                         damageSource = damageSource.critical(); // Paper - critical damage API
+-                        baseDamage *= (float) this.level().purpurConfig.playerCriticalDamageMultiplier; // Purpur - Add config change multiplier critical damage value
++                        baseDamage *= legacyCombat != null ? (float) legacyCombat.criticalMultiplier() : (float) this.level().purpurConfig.playerCriticalDamageMultiplier; // Purpur - Add config change multiplier critical damage value // Revival - Legacy attack damage
+                     }
+ 
+                     float totalDamage = baseDamage + magicBoost;
+-                    boolean sweepAttack = this.isSweepAttack(fullStrengthAttack, criticalAttack, knockbackAttack);
++                    boolean sweepAttack = (legacyCombat == null || legacyCombat.sweepAttack()) && this.isSweepAttack(fullStrengthAttack, criticalAttack, knockbackAttack); // Revival - Legacy attack damage
+                     float oldLivingEntityHealth = 0.0F;
+                     if (entity instanceof LivingEntity livingTarget) {
+                         oldLivingEntityHealth = livingTarget.getHealth();

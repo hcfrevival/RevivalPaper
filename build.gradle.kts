@@ -59,6 +59,7 @@ subprojects {
 
 project(":leaf-server") {
     apply(from = rootProject.file("gradle/patch-editing.gradle.kts"))
+    apply(from = rootProject.file("gradle/revival.gradle.kts")) // Revival - RevivalPaper build additions
 }
 
 paperweight {

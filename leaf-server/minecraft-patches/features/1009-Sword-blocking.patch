@@ -1,0 +1,103 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: j-rockwell <john@llewkcor.com>
+Date: Mon, 12 Oct 2026 14:55:35 -0700
+Subject: [PATCH] Sword blocking
+
+Legacy weapons block on right click like 1.7: usable on the server, a
+blocked hit takes (damage + 1) x 0.5 through Paper's BLOCKING modifier,
+and only the client copy carries a blocking component, so Paper's shield
+code never runs. The logic lives in gg.hcfrevival.revival.combat; this
+patch only calls into it.
+
+diff --git a/net/minecraft/network/HashedStack.java b/net/minecraft/network/HashedStack.java
+index 6cff7159f20ceac958f133b5eb03b74495eee242..c38c1899eb0edf8103cefcdf6468cb55b772afb2 100644
+--- a/net/minecraft/network/HashedStack.java
++++ b/net/minecraft/network/HashedStack.java
+@@ -50,7 +50,7 @@ public interface HashedStack {
+         public boolean matches(final ItemStack itemStack, final HashedPatchMap.HashGenerator hasher) {
+             return this.count == itemStack.getCount()
+                 && this.item.equals(itemStack.typeHolder())
+-                && this.components.matches(itemStack.getComponentsPatch(), hasher);
++                && this.components.matches(gg.hcfrevival.revival.combat.LegacySwordBlocking.toClient(itemStack, itemStack.getComponentsPatch()), hasher); // Revival - Sword blocking: clients hash the decorated copy
+         }
+     }
+ }
+diff --git a/net/minecraft/world/entity/LivingEntity.java b/net/minecraft/world/entity/LivingEntity.java
+index 46835b9d523292873db6e8e420052c0ad5c854aa..afa30cd878eaf3fc0e5187f92f9b5d254ef6fc0f 100644
+--- a/net/minecraft/world/entity/LivingEntity.java
++++ b/net/minecraft/world/entity/LivingEntity.java
+@@ -2561,6 +2561,12 @@ public abstract class LivingEntity extends Entity implements Attackable, Waypoin
+         damage += hardHatModifier;
+ 
+         com.google.common.base.Function<Double, Double> blocking = mod -> {
++            // Revival start - Sword blocking
++            final float swordBlocked = gg.hcfrevival.revival.combat.LegacySwordBlocking.blocked(LivingEntity.this, damagesource, mod.floatValue());
++            if (swordBlocked != 0.0F) {
++                return (double) -swordBlocked;
++            }
++            // Revival end - Sword blocking
+             if (!LivingEntity.this.canBlockAttack(damagesource, mod.floatValue())) {
+                 return 0D;
+             }
+@@ -4663,7 +4669,7 @@ public abstract class LivingEntity extends Entity implements Attackable, Waypoin
+     }
+ 
+     public boolean isBlocking() {
+-        return this.getItemBlockingWith() != null;
++        return this.getItemBlockingWith() != null || gg.hcfrevival.revival.combat.LegacySwordBlocking.isSwordBlocking(this); // Revival - Sword blocking
+     }
+ 
+     public @Nullable ItemStack getItemBlockingWith() {
+diff --git a/net/minecraft/world/item/Item.java b/net/minecraft/world/item/Item.java
+index a6a5800f8c13977cedafc0cce95aed3a05306230..5054d150336075985d9c2b436d6146758c98feeb 100644
+--- a/net/minecraft/world/item/Item.java
++++ b/net/minecraft/world/item/Item.java
+@@ -195,7 +195,7 @@ public class Item implements ItemLike, FeatureElement {
+             Equippable equippable = stack.get(DataComponents.EQUIPPABLE);
+             if (equippable != null && equippable.swappable()) {
+                 return equippable.swapWithEquipmentSlot(stack, player);
+-            } else if (stack.has(DataComponents.BLOCKS_ATTACKS)) {
++            } else if (stack.has(DataComponents.BLOCKS_ATTACKS) || gg.hcfrevival.revival.combat.LegacySwordBlocking.startBlocking(player, stack)) { // Revival - Sword blocking
+                 player.startUsingItem(hand);
+                 return InteractionResult.CONSUME;
+             } else {
+@@ -300,7 +300,7 @@ public class Item implements ItemLike, FeatureElement {
+         Consumable consumable = itemStack.get(DataComponents.CONSUMABLE);
+         if (consumable != null) {
+             return consumable.animation();
+-        } else if (itemStack.has(DataComponents.BLOCKS_ATTACKS)) {
++        } else if (itemStack.has(DataComponents.BLOCKS_ATTACKS) || gg.hcfrevival.revival.combat.LegacySwordBlocking.isBlockingWeapon(itemStack)) { // Revival - Sword blocking
+             return ItemUseAnimation.BLOCK;
+         } else {
+             return itemStack.has(DataComponents.KINETIC_WEAPON) ? ItemUseAnimation.SPEAR : ItemUseAnimation.NONE;
+@@ -312,7 +312,7 @@ public class Item implements ItemLike, FeatureElement {
+         if (consumable != null) {
+             return consumable.consumeTicks();
+         } else {
+-            return !itemStack.has(DataComponents.BLOCKS_ATTACKS) && !itemStack.has(DataComponents.KINETIC_WEAPON) ? 0 : 72000;
++            return !itemStack.has(DataComponents.BLOCKS_ATTACKS) && !itemStack.has(DataComponents.KINETIC_WEAPON) && !gg.hcfrevival.revival.combat.LegacySwordBlocking.isBlockingWeapon(itemStack) ? 0 : 72000; // Revival - Sword blocking
+         }
+     }
+ 
+diff --git a/net/minecraft/world/item/ItemStack.java b/net/minecraft/world/item/ItemStack.java
+index 6f9316b98759143b7c44156e455c9da2edea59ed..447cd69ff4798671d6daf4961c04826de0b70aa3 100644
+--- a/net/minecraft/world/item/ItemStack.java
++++ b/net/minecraft/world/item/ItemStack.java
+@@ -184,7 +184,7 @@ public final class ItemStack implements DataComponentHolder, ItemInstance, net.c
+                 }
+ 
+                 Holder<Item> item = Item.STREAM_CODEC.decode(input);
+-                DataComponentPatch patch = patchCodec.decode(input);
++                DataComponentPatch patch = gg.hcfrevival.revival.combat.LegacySwordBlocking.fromClient(patchCodec.decode(input)); // Revival - Sword blocking
+                 return new ItemStack(item, count, patch);
+             }
+ 
+@@ -199,7 +199,7 @@ public final class ItemStack implements DataComponentHolder, ItemInstance, net.c
+                     boolean prev = net.minecraft.network.chat.ComponentSerialization.DONT_RENDER_TRANSLATABLES.get();
+                     try (final io.papermc.paper.util.SafeAutoClosable ignored = io.papermc.paper.util.sanitizer.ItemObfuscationSession.withContext(c -> c.itemStack(itemStack))) { // pass the itemstack as context to the obfuscation session
+                         net.minecraft.network.chat.ComponentSerialization.DONT_RENDER_TRANSLATABLES.set(true);
+-                    patchCodec.encode(output, itemStack.components.asPatch());
++                    patchCodec.encode(output, gg.hcfrevival.revival.combat.LegacySwordBlocking.toClient(itemStack, itemStack.components.asPatch())); // Revival - Sword blocking
+                     } finally {
+                         net.minecraft.network.chat.ComponentSerialization.DONT_RENDER_TRANSLATABLES.set(prev);
+                     }

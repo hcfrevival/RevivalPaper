@@ -1,0 +1,63 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: j-rockwell <john@llewkcor.com>
+Date: Mon, 12 Oct 2026 14:54:37 -0700
+Subject: [PATCH] RevivalPaper config
+
+Adds the --revival-settings option (default revival.yml), reloads
+revival.yml and re-registers /revival on /reload, and keeps plugins
+that check for the Leaf brand working now that the jar reports
+hcfrevival:revivalpaper.
+
+diff --git a/src/main/java/io/papermc/paper/ServerBuildInfoImpl.java b/src/main/java/io/papermc/paper/ServerBuildInfoImpl.java
+index ca846f76d5ff53c547e1ce943e4e68cf4d5aa046..c043423a7a21ac8da5e1800f391df8944a62c7e3 100644
+--- a/src/main/java/io/papermc/paper/ServerBuildInfoImpl.java
++++ b/src/main/java/io/papermc/paper/ServerBuildInfoImpl.java
+@@ -72,7 +72,8 @@ public record ServerBuildInfoImpl(
+             || brandId.equals(BRAND_PAPER_ID)
+             || brandId.equals(BRAND_GALE_ID) // Gale - branding changes
+             || brandId.equals(BRAND_PUFFERFISH_ID)
+-            || brandId.equals(BRAND_PURPUR_ID);
++            || brandId.equals(BRAND_PURPUR_ID)
++            || brandId.equals(BRAND_LEAF_ID); // Revival - Rebrand
+             // Leaf end - Rebrand
+     }
+ 
+diff --git a/src/main/java/org/bukkit/craftbukkit/CraftServer.java b/src/main/java/org/bukkit/craftbukkit/CraftServer.java
+index 22e244d63d13dffc1efa091ac8853a4fb224a958..d80070202587e551eee34f4817b4324de0b66841 100644
+--- a/src/main/java/org/bukkit/craftbukkit/CraftServer.java
++++ b/src/main/java/org/bukkit/craftbukkit/CraftServer.java
+@@ -1006,6 +1006,7 @@ public final class CraftServer implements Server {
+         this.console.paperConfigurations.reloadConfigs(this.console);
+         org.purpurmc.purpur.PurpurConfig.init((File) console.options.valueOf("purpur-settings")); // Purpur - Purpur config files
+         this.console.galeConfigurations.reloadConfigs(this.console); // Gale - Gale configuration
++        gg.hcfrevival.revival.config.RevivalConfig.reload(); // Revival - RevivalPaper config
+         for (ServerLevel world : this.console.getAllLevels()) {
+             // world.serverLevelData.setDifficulty(config.difficulty); // Paper - per level difficulty
+             world.setSpawnSettings(world.isSpawningMonsters()); // Paper - per level difficulty (from MinecraftServer#setDifficulty(ServerLevel, Difficulty, boolean))
+@@ -1040,6 +1041,7 @@ public final class CraftServer implements Server {
+         io.papermc.paper.command.PaperCommands.registerCommands(this.console); // Paper
+         this.spark.registerCommandBeforePlugins(this); // Paper - spark
+         org.purpurmc.purpur.PurpurConfig.registerCommands(); // Purpur - Purpur config files
++        gg.hcfrevival.revival.config.RevivalConfig.registerCommands(); // Revival - RevivalPaper config
+         this.overrideAllCommandBlockCommands = this.commandsConfiguration.getStringList("command-block-overrides").contains("*");
+         this.ignoreVanillaPermissions = this.commandsConfiguration.getBoolean("ignore-vanilla-permissions");
+         org.leavesmc.leaves.protocol.core.LeavesProtocolManager.handleServerReload(); // Leaves - protocol
+diff --git a/src/main/java/org/bukkit/craftbukkit/Main.java b/src/main/java/org/bukkit/craftbukkit/Main.java
+index e6ea34b18c6db63efa77bb67d3484e4d66315ed6..ec9e4f2fac2a6bba7738d1419834fe581064751d 100644
+--- a/src/main/java/org/bukkit/craftbukkit/Main.java
++++ b/src/main/java/org/bukkit/craftbukkit/Main.java
+@@ -147,6 +147,14 @@ public class Main {
+                     .describedAs("Yml file");
+                 // Purpur end - Purpur config files
+ 
++                // Revival start - RevivalPaper config
++                this.acceptsAll(asList("revival", "revival-settings"), "File for RevivalPaper settings")
++                    .withRequiredArg()
++                    .ofType(File.class)
++                    .defaultsTo(new File("revival.yml"))
++                    .describedAs("Yml file");
++                // Revival end - RevivalPaper config
++
+                 this.accepts("server-name", "Name of the server")
+                         .withRequiredArg()
+                         .ofType(String.class)

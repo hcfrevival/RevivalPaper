@@ -1,0 +1,64 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: j-rockwell <john@llewkcor.com>
+Date: Mon, 12 Oct 2026 14:55:02 -0700
+Subject: [PATCH] Sprint
+
+A legacy hit's sprint knock comes from the attacker's SprintLedger (one
+per sprint start, re-armed by a w-tap) and never clears the attacker's
+sprint flag. The logic lives in gg.hcfrevival.revival.combat; this patch
+only calls into it.
+
+diff --git a/net/minecraft/server/level/ServerPlayer.java b/net/minecraft/server/level/ServerPlayer.java
+index 6cc1e80f9ca1fb621b0d4c8aa1ab5cc37230efe7..cb890f8c3c54c5869f03175c31759059bef6fd5a 100644
+--- a/net/minecraft/server/level/ServerPlayer.java
++++ b/net/minecraft/server/level/ServerPlayer.java
+@@ -210,6 +210,7 @@ public class ServerPlayer extends Player implements ca.spottedleaf.moonrise.patc
+     private static final Logger LOGGER = LogUtils.getLogger();
+     public long lastSave = MinecraftServer.currentTick; // Paper - Incremental chunk and player saving
+     public final gg.hcfrevival.revival.combat.MotionShadow revivalMotionShadow = new gg.hcfrevival.revival.combat.MotionShadow(); // Revival - Consistent knockback
++    public final gg.hcfrevival.revival.combat.SprintLedger revivalSprintLedger = new gg.hcfrevival.revival.combat.SprintLedger(); // Revival - Sprint
+     private static final int NEUTRAL_MOB_DEATH_NOTIFICATION_RADII_XZ = 32;
+     private static final int NEUTRAL_MOB_DEATH_NOTIFICATION_RADII_Y = 10;
+     private static final int FLY_STAT_RECORDING_SPEED = 25;
+diff --git a/net/minecraft/server/network/ServerGamePacketListenerImpl.java b/net/minecraft/server/network/ServerGamePacketListenerImpl.java
+index e21f910700fcf01264a41b2c1594e56ba8067371..e5a00ebc8a02462f6449c043b674ba60c9e0916e 100644
+--- a/net/minecraft/server/network/ServerGamePacketListenerImpl.java
++++ b/net/minecraft/server/network/ServerGamePacketListenerImpl.java
+@@ -2857,9 +2857,11 @@ public class ServerGamePacketListenerImpl
+             switch (packet.getAction()) {
+                 case START_SPRINTING:
+                     this.player.setSprinting(true);
++                    this.player.revivalSprintLedger.start(this.player.onGround()); // Revival - Sprint
+                     break;
+                 case STOP_SPRINTING:
+                     this.player.setSprinting(false);
++                    this.player.revivalSprintLedger.stop(); // Revival - Sprint
+                     break;
+                 case STOP_SLEEPING:
+                     if (this.player.isSleeping()) {
+diff --git a/net/minecraft/world/entity/player/Player.java b/net/minecraft/world/entity/player/Player.java
+index 600070382d68f820c7dab8e896595772745f4121..17963e110fe2886d27bf247dbb4497c8c951bf41 100644
+--- a/net/minecraft/world/entity/player/Player.java
++++ b/net/minecraft/world/entity/player/Player.java
+@@ -1097,7 +1097,7 @@ public abstract class Player extends Avatar implements ContainerUser {
+                 if (baseDamage > 0.0F || magicBoost > 0.0F) {
+                     boolean fullStrengthAttack = attackStrengthScale > 0.9F;
+                     boolean knockbackAttack;
+-                    if (this.isSprinting() && (fullStrengthAttack || legacyCombat != null)) { // Revival - Knockback engine
++                    if (legacyCombat != null ? gg.hcfrevival.revival.combat.LegacyKnockback.sprintLevel(this, legacyCombat.knockback()) > 0.0 : this.isSprinting() && fullStrengthAttack) { // Revival - Sprint
+                         this.playServerSideSound(SoundEvents.PLAYER_ATTACK_KNOCKBACK);
+                         knockbackAttack = true;
+                     } else {
+@@ -1276,10 +1276,10 @@ public abstract class Player extends Avatar implements ContainerUser {
+                 entity.push(-Mth.sin(this.getYRot() * Mth.DEG_TO_RAD) * knockbackAmount, 0.1, Mth.cos(this.getYRot() * Mth.DEG_TO_RAD) * knockbackAmount, this); // Paper - Add EntityKnockbackByEntityEvent and EntityPushedByEntityAttackEvent
+             }
+ 
+-            final double attackerSlowdown = gg.hcfrevival.revival.combat.LegacyKnockback.attackerSlowdown(this, damageSource); // Revival - Knockback engine
++            final double attackerSlowdown = gg.hcfrevival.revival.combat.LegacyKnockback.onExtraKnock(this, damageSource); // Revival - Sprint
+             this.setDeltaMovement(this.getDeltaMovement().multiply(attackerSlowdown, 1.0, attackerSlowdown)); // Revival - Knockback engine
+             // Paper start - Configurable sprint interruption on attack
+-            if (!this.level().paperConfig().misc.disableSprintInterruptionOnAttack) {
++            if (!this.level().paperConfig().misc.disableSprintInterruptionOnAttack && gg.hcfrevival.revival.combat.LegacyKnockback.profile(this, damageSource) == null) { // Revival - Sprint: a legacy hit never clears sprint; 1.21.2+ clients latch it off
+             this.setSprinting(false);
+             }
+             // Paper end - Configurable sprint interruption on attack

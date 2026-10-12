@@ -1,0 +1,57 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: j-rockwell <john@llewkcor.com>
+Date: Mon, 12 Oct 2026 14:54:51 -0700
+Subject: [PATCH] Knockback engine
+
+A legacy melee hit gets 1.7.10 knockback from the world's knockback
+profile, base and extra knock in one event. The math lives in
+gg.hcfrevival.revival.combat; this patch only calls into it.
+
+diff --git a/net/minecraft/world/entity/LivingEntity.java b/net/minecraft/world/entity/LivingEntity.java
+index 549bd2811ee8a0b46e1aae4409bc3b9d38ed90b1..097fccd9a817849db52f699cea3776e45e078c4f 100644
+--- a/net/minecraft/world/entity/LivingEntity.java
++++ b/net/minecraft/world/entity/LivingEntity.java
+@@ -2174,6 +2174,12 @@ public abstract class LivingEntity extends Entity implements Attackable, Waypoin
+                 this.onGround() ? Math.min(0.4, deltaMovement.y / 2.0 + power) : deltaMovement.y,
+                 deltaMovement.z / 2.0 - deltaVector.z
+             );
++            // Revival start - Knockback engine
++            final Vec3 legacyMovement = gg.hcfrevival.revival.combat.LegacyKnockback.targetMovement(this, source, attacker, deltaMovement, xd, zd);
++            if (legacyMovement != null) {
++                targetMovement = legacyMovement;
++            }
++            // Revival end - Knockback engine
+             // Paper start - knockback events
+             Vec3 knockback = targetMovement.subtract(deltaMovement);
+             io.papermc.paper.event.entity.EntityKnockbackEvent event = CraftEventFactory.callEntityKnockbackEvent((org.bukkit.craftbukkit.entity.CraftLivingEntity) this.getBukkitEntity(), attacker, attacker, eventCause, power, knockback);
+diff --git a/net/minecraft/world/entity/player/Player.java b/net/minecraft/world/entity/player/Player.java
+index f391523e9de898f33f1c990a06bffb03c5b24e74..5b51571ee103d239f96e46f4a8f6489808b2c7bc 100644
+--- a/net/minecraft/world/entity/player/Player.java
++++ b/net/minecraft/world/entity/player/Player.java
+@@ -1097,7 +1097,7 @@ public abstract class Player extends Avatar implements ContainerUser {
+                 if (baseDamage > 0.0F || magicBoost > 0.0F) {
+                     boolean fullStrengthAttack = attackStrengthScale > 0.9F;
+                     boolean knockbackAttack;
+-                    if (this.isSprinting() && fullStrengthAttack) {
++                    if (this.isSprinting() && (fullStrengthAttack || legacyCombat != null)) { // Revival - Knockback engine
+                         this.playServerSideSound(SoundEvents.PLAYER_ATTACK_KNOCKBACK);
+                         knockbackAttack = true;
+                     } else {
+@@ -1268,6 +1268,7 @@ public abstract class Player extends Avatar implements ContainerUser {
+     ) {
+         if (knockbackAmount > 0.0F) {
+             if (entity instanceof LivingEntity livingTarget) {
++                if (gg.hcfrevival.revival.combat.LegacyKnockback.profile(this, damageSource) == null) // Revival - Knockback engine
+                 livingTarget.knockback(
+                     knockbackAmount, Mth.sin(this.getYRot() * Mth.DEG_TO_RAD), -Mth.cos(this.getYRot() * Mth.DEG_TO_RAD), damageSource, damage, comesFromEffect, this, io.papermc.paper.event.entity.EntityKnockbackEvent.Cause.ENTITY_ATTACK // Paper - knockback events
+                 );
+@@ -1275,7 +1276,8 @@ public abstract class Player extends Avatar implements ContainerUser {
+                 entity.push(-Mth.sin(this.getYRot() * Mth.DEG_TO_RAD) * knockbackAmount, 0.1, Mth.cos(this.getYRot() * Mth.DEG_TO_RAD) * knockbackAmount, this); // Paper - Add EntityKnockbackByEntityEvent and EntityPushedByEntityAttackEvent
+             }
+ 
+-            this.setDeltaMovement(this.getDeltaMovement().multiply(0.6, 1.0, 0.6));
++            final double attackerSlowdown = gg.hcfrevival.revival.combat.LegacyKnockback.attackerSlowdown(this, damageSource); // Revival - Knockback engine
++            this.setDeltaMovement(this.getDeltaMovement().multiply(attackerSlowdown, 1.0, attackerSlowdown)); // Revival - Knockback engine
+             // Paper start - Configurable sprint interruption on attack
+             if (!this.level().paperConfig().misc.disableSprintInterruptionOnAttack) {
+             this.setSprinting(false);
