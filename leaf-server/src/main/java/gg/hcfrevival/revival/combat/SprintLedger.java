@@ -17,13 +17,15 @@ public final class SprintLedger {
     private boolean armed;
     private boolean armedOnGround;
 
-    /** START_SPRINTING from the client. A repeat without a STOP in between doesn't re-arm. */
-    public void start(final boolean onGround) {
-        if (!this.sprinting) {
-            this.sprinting = true;
-            this.armed = true;
-            this.armedOnGround = onGround;
+    /** START_SPRINTING from the client. A repeat without a STOP in between doesn't re-arm. Returns whether it armed. */
+    public boolean start(final boolean onGround) {
+        if (this.sprinting) {
+            return false;
         }
+        this.sprinting = true;
+        this.armed = true;
+        this.armedOnGround = onGround;
+        return true;
     }
 
     /** STOP_SPRINTING from the client. */
@@ -32,9 +34,11 @@ public final class SprintLedger {
         this.armed = false;
     }
 
-    /** A legacy hit landed with a sprint knock. */
-    public void consume() {
+    /** A legacy hit landed with a sprint knock. Returns whether that used up an armed sprint knock. */
+    public boolean consume() {
+        final boolean wasArmed = this.armed;
         this.armed = false;
+        return wasArmed;
     }
 
     public boolean armed(final boolean requiresGround) {

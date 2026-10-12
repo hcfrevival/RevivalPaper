@@ -72,6 +72,18 @@ public record LegacyCombatSettings(
         DEFAULT_WEAPON_DAMAGE = Collections.unmodifiableMap(damage); // keeps revival.yml in tier order
     }
 
+    /** A copy using another knockback profile, for {@code /revival kb} edits. */
+    LegacyCombatSettings withKnockback(final String name, final KnockbackProfile profile) {
+        return new LegacyCombatSettings(this.weaponItems, this.weaponTags, this.weaponDamage, this.strengthPerLevel, this.weaknessPerLevel,
+            this.sharpnessPerLevel, this.criticalMultiplier, this.sweepAttack, name, profile, this.legacyArmor, this.legacyEnchantProtection,
+            this.randomizeProtection, this.hideCooldownIndicator, this.maxAttacksPerTick);
+    }
+
+    /** Whether any weapon is a legacy weapon in this world; {@code weapons: []} turns legacy combat off. */
+    public boolean enabled() {
+        return !this.weaponItems.isEmpty() || !this.weaponTags.isEmpty();
+    }
+
     static LegacyCombatSettings read(final ConfigReader reader, final String world, final Map<String, KnockbackProfile> profiles) {
         final Set<Identifier> items = new HashSet<>();
         final List<TagKey<Item>> tags = new ArrayList<>();

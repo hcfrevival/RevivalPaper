@@ -25,7 +25,8 @@ Every value lives in `revival.yml`, next to `paper-global.yml`, `spigot.yml` and
 | Tests | `leaf-server/src/test/java/gg/hcfrevival/revival/**` |
 | Hooks into Minecraft code | `leaf-server/minecraft-patches/features/1000-*.patch` and up |
 | Hooks into Paper/CraftBukkit code | `leaf-server/paper-patches/features/1000-*.patch` and up |
-| Bukkit API additions | `leaf-api/paper-patches/features/1000-*.patch` and up |
+| Plugin API (`RevivalCombat`, events) | `leaf-api/src/main/java/gg/hcfrevival/revival/api/**` (plain source, like Leaf's `org.dreeam.leaf.event`) |
+| Changes to existing Bukkit API classes | `leaf-api/paper-patches/features/1000-*.patch` and up |
 | Build additions (test task, jar branding) | `gradle/revival.gradle.kts` |
 | Hook list for the CI guard | `scripts/revival/markers.txt` |
 | Docs | `docs/revival/` |

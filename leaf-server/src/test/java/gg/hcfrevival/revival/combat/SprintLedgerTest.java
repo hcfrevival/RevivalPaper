@@ -1,6 +1,8 @@
 package gg.hcfrevival.revival.combat;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import gg.hcfrevival.revival.RevivalTest;
 import gg.hcfrevival.revival.config.KnockbackProfile;
@@ -38,6 +40,15 @@ class SprintLedgerTest {
         ledger.start(true);
         assertEquals(0.0, ledger.level(false, LEGACY));
         assertEquals(0.0, ledger.level(false, HCFR));
+    }
+
+    @Test
+    void startAndConsumeReportWhatChanged() {
+        final SprintLedger ledger = new SprintLedger();
+        assertTrue(ledger.start(true));
+        assertFalse(ledger.start(true));
+        assertTrue(ledger.consume());
+        assertFalse(ledger.consume());
     }
 
     @Test

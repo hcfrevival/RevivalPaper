@@ -1,0 +1,46 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: j-rockwell <john@llewkcor.com>
+Date: Mon, 12 Oct 2026 10:14:14 -0700
+Subject: [PATCH] Live profiles
+
+Per-player knockback profiles, RevivalKnockbackEvent after each legacy
+knock, and SprintArmEvent on a sprint start. The logic lives in
+gg.hcfrevival.revival.combat; this patch only calls into it.
+
+diff --git a/net/minecraft/server/level/ServerPlayer.java b/net/minecraft/server/level/ServerPlayer.java
+index 66498fd726b537a9106064452b3b842b6e12a086..ad8ef3e58f125c7711c5385becf5f4846f37dd58 100644
+--- a/net/minecraft/server/level/ServerPlayer.java
++++ b/net/minecraft/server/level/ServerPlayer.java
+@@ -217,6 +217,7 @@ public class ServerPlayer extends Player implements ca.spottedleaf.moonrise.patc
+     public final gg.hcfrevival.revival.combat.SprintLedger revivalSprintLedger = new gg.hcfrevival.revival.combat.SprintLedger(); // Revival - Sprint
+     public net.minecraft.world.entity.@org.jspecify.annotations.Nullable Entity revivalBaseKnockTarget; // Revival - Damage immunity
+     public final gg.hcfrevival.revival.combat.LegacyHitRegistration revivalHitRegistration = new gg.hcfrevival.revival.combat.LegacyHitRegistration(); // Revival - Hit registration
++    public @org.jspecify.annotations.Nullable String revivalKnockbackProfile; // Revival - Live profiles
+     private static final int NEUTRAL_MOB_DEATH_NOTIFICATION_RADII_XZ = 32;
+     private static final int NEUTRAL_MOB_DEATH_NOTIFICATION_RADII_Y = 10;
+     private static final int FLY_STAT_RECORDING_SPEED = 25;
+diff --git a/net/minecraft/server/network/ServerGamePacketListenerImpl.java b/net/minecraft/server/network/ServerGamePacketListenerImpl.java
+index dcb871334545e3022c5b399605fcd140cb8145c0..2c244c718649dbb8555a28b40d37fcc83e5f7d4f 100644
+--- a/net/minecraft/server/network/ServerGamePacketListenerImpl.java
++++ b/net/minecraft/server/network/ServerGamePacketListenerImpl.java
+@@ -2910,7 +2910,7 @@ public class ServerGamePacketListenerImpl
+             switch (packet.getAction()) {
+                 case START_SPRINTING:
+                     this.player.setSprinting(true);
+-                    this.player.revivalSprintLedger.start(this.player.onGround()); // Revival - Sprint
++                    gg.hcfrevival.revival.combat.LegacyKnockback.sprintStart(this.player); // Revival - Sprint
+                     break;
+                 case STOP_SPRINTING:
+                     this.player.setSprinting(false);
+diff --git a/net/minecraft/world/entity/LivingEntity.java b/net/minecraft/world/entity/LivingEntity.java
+index 62c2b0a0dad0fa59d4e40fa9c88c4b3a4f60f2ba..af1d569368ee3fa33ec3cb05ef1f36fb5e4ff768 100644
+--- a/net/minecraft/world/entity/LivingEntity.java
++++ b/net/minecraft/world/entity/LivingEntity.java
+@@ -2190,6 +2190,7 @@ public abstract class LivingEntity extends Entity implements Attackable, Waypoin
+             this.needsSync = true;
+             this.setDeltaMovement(deltaMovement.add(event.getKnockback().getX(), event.getKnockback().getY(), event.getKnockback().getZ()));
+             // Paper end - knockback events
++            gg.hcfrevival.revival.combat.LegacyKnockback.afterKnock(this, source, attacker, comesFromEffect); // Revival - Live profiles
+         }
+     }
+ 

@@ -6,9 +6,11 @@ import java.io.IOException;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.function.UnaryOperator;
 import net.minecraft.server.MinecraftServer;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.bukkit.configuration.ConfigurationSection;
 import org.bukkit.configuration.InvalidConfigurationException;
 import org.bukkit.configuration.file.YamlConfiguration;
 import org.jspecify.annotations.Nullable;
@@ -68,10 +70,11 @@ public final class RevivalConfig {
     public static void init(final File file) throws IOException, InvalidConfigurationException {
         configFile = file;
         settings = load(file).settings();
+        gg.hcfrevival.revival.Revival.startApi();
     }
 
     /** Re-reads revival.yml. When the file cannot be parsed, the live settings stay in place. */
-    public static Reload reload() {
+    public static synchronized Reload reload() {
         final File file = configFile;
         if (file == null) {
             LOGGER.warn("revival.yml was never loaded, so there is nothing to reload");
@@ -89,6 +92,58 @@ public final class RevivalConfig {
             LOGGER.error("Could not reload {}; the previous settings are still live", file, e);
             return new Reload(false, List.of());
         }
+    }
+
+    /**
+     * Applies a {@code /revival kb} edit: builds the new snapshot from the live one and swaps it in whole, then
+     * saves it when {@code knockback-autosave} is on.
+     *
+     * @throws IllegalArgumentException when the edit is invalid; nothing changes
+     */
+    public static synchronized void update(final UnaryOperator<RevivalSettings> edit) throws IOException {
+        final RevivalSettings updated = edit.apply(settings());
+        settings = updated;
+        if (updated.knockbackAutosave()) {
+            saveKnockback();
+        }
+    }
+
+    /**
+     * Writes the live knockback profiles and each world's profile to revival.yml. A preset is written only while it
+     * differs from its built-in values, so preset fixes keep reaching servers that never changed it.
+     */
+    public static synchronized void saveKnockback() throws IOException {
+        final File file = configFile;
+        if (file == null) {
+            throw new IOException("revival.yml was never loaded");
+        }
+        final YamlConfiguration yaml = new YamlConfiguration();
+        try {
+            if (file.exists()) {
+                yaml.load(file);
+            }
+        } catch (final InvalidConfigurationException e) {
+            throw new IOException("revival.yml can't be parsed, so it wasn't overwritten: " + e.getMessage(), e);
+        }
+        writeKnockback(yaml, settings());
+        yaml.options().setHeader(HEADER);
+        yaml.save(file);
+    }
+
+    static void writeKnockback(final YamlConfiguration yaml, final RevivalSettings live) {
+        final ConfigurationSection section = yaml.createSection(KnockbackProfile.PROFILES);
+        live.knockbackProfiles().forEach((name, profile) -> {
+            if (!profile.equals(KnockbackProfile.PRESETS.get(name))) {
+                section.createSection(name, profile.values());
+            }
+        });
+        yaml.set(ConfigReader.worldPath(ConfigReader.DEFAULT_WORLD, LegacyCombatSettings.PATH + "knockback-profile"), live.legacyCombat().knockbackProfileName());
+        live.worldLegacyCombat().forEach((world, settings) -> {
+            final String path = ConfigReader.worldPath(world, LegacyCombatSettings.PATH + "knockback-profile");
+            if (yaml.contains(path, true) || !settings.knockbackProfileName().equals(live.legacyCombat().knockbackProfileName())) {
+                yaml.set(path, settings.knockbackProfileName());
+            }
+        });
     }
 
     public static void registerCommands() {
@@ -131,7 +186,13 @@ public final class RevivalConfig {
                 worlds.put(world, LegacyCombatSettings.read(reader, world, profiles));
             }
         }
-        return new RevivalSettings(Math.max(version, CURRENT_VERSION), LegacyCombatSettings.read(reader, ConfigReader.DEFAULT_WORLD, profiles), Map.copyOf(worlds));
+        return new RevivalSettings(
+            Math.max(version, CURRENT_VERSION),
+            LegacyCombatSettings.read(reader, ConfigReader.DEFAULT_WORLD, profiles),
+            Map.copyOf(worlds),
+            profiles,
+            reader.getBoolean("knockback-autosave", false)
+        );
     }
 
     /** The outcome of {@link #reload()}: whether the new settings went live, and any values that fell back to defaults. */
