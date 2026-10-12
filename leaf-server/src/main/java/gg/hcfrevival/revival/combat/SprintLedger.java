@@ -1,0 +1,51 @@
+package gg.hcfrevival.revival.combat;
+
+import gg.hcfrevival.revival.config.KnockbackProfile;
+
+/**
+ * One sprint knock per sprint start, as 1.7.10 played. A 1.7 sprint knock cleared the server's sprint flag and the
+ * client re-sprinted without telling the server, so the next sprint knock needed a fresh START_SPRINTING (a w-tap).
+ * 1.21.2+ clients copy a server-side {@code setSprinting(false)} back and can get stuck not sprinting, so legacy hits
+ * leave the flag alone and this ledger tracks the arm instead: START_SPRINTING arms it, a landed legacy hit consumes
+ * it, and only STOP then START re-arms it.
+ * <p>
+ * Owned by the player's tick thread: sprint packets and hits are both handled there.
+ */
+public final class SprintLedger {
+
+    private boolean sprinting;
+    private boolean armed;
+    private boolean armedOnGround;
+
+    /** START_SPRINTING from the client. A repeat without a STOP in between doesn't re-arm. */
+    public void start(final boolean onGround) {
+        if (!this.sprinting) {
+            this.sprinting = true;
+            this.armed = true;
+            this.armedOnGround = onGround;
+        }
+    }
+
+    /** STOP_SPRINTING from the client. */
+    public void stop() {
+        this.sprinting = false;
+        this.armed = false;
+    }
+
+    /** A legacy hit landed with a sprint knock. */
+    public void consume() {
+        this.armed = false;
+    }
+
+    public boolean armed(final boolean requiresGround) {
+        return this.armed && (!requiresGround || this.armedOnGround);
+    }
+
+    /** The sprint part of the extra-knockback level: the armed level after a fresh sprint start, the held level otherwise. */
+    public double level(final boolean sprinting, final KnockbackProfile profile) {
+        if (!sprinting) {
+            return 0.0;
+        }
+        return this.armed(profile.sprintArmRequiresGround()) ? profile.sprintArmedLevel() : profile.sprintHeldLevel();
+    }
+}

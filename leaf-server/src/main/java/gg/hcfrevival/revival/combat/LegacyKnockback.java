@@ -53,8 +53,7 @@ public final class LegacyKnockback {
             return null;
         }
         final Player player = (Player) attacker;
-        // 1.7.10 checked the sprint flag at hit time; a sprint-start ledger replaces this in the sprint phase
-        final double level = knockbackLevel(player, player.getWeaponItem()) + (player.isSprinting() ? 1 : 0);
+        final double level = knockbackLevel(player, player.getWeaponItem()) + sprintLevel(player, profile);
         return KnockbackEngine.knockback(motion(victim, current, profile), xd, zd, player.getYRot(), level, profile, victim.getAttributeValue(Attributes.KNOCKBACK_RESISTANCE), victim.getRandom());
     }
 
@@ -134,10 +133,26 @@ public final class LegacyKnockback {
         return nearest;
     }
 
-    /** The attacker's horizontal slowdown after an extra knock: the profile's for a legacy hit, 26.x's 0.6 otherwise. */
-    public static double attackerSlowdown(final Player attacker, final DamageSource source) {
+    /** The sprint part of a legacy hit's extra-knockback level, from the attacker's {@link SprintLedger}. */
+    public static double sprintLevel(final Player attacker, final KnockbackProfile profile) {
+        return attacker instanceof final ServerPlayer player ? player.revivalSprintLedger.level(player.isSprinting(), profile) : 0.0;
+    }
+
+    /**
+     * A hit with extra knockback landed. For a legacy hit this consumes the attacker's sprint arm and slows their
+     * {@link MotionShadow} too. Returns the attacker's horizontal slowdown: the profile's for a legacy hit, 26.x's
+     * 0.6 otherwise.
+     */
+    public static double onExtraKnock(final Player attacker, final DamageSource source) {
         final KnockbackProfile profile = profile(attacker, source);
-        return profile != null ? profile.attackerSlowdown() : 0.6;
+        if (profile == null) {
+            return 0.6;
+        }
+        if (attacker instanceof final ServerPlayer player) {
+            player.revivalSprintLedger.consume();
+            player.revivalMotionShadow.scaleHorizontal(profile.attackerSlowdown());
+        }
+        return profile.attackerSlowdown();
     }
 
     private static int knockbackLevel(final Player player, final ItemStack weapon) {
