@@ -1,212 +1,138 @@
 # AGENTS.md
 
-## Project overview
+Guidance for anyone, human or agent, changing RevivalPaper.
 
-Leaf is a high-performance Paper fork.
+## What this is
 
-## Allowed scope
+RevivalPaper is HCF Revival's server fork of [Leaf](https://github.com/Winds-Studio/Leaf)
+(Paper → Purpur → Gale → Leaf), on Minecraft 26.2, Java 25.
 
-Unless the user explicitly expands the scope, only modify applied Java source
-files in these areas:
+Its job is 1.7.10 PvP on a modern server:
 
-- Minecraft sources under `leaf-server`
-- Applied Paper API sources
-- Applied Paper server sources
-- Existing Leaf source files located alongside those applied sources
+- 1.7.10 attack math, knockback, sprint, damage immunity and hit cadence, applied **per hit**
+  when the attacker holds a legacy weapon (every sword by default, configurable);
+- SportBukkit's 1.7.10 velocity fixes, so knockback doesn't depend on packet order;
+- knockback profiles editable in game;
+- everything else, including axes, maces, spears, fists and modern validation, stays 26.x.
 
-Before editing, locate the actual applied source file in the current working
-tree. Follow the existing directory layout instead of assuming a source path.
-If a required applied source file is missing, report the missing target and ask
-the owner to prepare the source tree. Do not generate or apply sources, or edit
-patches as a substitute.
+Every value lives in `revival.yml`, next to `paper-global.yml`, `spigot.yml` and `purpur.yml`.
 
-Files outside these applied source areas are read-only unless the user
-explicitly requests otherwise.
+## Where code goes
 
-## Patch restrictions
+| What | Where |
+|---|---|
+| Combat logic, config, commands | `leaf-server/src/main/java/gg/hcfrevival/revival/**` (plain source, not a patch) |
+| Tests | `leaf-server/src/test/java/gg/hcfrevival/revival/**` |
+| Hooks into Minecraft code | `leaf-server/minecraft-patches/features/1000-*.patch` and up |
+| Hooks into Paper/CraftBukkit code | `leaf-server/paper-patches/features/1000-*.patch` and up |
+| Plugin API (`RevivalCombat`, events) | `leaf-api/src/main/java/gg/hcfrevival/revival/api/**` (plain source, like Leaf's `org.dreeam.leaf.event`) |
+| Changes to existing Bukkit API classes | `leaf-api/paper-patches/features/1000-*.patch` and up |
+| Build additions (test task, jar branding) | `gradle/revival.gradle.kts` |
+| Hook list for the CI guard | `scripts/revival/markers.txt` |
+| Docs | `docs/revival/` |
 
-Do not create, modify, delete, rename, regenerate, reformat, apply, rebuild,
-reset, or export patch files or patch metadata, including through patch rebuild
-or generation tasks.
+Leaf's own patches (`0001`–`0999`), `leaf-server/build.gradle.kts.patch`, `leaf-api/build.gradle.kts.patch`
+and Leaf's sources (`org.dreeam.leaf`, `org.purpurmc`, `org.galemc`, ...) are upstream. Don't edit them
+unless there is no other way, and if you do, say why in the PR.
 
-This covers Paper, Minecraft, API, Leaf, upstream, and generated `.patch` files,
-including patch metadata and ordering or series files. Reading them for review
-and attribution is allowed.
+## Rules for hooks
 
-Leaf patch directories (relative to the repository root; read-only):
+1. **Logic lives outside patches.** A patch adds the smallest call into `gg.hcfrevival.revival`
+   and nothing else. Formulas, state machines and config parsing go in plain source, where they can be
+   unit tested without a server and survive a Minecraft update untouched.
+2. **One mechanic per patch, numbered from 1000.** Our patches apply after all of Leaf's, so Leaf
+   updates never have to rebase around them.
+3. **Mark every hunk.** Multi-line hunks sit between `// Revival start - <mechanic>` and
+   `// Revival end - <mechanic>`; a single changed line ends with `// Revival - <mechanic>`.
+   Use fully qualified class names in hunks instead of adding imports.
+4. **List every hook in `scripts/revival/markers.txt`** in the same PR. CI applies the patches and runs
+   `scripts/revival/check-markers.py`, which fails when a listed hook is missing (for example a hunk
+   dropped while resolving a conflict) or when a Revival marker exists that isn't listed.
+5. **Keep modern validation and the Bukkit event contract.** Attacks still go through Paper's attack
+   handling (reach, world border, invalid-target checks), and the usual events still fire with correct
+   values: `PrePlayerAttackEntityEvent`, `EntityDamageByEntityEvent`, `EntityKnockbackByEntityEvent`,
+   `PlayerVelocityEvent`, `PlayerToggleSprintEvent`. Anticheats and plugins should only see different
+   numbers, not different traffic.
+6. **Opt in per hit.** A legacy rule applies only when the hit qualifies (legacy weapon, projectile
+   toggle). Every other code path keeps vanilla 26.x behaviour.
 
-- `leaf-server/minecraft-patches/`: Minecraft implementation changes.
-- `leaf-server/paper-patches/`: Paper server implementation changes.
-- `leaf-api/paper-patches/`: Paper API changes.
+## revival.yml
 
-`leaf-archived-patches/` is historical reference, not the current version's
-baseline.
+- `gg.hcfrevival.revival.config.RevivalConfig` loads it; `ConfigReader` reads typed values and records
+  defaults so missing keys are written back.
+- Settings are an immutable `RevivalSettings` snapshot. A reload builds a new snapshot and swaps it in
+  only if the whole file loaded, so a broken file never half-applies. Read `Revival.settings()` once per
+  action rather than caching it across ticks.
+- A wrong-typed value falls back to its default and is reported in the console and by
+  `/revival reload`. An unparseable file stops startup, and on reload keeps the previous settings.
+- Defaults reproduce 1.7.10. Every new constant gets a key; nothing is hard-coded.
+- Per-world values resolve `world-settings.<world>.<key>`, then `world-settings.default.<key>`.
+- Bump `RevivalConfig.CURRENT_VERSION` and add a migration in `RevivalConfig.read` when a key is
+  renamed or its meaning changes.
 
-Do not reset applied sources from patches or update Paper or Minecraft upstream
-references. The repository owner converts source changes into patches when
-necessary.
+## Building and testing
 
-Applied source files are the editing target for the current task, even when
-patch files are the canonical persisted form used by the project.
+```bash
+./gradlew applyAllPatches                 # applies Paper, Leaf and our patches
+python3 scripts/revival/check-markers.py  # every hook survived patching
+./gradlew :leaf-server:runRevivalTests    # every @RevivalTest under gg.hcfrevival.revival
+./gradlew createPaperclipJar              # leaf-server/build/libs/leaf-paperclip-26.2*.jar
+./gradlew :leaf-server:revivalLiveTestPlugin && python3 scripts/revival/live-tests.py   # live-server tests
+python3 scripts/revival/core-contract.py --core <built core checkout>                     # core's harnesses on the fork
+```
 
-## CodeGraph usage
+- Live-server tests live in `leaf-server/src/revivalLiveTest/java` as a plugin. Two fake players on recording connections
+  fight through the real packet handlers, once with the sync entity tracker and once with Leaf's async one. Add a
+  scenario there for every behaviour that only shows on a running server (packets, events, ticks).
+- `docs/revival/grimac-checklist.md` lists the anticheat checks that need a real client before a cutover.
 
-When a `.codegraph/` index exists and the tool is available, use CodeGraph for
-tasks requiring cross-file or cross-module relationship analysis: call paths,
-implementations, inheritance, overrides, field access, dependencies, or unclear
-ownership, lifecycle, and threading relationships. Use `codegraph_explore` or
-`codegraph explore "<symbols or question>"`.
+- Tag tests with `@gg.hcfrevival.revival.RevivalTest`. Math and config tests are plain JUnit; tests that
+  need registries add Paper's test extensions.
+- Give every formula a golden-value test against numbers derived from 1.7.10, with the source line in a
+  comment.
+- `.github/workflows/revival-ci.yml` runs the four steps above on every PR and on pushes to `ver/26.2`,
+  and uploads the jar. CI is the build of record: if you can't build locally, say so in the PR rather than
+  claiming it compiles.
 
-For simple, local changes, inspect the current file and its immediate references
-directly. CodeGraph is not a prerequisite for every edit.
+## Changing a hook
 
-Treat index results as navigation hints. Before changing behavior, inspect the
-actual applied source and verify relevant signatures, callers, overrides, and
-control flow. Use direct source search when the index or tool is unavailable,
-returns no useful result, or conflicts with the checked-out code.
+The applied sources are git repositories: `leaf-server/src/minecraft/java` (Minecraft),
+`paper-server` and `paper-api`. After `applyAllPatches`:
 
-Do not update, rebuild, or reconfigure the CodeGraph index unless the user
-explicitly requests it.
+1. Edit the applied source.
+2. Commit it in that repository, as a new commit for a new mechanic, or as a fixup of the existing
+   `RevivalPaper ...` commit. `gradle/patch-editing.gradle.kts` has helper tasks
+   (`editMinecraftFeaturePatches`, `commitMinecraftFeatureChanges`, `continueRebasing`, and the Paper and
+   API equivalents).
+3. Run the matching `rebuild*Patches` task (`./gradlew tasks --all | grep -i rebuild` lists them) and
+   commit the regenerated patch files in this repository.
 
-In the completion report, mention CodeGraph only when its analysis materially
-affected the change or when the index appeared incomplete or stale.
+Hand-written patches are fine when you can't apply locally. Copy context lines exactly from the state
+Leaf's patches leave behind, then let CI prove they apply.
 
-## Editing workflow
+## Updating Leaf or Minecraft
 
-1. Read the relevant applied source and its surrounding implementation.
-2. Make the smallest changes needed, avoiding unrelated formatting or cleanup.
-3. Review the resulting source diff for correctness.
+1. Merge the new Leaf branch into ours.
+2. Run `applyAllPatches`. If a `1000+` patch fails, fix the hook against the new code. Keep the hook
+   minimal, and move logic into `gg.hcfrevival.revival` instead of growing the patch.
+3. Run the marker guard and `runRevivalTests`. A new Minecraft sword without a damage entry, or a dropped
+   hook, fails here instead of on a live server.
 
-## Validation policy
+## Working on this repo
 
-Stop after modifying and reviewing the applied source; the owner performs
-compilation, testing, benchmarking, and runtime validation.
+- Branch from `ver/26.2` (for example `revival/phase-1-attack-math`), one PR per phase or fix. Never
+  push to `ver/26.2` directly.
+- The maintainer reviews and merges. Don't merge your own PR.
+- Keep diffs minimal: no reformatting or drive-by cleanup in upstream files.
+- Commit messages and PR descriptions say what changed for a player or server owner, then how.
 
-Do not run Gradle builds or compilation tasks, test suites, JMH benchmarks,
-patch validation or rebuild tasks, server startup tasks, modifying formatters,
-or scripts that generate or rewrite repository content.
+## Performance, threading, compatibility
 
-Read-only inspection is allowed: locate files, search references, read source,
-patches, configuration, and Gradle files, and inspect Git status and diffs.
+These carry over from Leaf:
 
-Do not claim that a change compiles, passes tests, improves performance, or
-works at runtime unless the user provides corresponding verification results.
-
-## Java conventions
-
-- Use the project's Java version and follow the surrounding Minecraft, Paper,
-  or Leaf code style.
-- Preserve nullability, visibility, annotations, and API contracts.
-- Avoid introducing new dependencies.
-- Preserve comments that explain upstream behavior or non-obvious invariants.
-
-## Performance-sensitive code
-
-Leaf contains performance-sensitive server code. When changing a hot path:
-
-- avoid unnecessary allocation, boxing, copying, and temporary collections,
-  including repeated construction of coordinates, positions, or keys;
-- avoid streams and capturing lambdas when surrounding code uses explicit loops
-  for performance;
-- consider sparse, typical, and dense workloads;
-- consider memory retention and backing-array capacity;
-- preserve early exits and established fast paths;
-- do not change observable vanilla or Paper behavior solely for performance.
-
-Explain the expected effect of an optimization and distinguish it from measured
-results.
-
-## Threading and lifecycle
-
-Do not assume that code is safe to run asynchronously.
-
-Before changing thread ownership or asynchronous behavior, inspect mutable
-state, tick-thread or region-thread assumptions, world and chunk lifecycle,
-entity addition and removal, shutdown and unload behavior, synchronization and
-publication, and interactions with plugins and Paper APIs.
-
-Do not move work to another thread, introduce concurrency, or weaken an
-existing thread check unless the user explicitly requests it and the safety
-argument is clear.
-
-## Compatibility
-
-Unless the user explicitly requests a behavioral change, preserve vanilla and
-Paper API behavior, plugin compatibility, serialized and persistent formats,
-world loading and upgrading, configuration defaults, and public and internal
-API contracts.
-
-For API changes, consider both the applied Paper API source and its server-side
-implementation.
-
-## Generated code
-
-The applied source tree designated in Allowed scope is an authorized editing
-target even when produced by patch application. Other generated files are
-read-only unless the user explicitly identifies them as the editing target.
-
-If a source file appears to be generated, copied, or overwritten by a build or
-patch task, report that fact before relying on the change as persistent.
-
-## Git safety
-
-Preserve all unrelated working-tree changes.
-
-Before editing, inspect the relevant files and use `git status` when available.
-Do not assume existing changes were produced by an agent.
-
-Do not run `git reset`, `git checkout --`, `git restore`, `git clean`,
-`git rebase`, `git commit`, or `git push`, or discard, overwrite, stage, or revert
-user changes, unless the user explicitly requests that exact action.
-
-## Review expectations
-
-When reviewing or changing applied source, prioritize behavioral correctness,
-vanilla and Paper compatibility, thread safety and lifecycle correctness,
-hot-path allocation and computational cost, memory retention, API compatibility,
-and diff clarity, in that order.
-
-Separate confirmed defects from possible risks and optional optimizations.
-Assess confidence independently from issue attribution.
-
-For each potential defect, read the relevant Leaf patch diffs and compare the
-corresponding Paper baseline with the current applied source. Account for earlier
-patches affecting the same behavior: a patch's removed lines may already include
-Leaf changes. When patch context is insufficient, inspect the upstream source
-at the `paperCommit` revision in `gradle.properties`, if available. Do not assume
-a different or latest Paper version is equivalent; mark attribution uncertain
-when the necessary baseline evidence is unavailable.
-
-For each reported defect or risk, put a separate, bold attribution field directly
-below its title, before the explanation: `**Attribution: <label>** — <evidence>`.
-Use a self-explanatory label in the report's language corresponding to:
-
-- `Leaf-introduced` / `Leaf-worsened`: introduced or worsened by Leaf.
-- `Leaf-exposed`: a pre-existing defect made reachable by Leaf.
-- `Upstream`: inherited from Paper or vanilla.
-- `Unsupported usage`: caused by usage outside the supported contract.
-- `Unknown`: attribution is not established; identify the missing evidence.
-
-The attribution line must give a brief reason, not just a label. Do not bury it
-in the explanation.
-Then explain the trigger, impact, Paper baseline behavior, and supporting source
-or patch references. Attribution does not replace the full analysis.
-
-Leaf exposing a pre-existing issue does not establish that the original usage
-or behavior was valid. Support any claim of unsupported usage with the relevant
-API contract, thread restriction, or other evidence; otherwise mark it uncertain.
-
-Judge severity by impact, separately from Leaf's action priority. Upstream
-issues or unsupported usage normally have lower priority for Leaf action and
-belong in supplemental findings, not among confirmed Leaf regressions. If Leaf
-expands the affected scenarios or worsens the consequences, assess that change
-separately. Do not omit a serious impact solely because its origin is upstream.
-
-## Completion report
-
-At the end of a task, report:
-
-- which files changed;
-- what behavior changed;
-- important threading, compatibility, or performance considerations;
-- concrete scenarios and expected outcomes still requiring manual verification.
+- Combat hooks run on the hot path for every hit and every movement packet. Avoid allocation, boxing,
+  streams and capturing lambdas there, and keep early exits for non-legacy hits first.
+- Don't move work to another thread or weaken a thread check. Leaf has async entity tracking and
+  optional parallel world ticking, so per-player combat state must be owned by the entity's tick thread.
+- Preserve vanilla and Paper behaviour, plugin compatibility and persistent formats for everything that
+  isn't a legacy hit.
