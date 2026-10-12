@@ -191,7 +191,8 @@ public final class RevivalConfig {
             LegacyCombatSettings.read(reader, ConfigReader.DEFAULT_WORLD, profiles),
             Map.copyOf(worlds),
             profiles,
-            reader.getBoolean("knockback-autosave", false)
+            reader.getBoolean("knockback-autosave", false),
+            SwordBlockingSettings.read(reader)
         );
     }
 

@@ -40,8 +40,7 @@ public final class LegacyAttack {
             return null;
         }
         final LegacyCombatSettings settings = Revival.settings().legacyCombat(attacker.level().getWorld().getName());
-        final Identifier id = BuiltInRegistries.ITEM.getKey(weapon.getItem());
-        return settings.weaponDamage().containsKey(id) && isWeapon(weapon, id, settings) ? settings : null;
+        return isLegacyWeapon(weapon, settings) ? settings : null;
     }
 
     /** The settings for this damage when it is a legacy melee hit, or null when it stays 26.x. */
@@ -89,6 +88,15 @@ public final class LegacyAttack {
             && !attacker.isMobilityRestricted()
             && !attacker.isPassenger()
             && target instanceof LivingEntity;
+    }
+
+    /** Whether the stack is a legacy weapon with a damage entry under these settings. */
+    public static boolean isLegacyWeapon(final ItemStack weapon, final LegacyCombatSettings settings) {
+        if (weapon.isEmpty()) {
+            return false;
+        }
+        final Identifier id = BuiltInRegistries.ITEM.getKey(weapon.getItem());
+        return settings.weaponDamage().containsKey(id) && isWeapon(weapon, id, settings);
     }
 
     private static boolean isWeapon(final ItemStack weapon, final Identifier id, final LegacyCombatSettings settings) {

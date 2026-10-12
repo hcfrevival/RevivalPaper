@@ -47,3 +47,11 @@ leaf-server/src/minecraft/java/net/minecraft/world/entity/projectile/FishingHook
 leaf-server/src/minecraft/java/net/minecraft/world/entity/projectile/FishingHook.java | dmg = legacyReel >= 0 ? legacyReel : this.hookedIn instanceof ItemEntity ? 3 : 5; // Revival - Projectiles
 leaf-server/src/minecraft/java/net/minecraft/world/entity/projectile/FishingHook.java | return this.revivalGravity >= 0.0 ? this.revivalGravity : 0.03F; // Revival - Projectiles
 leaf-server/src/minecraft/java/net/minecraft/world/entity/projectile/FishingHook.java | public double revivalGravity = -1.0; // Revival - Projectiles
+leaf-server/src/minecraft/java/net/minecraft/world/item/Item.java | || gg.hcfrevival.revival.combat.LegacySwordBlocking.startBlocking(player, stack)) { // Revival - Sword blocking
+leaf-server/src/minecraft/java/net/minecraft/world/item/Item.java | || gg.hcfrevival.revival.combat.LegacySwordBlocking.isBlockingWeapon(itemStack)) { // Revival - Sword blocking
+leaf-server/src/minecraft/java/net/minecraft/world/item/Item.java | && !gg.hcfrevival.revival.combat.LegacySwordBlocking.isBlockingWeapon(itemStack) ? 0 : 72000; // Revival - Sword blocking
+leaf-server/src/minecraft/java/net/minecraft/world/entity/LivingEntity.java | return this.getItemBlockingWith() != null || gg.hcfrevival.revival.combat.LegacySwordBlocking.isSwordBlocking(this); // Revival - Sword blocking
+leaf-server/src/minecraft/java/net/minecraft/world/entity/LivingEntity.java | // Revival start - Sword blocking
+leaf-server/src/minecraft/java/net/minecraft/world/item/ItemStack.java | gg.hcfrevival.revival.combat.LegacySwordBlocking.fromClient(patchCodec.decode(input)); // Revival - Sword blocking
+leaf-server/src/minecraft/java/net/minecraft/world/item/ItemStack.java | gg.hcfrevival.revival.combat.LegacySwordBlocking.toClient(itemStack, itemStack.components.asPatch())); // Revival - Sword blocking
+leaf-server/src/minecraft/java/net/minecraft/network/HashedStack.java | gg.hcfrevival.revival.combat.LegacySwordBlocking.toClient(itemStack, itemStack.getComponentsPatch()), hasher); // Revival - Sword blocking
