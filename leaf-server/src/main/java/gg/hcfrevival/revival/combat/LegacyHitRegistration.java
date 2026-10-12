@@ -34,6 +34,7 @@ public final class LegacyHitRegistration {
      * cooldown, then applies the per-tick cap. Returns false when the attack should be dropped.
      */
     public boolean beforeAttack(final ServerPlayer player) {
+        player.revivalBaseKnockTarget = null; // a base knock from an earlier hit must not hide this hit's extra knock
         final LegacyCombatSettings settings = LegacyAttack.settings(player, player.getWeaponItem());
         refresh(player, settings);
         return settings == null || this.allow(player.tickCount, settings.maxAttacksPerTick());

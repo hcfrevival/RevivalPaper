@@ -110,7 +110,10 @@ public final class LegacyKnockback {
     /**
      * The victim's motion after a legacy hit, or null when the knock stays 26.x. The base knock (from the damage)
      * carries the extra knock too; the extra-knock call ({@code comesFromEffect}) only reaches here when the hit
-     * was an overflow inside the damage window, which 1.7.10 still pushed by the extra knock alone.
+     * was an overflow inside the damage window, which 1.7.10 still pushed by the extra knock alone. For a player
+     * that push only changed their server-side motion: 1.7.10 set velocityChanged on fresh hits only, so it was
+     * never sent. Sending it would set the victim's velocity from their 1.7 server motion, which falls while they
+     * are in the air, and pull them into the floor.
      */
     public static @Nullable Vec3 targetMovement(final LivingEntity victim, final DamageSource source, final @Nullable Entity attacker, final Vec3 current, final double xd, final double zd, final boolean comesFromEffect) {
         final KnockbackProfile profile = profile(attacker, source);
@@ -120,10 +123,11 @@ public final class LegacyKnockback {
         final ServerPlayer player = (ServerPlayer) attacker;
         final double level = knockbackLevel(player, player.getWeaponItem()) + sprintLevel(player, profile);
         if (comesFromEffect) {
-            if (victim instanceof final ServerPlayer target) {
-                target.hurtMarked = true; // the overflow hit didn't mark the victim hurt, but 1.7.10 still sent this push
+            final Vec3 pushed = KnockbackEngine.extraKnock(motion(victim, current, profile), player.getYRot(), level, profile);
+            if (victim instanceof final ServerPlayer target && profile.motionModel() != KnockbackProfile.MotionModel.NONE) {
+                target.revivalMotionShadow.set(pushed);
             }
-            return KnockbackEngine.extraKnock(motion(victim, current, profile), player.getYRot(), level, profile);
+            return pushed;
         }
         player.revivalBaseKnockTarget = victim;
         return KnockbackEngine.knockback(motion(victim, current, profile), xd, zd, player.getYRot(), level, profile, victim.getAttributeValue(Attributes.KNOCKBACK_RESISTANCE), victim.getRandom());

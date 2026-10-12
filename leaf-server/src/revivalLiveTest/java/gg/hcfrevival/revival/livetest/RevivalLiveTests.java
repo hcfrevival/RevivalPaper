@@ -149,6 +149,8 @@ public final class RevivalLiveTests extends JavaPlugin implements Listener {
         this.windowScenarios();
         this.after(25, "overflow hit deals the excess with no knock", this::overflowFirst);
         this.after(3, "overflow hit deals the excess with no knock (stronger hit)", this::overflowSecond);
+        this.after(25, "a w-tapped overflow hit on a falling player sends no velocity", this::wTapOverflowFirst);
+        this.after(3, "a w-tapped overflow hit on a falling player sends no velocity (w-tap hit)", this::wTapOverflowSecond);
         this.after(25, "rod then sword in the window: full damage, no second knock", this::rodHit);
         this.after(3, "rod then sword in the window: full damage, no second knock (sword)", this::swordAfterRod);
         this.after(25, "snowball knocks away from the thrower", this::snowballHit);
@@ -267,6 +269,28 @@ public final class RevivalLiveTests extends JavaPlugin implements Listener {
         this.hit();
         this.check(this.victim.getHealth() == 12.0F, "diamond sword inside the window deals only the excess 3 (health " + this.victim.getHealth() + ")");
         this.check(this.knockbacks == 1, "the overflow hit doesn't knock (knock events " + this.knockbacks + ")");
+    }
+
+    // John's floor pull: a sprint hit inside the window used to send the victim their falling 1.7 server motion
+    private void wTapOverflowFirst() {
+        this.reset(Items.WOODEN_SWORD, 20);
+        this.sprint(false);
+        this.sprint(true);
+        this.hit();
+        this.check(this.motionPackets().size() == 1, "the first sprint hit sends one velocity packet");
+    }
+
+    private void wTapOverflowSecond() {
+        this.victim.revivalMotionShadow.set(new Vec3(0.0, -0.45, 0.0)); // a few ticks into the air on the victim's screen
+        this.attacker.setItemInHand(InteractionHand.MAIN_HAND, new ItemStack(Items.DIAMOND_SWORD));
+        this.sprint(false);
+        this.sprint(true); // w-tap: re-arms the sprint knock
+        this.hit();
+        final List<Vec3> motions = this.motionPackets();
+        this.check(motions.size() == 1, "the w-tapped overflow hit sends no velocity packet, as 1.7.10 never did (packets " + motions + ")");
+        this.check(near(this.victim.revivalMotionShadow.motion(), 0.0, -0.35, 0.5), "its sprint push lands in the victim's 1.7 server motion: " + this.victim.revivalMotionShadow.motion()
+            + " (health " + this.victim.getHealth() + ", knock events " + this.knockbacks + ", sprinting " + this.attacker.isSprinting() + ", armed " + this.attacker.revivalSprintLedger.armed(false) + ")");
+        this.sprint(false);
     }
 
     private void rodHit() {
