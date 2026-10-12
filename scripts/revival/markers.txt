@@ -37,3 +37,13 @@ leaf-server/src/minecraft/java/net/minecraft/server/level/ServerPlayer.java | th
 leaf-server/src/minecraft/java/net/minecraft/world/entity/player/Player.java | !serverPlayer.revivalHitRegistration.beforeAttack(serverPlayer)) return; // Revival - Hit registration
 leaf-server/src/minecraft/java/net/minecraft/server/level/ServerPlayer.java | public @org.jspecify.annotations.Nullable String revivalKnockbackProfile; // Revival - Live profiles
 leaf-server/src/minecraft/java/net/minecraft/world/entity/LivingEntity.java | gg.hcfrevival.revival.combat.LegacyKnockback.afterKnock(this, source, attacker, comesFromEffect); // Revival - Live profiles
+leaf-server/src/minecraft/java/net/minecraft/world/entity/LivingEntity.java | && !gg.hcfrevival.revival.combat.LegacyProjectiles.zeroDamageHit(this, source)) return false;
+leaf-server/src/minecraft/java/net/minecraft/world/entity/projectile/arrow/AbstractArrow.java | if (gg.hcfrevival.revival.combat.LegacyProjectiles.punchIncluded(mob, damageSource)) return; // Revival - Projectiles
+leaf-server/src/minecraft/java/net/minecraft/world/entity/projectile/FishingHook.java | gg.hcfrevival.revival.combat.LegacyProjectiles.cast(this, player); // Revival - Projectiles
+leaf-server/src/minecraft/java/net/minecraft/world/entity/projectile/FishingHook.java | gg.hcfrevival.revival.combat.LegacyProjectiles.rodHits(this, hitResult.getEntity())) { // Revival - Projectiles
+leaf-server/src/minecraft/java/net/minecraft/world/entity/projectile/FishingHook.java | final int legacyReel = gg.hcfrevival.revival.combat.LegacyProjectiles.reel(this, this.hookedIn); // Revival - Projectiles
+leaf-server/src/minecraft/java/net/minecraft/world/entity/projectile/FishingHook.java | if (legacyReel < 0) this.pullEntity(this.hookedIn); // Revival - Projectiles
+leaf-server/src/minecraft/java/net/minecraft/world/entity/projectile/FishingHook.java | if (legacyReel < 0) this.level().broadcastEntityEvent(this, EntityEvent.FISHING_ROD_REEL_IN); // Revival - Projectiles
+leaf-server/src/minecraft/java/net/minecraft/world/entity/projectile/FishingHook.java | dmg = legacyReel >= 0 ? legacyReel : this.hookedIn instanceof ItemEntity ? 3 : 5; // Revival - Projectiles
+leaf-server/src/minecraft/java/net/minecraft/world/entity/projectile/FishingHook.java | return this.revivalGravity >= 0.0 ? this.revivalGravity : 0.03F; // Revival - Projectiles
+leaf-server/src/minecraft/java/net/minecraft/world/entity/projectile/FishingHook.java | public double revivalGravity = -1.0; // Revival - Projectiles
