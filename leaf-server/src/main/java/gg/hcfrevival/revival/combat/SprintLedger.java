@@ -34,6 +34,14 @@ public final class SprintLedger {
         this.armed = false;
     }
 
+    /** Re-arms a held sprint, for a sword block (the 1.7 block-hit); does nothing when not sprinting. */
+    public void rearm(final boolean onGround) {
+        if (this.sprinting) {
+            this.armed = true;
+            this.armedOnGround = onGround;
+        }
+    }
+
     /** A legacy hit landed with a sprint knock. Returns whether that used up an armed sprint knock. */
     public boolean consume() {
         final boolean wasArmed = this.armed;
