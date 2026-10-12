@@ -5,7 +5,7 @@ package gg.hcfrevival.revival.config;
  * per-player or per-world context.
  *
  * @param enabled legacy weapons block on right click, as in 1.7.10
- * @param clientDecoration send clients a blocking component on legacy weapons so they show and predict the block
+ * @param clientDecoration send clients legacy weapons that are "edible" with the block animation, so they show and predict the block
  * @param damageOffset a blocked hit takes {@code (damage + offset) × factor}
  * @param damageFactor see {@code damageOffset}; 1.7.10 used {@code (1 + damage) × 0.5}
  * @param ignoreArmorBypassingDamage fall, fire ticks, magic and other armor-bypassing damage isn't reduced, as in 1.7.10

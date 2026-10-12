@@ -4,29 +4,33 @@ import gg.hcfrevival.revival.Revival;
 import gg.hcfrevival.revival.config.RevivalSettings;
 import gg.hcfrevival.revival.config.SwordBlockingSettings;
 import java.util.List;
-import java.util.Optional;
 import net.minecraft.core.component.DataComponentMap;
 import net.minecraft.core.component.DataComponentPatch;
 import net.minecraft.core.component.DataComponents;
+import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.sounds.SoundEvents;
 import net.minecraft.tags.DamageTypeTags;
 import net.minecraft.world.damagesource.DamageSource;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.ItemStack;
-import net.minecraft.world.item.component.BlocksAttacks;
+import net.minecraft.world.item.ItemUseAnimation;
+import net.minecraft.world.item.component.Consumable;
 import net.minecraft.world.item.component.UseEffects;
 
 /**
  * 1.7.10 sword blocking (patch 1009). The server never gives swords a blocking component, so Paper's shield code
  * (skipping the knockback packet, failing the hit, pulling the blocker, axe disables) never runs. Instead legacy
  * weapons are usable on the server, a blocked hit takes {@code (damage + 1) × 0.5} through Paper's BLOCKING damage
- * modifier, and clients get a copy of the item with a blocking component so they show and predict the block.
+ * modifier, and clients get a copy of the item that is "edible" with the block animation, so they show and predict
+ * the block, and the block-hit (release, swing, right click) stays fluid. The client never finishes eating it: a use
+ * lasts an hour, with no particles and a silent sound.
  */
 public final class LegacySwordBlocking {
 
-    /** What clients see on a legacy weapon: blocks at once, can't be disabled, no item damage and no shield sounds. */
-    static final BlocksAttacks DECORATION = new BlocksAttacks(0.0F, 0.0F, List.of(), BlocksAttacks.ItemDamageFunction.DEFAULT, Optional.empty(), Optional.empty(), Optional.empty());
+    /** What clients see on a legacy weapon: an hour-long, silent, particle-free "meal" with the block animation. */
+    static final Consumable DECORATION = new Consumable(3600.0F, ItemUseAnimation.BLOCK, BuiltInRegistries.SOUND_EVENT.wrapAsHolder(SoundEvents.EMPTY), false, List.of());
 
     private LegacySwordBlocking() {
     }
@@ -76,12 +80,12 @@ public final class LegacySwordBlocking {
     /** The component patch clients get for a stack: a legacy weapon gains the blocking decoration. */
     public static DataComponentPatch toClient(final ItemStack stack, final DataComponentPatch patch) {
         final SwordBlockingSettings settings = Revival.settings().swordBlocking();
-        if (!settings.clientDecoration() || stack.has(DataComponents.BLOCKS_ATTACKS) || !isBlockingWeapon(stack)) {
+        if (!settings.clientDecoration() || stack.has(DataComponents.CONSUMABLE) || stack.has(DataComponents.BLOCKS_ATTACKS) || !isBlockingWeapon(stack)) {
             return patch;
         }
         final DataComponentPatch.Builder builder = DataComponentPatch.builder();
         builder.copy(patch);
-        builder.set(DataComponents.BLOCKS_ATTACKS, DECORATION);
+        builder.set(DataComponents.CONSUMABLE, DECORATION);
         final UseEffects useEffects = useEffects(settings);
         if (useEffects != null) {
             builder.set(DataComponents.USE_EFFECTS, useEffects);
@@ -91,12 +95,12 @@ public final class LegacySwordBlocking {
 
     /** A patch a client sent back (creative mode): the decoration added by {@link #toClient} comes off again. */
     public static DataComponentPatch fromClient(final DataComponentPatch patch) {
-        if (patch.isEmpty() || !DECORATION.equals(patch.get(DataComponentMap.EMPTY, DataComponents.BLOCKS_ATTACKS))) {
+        if (patch.isEmpty() || !DECORATION.equals(patch.get(DataComponentMap.EMPTY, DataComponents.CONSUMABLE))) {
             return patch;
         }
         final UseEffects useEffects = useEffects(Revival.settings().swordBlocking());
         final UseEffects sent = patch.get(DataComponentMap.EMPTY, DataComponents.USE_EFFECTS);
-        return patch.forget(type -> type == DataComponents.BLOCKS_ATTACKS || type == DataComponents.USE_EFFECTS && useEffects != null && useEffects.equals(sent));
+        return patch.forget(type -> type == DataComponents.CONSUMABLE || type == DataComponents.USE_EFFECTS && useEffects != null && useEffects.equals(sent));
     }
 
     // Only sent when it differs from 26.x's default (0.2, the same as 1.7's blocking slowdown)
