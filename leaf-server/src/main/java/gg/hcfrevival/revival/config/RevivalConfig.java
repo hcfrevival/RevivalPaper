@@ -1,0 +1,119 @@
+package gg.hcfrevival.revival.config;
+
+import gg.hcfrevival.revival.command.RevivalCommand;
+import java.io.File;
+import java.io.IOException;
+import java.util.List;
+import net.minecraft.server.MinecraftServer;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
+import org.bukkit.configuration.InvalidConfigurationException;
+import org.bukkit.configuration.file.YamlConfiguration;
+import org.jspecify.annotations.Nullable;
+
+/**
+ * Loads revival.yml, the RevivalPaper counterpart of purpur.yml.
+ * <p>
+ * The server loads it once at startup ({@link #init}); {@code /revival reload} and {@code /reload}
+ * re-read it ({@link #reload}). Every load produces a fresh {@link RevivalSettings} snapshot, which
+ * replaces the live one only when the whole file loaded.
+ */
+public final class RevivalConfig {
+
+    public static final int CURRENT_VERSION = 1;
+
+    static final List<String> HEADER = List.of(
+        "This is the main configuration file for RevivalPaper.",
+        "It controls the 1.7.10 combat layer: legacy weapons, knockback profiles, hit cadence and sprint.",
+        "",
+        "Values under world-settings.default apply to every world. To change one world, add",
+        "world-settings.<world name> with only the keys that differ.",
+        "",
+        "Apply changes with /revival reload. If the file has a mistake, the reload is refused and the",
+        "previous settings stay live; the console says what is wrong.",
+        "",
+        "Docs: https://github.com/hcfrevival/RevivalPaper/tree/ver/26.3/docs/revival"
+    );
+
+    private static final Logger LOGGER = LogManager.getLogger("RevivalPaper");
+
+    private static @Nullable File configFile;
+    private static volatile RevivalSettings settings = RevivalSettings.DEFAULTS;
+
+    private RevivalConfig() {
+    }
+
+    /** The live settings. Cheap to call on hot paths; hold the result for the length of one action. */
+    public static RevivalSettings settings() {
+        return settings;
+    }
+
+    /**
+     * Loads revival.yml at startup, creating it if it is missing. A file that cannot be parsed stops the
+     * server instead of letting it start with combat settings nobody asked for.
+     */
+    public static void init(final File file) throws IOException, InvalidConfigurationException {
+        configFile = file;
+        settings = load(file).settings();
+    }
+
+    /** Re-reads revival.yml. When the file cannot be parsed, the live settings stay in place. */
+    public static Reload reload() {
+        final File file = configFile;
+        if (file == null) {
+            LOGGER.warn("revival.yml was never loaded, so there is nothing to reload");
+            return new Reload(false, List.of());
+        }
+        try {
+            final Loaded loaded = load(file);
+            settings = loaded.settings();
+            return new Reload(true, loaded.problems());
+        } catch (final IOException | InvalidConfigurationException e) {
+            LOGGER.error("Could not reload {}; the previous settings are still live", file, e);
+            return new Reload(false, List.of());
+        }
+    }
+
+    public static void registerCommands() {
+        RevivalCommand.registerPermissions();
+        MinecraftServer.getServer().server.getCommandMap().register(RevivalCommand.LABEL, "RevivalPaper", new RevivalCommand());
+    }
+
+    static Loaded load(final File file) throws IOException, InvalidConfigurationException {
+        final YamlConfiguration yaml = new YamlConfiguration();
+        if (file.exists()) {
+            yaml.load(file); // a parse error throws before anything is saved, so a broken file is never overwritten
+        }
+        final ConfigReader reader = new ConfigReader(yaml);
+        final RevivalSettings loaded = read(reader);
+        for (final String problem : reader.problems()) {
+            LOGGER.warn(problem);
+        }
+        yaml.options().setHeader(HEADER);
+        yaml.options().copyDefaults(true);
+        yaml.save(file);
+        return new Loaded(loaded, reader.problems());
+    }
+
+    static RevivalSettings read(final ConfigReader reader) {
+        final YamlConfiguration yaml = reader.config();
+        final int version = reader.getInt("config-version", CURRENT_VERSION);
+        if (version > CURRENT_VERSION) {
+            LOGGER.warn("revival.yml has config-version {}, but this build only knows up to {}; newer keys are ignored", version, CURRENT_VERSION);
+        } else if (version < CURRENT_VERSION) {
+            // Migrations from older versions go here, oldest first
+            reader.set("config-version", CURRENT_VERSION);
+        }
+        if (!yaml.isConfigurationSection(ConfigReader.WORLD_SETTINGS + "." + ConfigReader.DEFAULT_WORLD)) {
+            yaml.createSection(ConfigReader.WORLD_SETTINGS + "." + ConfigReader.DEFAULT_WORLD);
+        }
+        return new RevivalSettings(Math.max(version, CURRENT_VERSION));
+    }
+
+    /** The outcome of {@link #reload()}: whether the new settings went live, and any values that fell back to defaults. */
+    public record Reload(boolean loaded, List<String> problems) {
+    }
+
+    record Loaded(RevivalSettings settings, List<String> problems) {
+    }
+}

@@ -1,0 +1,66 @@
+name: RevivalPaper CI
+
+on:
+  push:
+    branches: [ "ver/26.3" ]
+  pull_request:
+    branches: [ "ver/26.3" ]
+  workflow_dispatch:
+
+concurrency:
+  group: revival-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    # Leaf's own workflows only run on Winds-Studio/Leaf; this one only runs on the fork
+    if: ${{ github.repository == 'hcfrevival/RevivalPaper' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      MC_VERSION: "26.3"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Set up JDK 25
+        uses: actions/setup-java@v6
+        with:
+          distribution: 'zulu'
+          java-version: '25'
+          cache: gradle
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+      - name: Configure Git
+        run: |
+          git config --global user.email "no-reply@github.com"
+          git config --global user.name "Github Actions"
+
+      - name: Apply patches
+        run: ./gradlew applyAllPatches --stacktrace --no-daemon
+      - name: Check RevivalPaper hooks survived patching
+        run: python3 scripts/revival/check-markers.py
+      - name: Run RevivalPaper tests
+        run: ./gradlew :leaf-server:runRevivalTests --stacktrace --no-daemon
+      - name: Create Paperclip jar
+        run: ./gradlew createPaperclipJar --stacktrace --no-daemon
+
+      - name: Rename Paperclip jar
+        run: |
+          mv leaf-server/build/libs/leaf-paperclip-${{ env.MC_VERSION }}*.jar ./revivalpaper-${{ env.MC_VERSION }}.jar
+
+      - name: Upload RevivalPaper
+        uses: actions/upload-artifact@v7
+        with:
+          path: ./revivalpaper-${{ env.MC_VERSION }}.jar
+          archive: false
+
+      - name: Upload test reports
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: revival-test-reports
+          path: leaf-server/build/reports/tests/
+          if-no-files-found: ignore
