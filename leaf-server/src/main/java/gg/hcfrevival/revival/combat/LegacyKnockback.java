@@ -1,7 +1,17 @@
 package gg.hcfrevival.revival.combat;
 
+import gg.hcfrevival.revival.Revival;
+import gg.hcfrevival.revival.api.event.RevivalKnockbackEvent;
+import gg.hcfrevival.revival.api.event.SprintArmEvent;
+import gg.hcfrevival.revival.api.event.SprintConsumeEvent;
 import gg.hcfrevival.revival.config.KnockbackProfile;
 import gg.hcfrevival.revival.config.LegacyCombatSettings;
+import java.util.Locale;
+import java.util.Set;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+import net.kyori.adventure.text.Component;
+import net.kyori.adventure.text.format.NamedTextColor;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.network.protocol.game.ClientboundSetEntityMotionPacket;
 import net.minecraft.server.level.ServerLevel;
@@ -36,10 +46,65 @@ public final class LegacyKnockback {
     private LegacyKnockback() {
     }
 
-    /** The knockback profile when this damage is a legacy melee hit by attacker, or null. */
+    /** Players who asked for a line about every legacy knock they deal or take ({@code /revival kb debug}). */
+    public static final Set<UUID> DEBUG = ConcurrentHashMap.newKeySet();
+
+    /**
+     * The knockback profile when this damage is a legacy melee hit by attacker, or null: the attacker's own profile
+     * if one was set ({@code /revival kb use <profile> player <name>} or the API), otherwise their world's.
+     */
     public static @Nullable KnockbackProfile profile(final @Nullable Entity attacker, final DamageSource source) {
         final LegacyCombatSettings settings = source.getDirectEntity() == attacker ? LegacyAttack.settings(source) : null;
-        return settings != null ? settings.knockback() : null;
+        if (settings == null) {
+            return null;
+        }
+        final KnockbackProfile own = attacker instanceof final ServerPlayer player && player.revivalKnockbackProfile != null
+            ? Revival.settings().knockbackProfile(player.revivalKnockbackProfile)
+            : null;
+        return own != null ? own : settings.knockback();
+    }
+
+    /** The name of the profile {@link #profile} picks for this player, given their world's settings. */
+    public static String profileName(final ServerPlayer player, final LegacyCombatSettings settings) {
+        final String own = player.revivalKnockbackProfile;
+        return own != null && Revival.settings().knockbackProfile(own) != null ? own : settings.knockbackProfileName();
+    }
+
+    /**
+     * After a legacy knock went through Paper's knockback event: fires {@link RevivalKnockbackEvent} with the
+     * victim's new motion and prints {@code /revival kb debug} lines.
+     */
+    public static void afterKnock(final LivingEntity victim, final DamageSource source, final @Nullable Entity attacker, final boolean comesFromEffect) {
+        final boolean listening = RevivalKnockbackEvent.getHandlerList().getRegisteredListeners().length > 0;
+        if (!listening && DEBUG.isEmpty()) {
+            return;
+        }
+        final LegacyCombatSettings settings = source.getDirectEntity() == attacker ? LegacyAttack.settings(source) : null;
+        if (settings == null || !(attacker instanceof final ServerPlayer player)) {
+            return;
+        }
+        final String profile = profileName(player, settings);
+        final Vec3 motion = victim.getDeltaMovement();
+        if (listening) {
+            new RevivalKnockbackEvent((org.bukkit.entity.LivingEntity) victim.getBukkitEntity(), player.getBukkitEntity(), profile, CraftVector.toBukkit(motion), comesFromEffect).callEvent();
+        }
+        if (!DEBUG.isEmpty() && (DEBUG.contains(player.getUUID()) || DEBUG.contains(victim.getUUID()))) {
+            final Component line = Component.text(String.format(Locale.ROOT, "[kb] %s -> %s %s%s: (%.4f, %.4f, %.4f)",
+                player.getScoreboardName(), victim.getScoreboardName(), profile, comesFromEffect ? " extra only" : "", motion.x, motion.y, motion.z), NamedTextColor.GRAY);
+            if (DEBUG.contains(player.getUUID())) {
+                player.getBukkitEntity().sendMessage(line);
+            }
+            if (victim instanceof final ServerPlayer target && target != player && DEBUG.contains(target.getUUID())) {
+                target.getBukkitEntity().sendMessage(line);
+            }
+        }
+    }
+
+    /** START_SPRINTING: arms the sprint ledger and fires {@link SprintArmEvent}. */
+    public static void sprintStart(final ServerPlayer player) {
+        if (player.revivalSprintLedger.start(player.onGround()) && SprintArmEvent.getHandlerList().getRegisteredListeners().length > 0) {
+            new SprintArmEvent(player.getBukkitEntity()).callEvent();
+        }
     }
 
     /**
@@ -170,7 +235,9 @@ public final class LegacyKnockback {
             return 0.6;
         }
         if (attacker instanceof final ServerPlayer player) {
-            player.revivalSprintLedger.consume();
+            if (player.revivalSprintLedger.consume() && SprintConsumeEvent.getHandlerList().getRegisteredListeners().length > 0) {
+                new SprintConsumeEvent(player.getBukkitEntity()).callEvent();
+            }
             player.revivalMotionShadow.scaleHorizontal(profile.attackerSlowdown());
         }
         return profile.attackerSlowdown();

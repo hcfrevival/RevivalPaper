@@ -1,6 +1,7 @@
 package gg.hcfrevival.revival.config;
 
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import org.bukkit.configuration.ConfigurationSection;
@@ -102,15 +103,116 @@ public record KnockbackProfile(
         final ConfigurationSection section = reader.config().getConfigurationSection(PROFILES);
         if (section == null) {
             reader.config().createSection(PROFILES);
-            return Map.copyOf(profiles);
+            return java.util.Collections.unmodifiableMap(profiles);
         }
         for (final String name : section.getKeys(false)) {
             profiles.put(name, read(reader, PROFILES + "." + name + ".", PRESETS.getOrDefault(name, LEGACY_1_7)));
         }
-        return Map.copyOf(profiles);
+        return java.util.Collections.unmodifiableMap(profiles);
     }
 
     static final String PROFILES = "knockback-profiles";
+
+    /** Every key a profile has, in the order revival.yml and {@code /revival kb show} list them. */
+    public static final List<String> KEYS = List.of(
+        "friction", "friction-vertical", "horizontal", "vertical", "vertical-cap", "extra-horizontal", "extra-vertical",
+        "attacker-slowdown", "velocity-clamp", "resistance-mode", "motion-model", "ground-prediction-distance",
+        "ground-prediction-ping-offset", "sprint-armed-level", "sprint-held-level", "sprint-arm-requires-ground"
+    );
+
+    /** Every key's value, in {@link #KEYS} order: numbers, booleans, and options as their revival.yml names. */
+    public Map<String, Object> values() {
+        final Map<String, Object> values = new LinkedHashMap<>();
+        values.put("friction", this.friction);
+        values.put("friction-vertical", this.frictionVertical);
+        values.put("horizontal", this.horizontal);
+        values.put("vertical", this.vertical);
+        values.put("vertical-cap", this.verticalCap);
+        values.put("extra-horizontal", this.extraHorizontal);
+        values.put("extra-vertical", this.extraVertical);
+        values.put("attacker-slowdown", this.attackerSlowdown);
+        values.put("velocity-clamp", this.velocityClamp);
+        values.put("resistance-mode", name(this.resistanceMode));
+        values.put("motion-model", name(this.motionModel));
+        values.put("ground-prediction-distance", this.groundPredictionDistance);
+        values.put("ground-prediction-ping-offset", this.groundPredictionPingOffset);
+        values.put("sprint-armed-level", this.sprintArmedLevel);
+        values.put("sprint-held-level", this.sprintHeldLevel);
+        values.put("sprint-arm-requires-ground", this.sprintArmRequiresGround);
+        return values;
+    }
+
+    /**
+     * A copy with one key set from text, as typed in {@code /revival kb set}.
+     *
+     * @throws IllegalArgumentException for an unknown key or a value of the wrong kind
+     */
+    public KnockbackProfile with(final String key, final String text) {
+        final Map<String, Object> values = this.values();
+        final Object current = values.get(key);
+        if (current == null) {
+            throw new IllegalArgumentException("unknown key " + key + "; keys are " + String.join(", ", KEYS));
+        }
+        values.put(key, switch (current) {
+            case final Double ignored -> {
+                try {
+                    final double number = Double.parseDouble(text);
+                    if (!Double.isFinite(number)) {
+                        throw new NumberFormatException();
+                    }
+                    yield number;
+                } catch (final NumberFormatException e) {
+                    throw new IllegalArgumentException(key + " needs a number, not " + text);
+                }
+            }
+            case final Boolean ignored -> {
+                if (!text.equalsIgnoreCase("true") && !text.equalsIgnoreCase("false")) {
+                    throw new IllegalArgumentException(key + " needs true or false, not " + text);
+                }
+                yield Boolean.parseBoolean(text);
+            }
+            default -> {
+                final Class<? extends Enum<?>> type = key.equals("resistance-mode") ? ResistanceMode.class : MotionModel.class;
+                for (final Enum<?> constant : type.getEnumConstants()) {
+                    if (name(constant).equalsIgnoreCase(text)) {
+                        yield name(constant);
+                    }
+                }
+                throw new IllegalArgumentException(key + " needs one of " + optionNames(type) + ", not " + text);
+            }
+        });
+        return fromValues(values);
+    }
+
+    private static KnockbackProfile fromValues(final Map<String, Object> values) {
+        return new KnockbackProfile(
+            (Double) values.get("friction"),
+            (Double) values.get("friction-vertical"),
+            (Double) values.get("horizontal"),
+            (Double) values.get("vertical"),
+            (Double) values.get("vertical-cap"),
+            (Double) values.get("extra-horizontal"),
+            (Double) values.get("extra-vertical"),
+            (Double) values.get("attacker-slowdown"),
+            (Double) values.get("velocity-clamp"),
+            option(ResistanceMode.class, (String) values.get("resistance-mode")),
+            option(MotionModel.class, (String) values.get("motion-model")),
+            (Double) values.get("ground-prediction-distance"),
+            (Double) values.get("ground-prediction-ping-offset"),
+            (Double) values.get("sprint-armed-level"),
+            (Double) values.get("sprint-held-level"),
+            (Boolean) values.get("sprint-arm-requires-ground")
+        );
+    }
+
+    private static <E extends Enum<E>> E option(final Class<E> type, final String name) {
+        for (final E constant : type.getEnumConstants()) {
+            if (name(constant).equals(name)) {
+                return constant;
+            }
+        }
+        throw new IllegalArgumentException(name);
+    }
 
     // Reads only the keys the owner wrote, so built-in values stay in code and a preset fix reaches every server
     private static KnockbackProfile read(final ConfigReader reader, final String path, final KnockbackProfile base) {
@@ -143,12 +245,16 @@ public record KnockbackProfile(
                 return constant;
             }
         }
-        final StringBuilder expected = new StringBuilder();
-        for (final E constant : type.getEnumConstants()) {
-            expected.append(expected.isEmpty() ? "" : ", ").append(name(constant));
-        }
-        reader.problem(path, value, "one of " + expected, name(fallback));
+        reader.problem(path, value, "one of " + optionNames(type), name(fallback));
         return fallback;
+    }
+
+    private static String optionNames(final Class<? extends Enum<?>> type) {
+        final StringBuilder names = new StringBuilder();
+        for (final Enum<?> constant : type.getEnumConstants()) {
+            names.append(names.isEmpty() ? "" : ", ").append(name(constant));
+        }
+        return names.toString();
     }
 
     static String name(final Enum<?> constant) {

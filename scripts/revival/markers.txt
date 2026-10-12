@@ -20,7 +20,7 @@ leaf-server/src/minecraft/java/net/minecraft/server/level/ServerPlayer.java | th
 leaf-server/src/minecraft/java/net/minecraft/world/entity/player/Player.java | // Revival start - Consistent knockback
 paper-server/src/main/java/org/bukkit/craftbukkit/entity/CraftEntity.java | player.revivalMotionShadow.set(this.entity.getDeltaMovement()); // Revival - Consistent knockback
 leaf-server/src/minecraft/java/net/minecraft/server/level/ServerPlayer.java | public final gg.hcfrevival.revival.combat.SprintLedger revivalSprintLedger = new gg.hcfrevival.revival.combat.SprintLedger(); // Revival - Sprint
-leaf-server/src/minecraft/java/net/minecraft/server/network/ServerGamePacketListenerImpl.java | this.player.revivalSprintLedger.start(this.player.onGround()); // Revival - Sprint
+leaf-server/src/minecraft/java/net/minecraft/server/network/ServerGamePacketListenerImpl.java | gg.hcfrevival.revival.combat.LegacyKnockback.sprintStart(this.player); // Revival - Sprint
 leaf-server/src/minecraft/java/net/minecraft/server/network/ServerGamePacketListenerImpl.java | this.player.revivalSprintLedger.stop(); // Revival - Sprint
 leaf-server/src/minecraft/java/net/minecraft/world/entity/player/Player.java | gg.hcfrevival.revival.combat.LegacyKnockback.sprintLevel(this, legacyCombat.knockback()) > 0.0 : this.isSprinting() && fullStrengthAttack) { // Revival - Sprint
 leaf-server/src/minecraft/java/net/minecraft/world/entity/player/Player.java | final double attackerSlowdown = gg.hcfrevival.revival.combat.LegacyKnockback.onExtraKnock(this, damageSource); // Revival - Sprint
@@ -35,3 +35,5 @@ leaf-server/src/minecraft/java/net/minecraft/world/entity/LivingEntity.java | gg
 leaf-server/src/minecraft/java/net/minecraft/server/level/ServerPlayer.java | revivalHitRegistration = new gg.hcfrevival.revival.combat.LegacyHitRegistration(); // Revival - Hit registration
 leaf-server/src/minecraft/java/net/minecraft/server/level/ServerPlayer.java | this.revivalHitRegistration.tick(this); // Revival - Hit registration
 leaf-server/src/minecraft/java/net/minecraft/world/entity/player/Player.java | !serverPlayer.revivalHitRegistration.beforeAttack(serverPlayer)) return; // Revival - Hit registration
+leaf-server/src/minecraft/java/net/minecraft/server/level/ServerPlayer.java | public @org.jspecify.annotations.Nullable String revivalKnockbackProfile; // Revival - Live profiles
+leaf-server/src/minecraft/java/net/minecraft/world/entity/LivingEntity.java | gg.hcfrevival.revival.combat.LegacyKnockback.afterKnock(this, source, attacker, comesFromEffect); // Revival - Live profiles

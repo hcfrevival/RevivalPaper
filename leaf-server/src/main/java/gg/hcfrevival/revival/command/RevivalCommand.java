@@ -18,13 +18,14 @@ import org.bukkit.plugin.PluginManager;
 import org.bukkit.util.StringUtil;
 import org.jspecify.annotations.Nullable;
 
-/** {@code /revival reload | version}. Later phases add {@code /revival kb ...} here. */
+/** {@code /revival reload | version | kb ...}. */
 public final class RevivalCommand extends Command {
 
     public static final String LABEL = "revival";
     public static final String PERMISSION = "revival.command";
     public static final String RELOAD_PERMISSION = PERMISSION + ".reload";
     public static final String VERSION_PERMISSION = PERMISSION + ".version";
+    public static final String KNOCKBACK_PERMISSION = PERMISSION + ".knockback";
 
     private static final String RELOAD = "reload";
     private static final String VERSION = "version";
@@ -32,7 +33,7 @@ public final class RevivalCommand extends Command {
     public RevivalCommand() {
         super(LABEL);
         this.description = "RevivalPaper commands";
-        this.usageMessage = "/" + LABEL + " [" + RELOAD + " | " + VERSION + "]";
+        this.usageMessage = "/" + LABEL + " [" + RELOAD + " | " + VERSION + " | " + KnockbackCommand.LABEL + "]";
         this.setPermission(PERMISSION);
     }
 
@@ -41,7 +42,8 @@ public final class RevivalCommand extends Command {
         final PluginManager pluginManager = Bukkit.getPluginManager();
         addPermission(pluginManager, new Permission(RELOAD_PERMISSION, "Reload revival.yml", PermissionDefault.OP));
         addPermission(pluginManager, new Permission(VERSION_PERMISSION, "Show the RevivalPaper build", PermissionDefault.OP));
-        addPermission(pluginManager, new Permission(PERMISSION, "Use /revival", PermissionDefault.OP, Map.of(RELOAD_PERMISSION, true, VERSION_PERMISSION, true)));
+        addPermission(pluginManager, new Permission(KNOCKBACK_PERMISSION, "Edit and assign knockback profiles", PermissionDefault.OP));
+        addPermission(pluginManager, new Permission(PERMISSION, "Use /revival", PermissionDefault.OP, Map.of(RELOAD_PERMISSION, true, VERSION_PERMISSION, true, KNOCKBACK_PERMISSION, true)));
     }
 
     private static void addPermission(final PluginManager pluginManager, final Permission permission) {
@@ -59,6 +61,13 @@ public final class RevivalCommand extends Command {
         switch (subcommand) {
             case RELOAD -> this.reload(sender);
             case VERSION, "ver" -> this.version(sender);
+            case KnockbackCommand.LABEL, "knockback" -> {
+                if (sender.hasPermission(KNOCKBACK_PERMISSION)) {
+                    KnockbackCommand.execute(sender, args);
+                } else {
+                    sender.sendMessage(Bukkit.permissionMessage());
+                }
+            }
             default -> sender.sendMessage(Component.text("Usage: " + this.usageMessage, NamedTextColor.RED));
         }
         return true;
@@ -66,15 +75,21 @@ public final class RevivalCommand extends Command {
 
     @Override
     public List<String> tabComplete(final CommandSender sender, final String alias, final String[] args, final @Nullable Location location) {
-        if (args.length != 1 || !this.testPermissionSilent(sender)) {
+        if (args.length == 0 || !this.testPermissionSilent(sender)) {
             return List.of();
         }
-        final List<String> options = new ArrayList<>(2);
+        if (args.length > 1) {
+            return args[0].equalsIgnoreCase(KnockbackCommand.LABEL) && sender.hasPermission(KNOCKBACK_PERMISSION) ? KnockbackCommand.tabComplete(args) : List.of();
+        }
+        final List<String> options = new ArrayList<>(3);
         if (sender.hasPermission(RELOAD_PERMISSION)) {
             options.add(RELOAD);
         }
         if (sender.hasPermission(VERSION_PERMISSION)) {
             options.add(VERSION);
+        }
+        if (sender.hasPermission(KNOCKBACK_PERMISSION)) {
+            options.add(KnockbackCommand.LABEL);
         }
         return StringUtil.copyPartialMatches(args[0], options, new ArrayList<>(options.size()));
     }

@@ -23,4 +23,14 @@ public final class Revival {
     public static RevivalSettings settings() {
         return RevivalConfig.settings();
     }
+
+    /** Whether hits with a legacy weapon use 1.7.10 combat in this world. */
+    public static boolean legacyCombat(final org.bukkit.World world) {
+        return settings().legacyCombat(world.getName()).enabled();
+    }
+
+    /** Connects {@link gg.hcfrevival.revival.api.RevivalCombat} to this server; called once at startup. */
+    public static void startApi() {
+        gg.hcfrevival.revival.api.RevivalCombat.setProvider(new RevivalApi());
+    }
 }
