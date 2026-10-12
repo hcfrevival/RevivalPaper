@@ -180,7 +180,8 @@ public final class ConfigReader {
         return fallback;
     }
 
-    private double readDouble(final String path, final double fallback) {
+    // Reads without registering a default, so nothing is written back
+    double readDouble(final String path, final double fallback) {
         final Object value = this.raw(path);
         if (value == null) {
             return fallback;
@@ -192,7 +193,7 @@ public final class ConfigReader {
         return fallback;
     }
 
-    private String readString(final String path, final String fallback) {
+    String readString(final String path, final String fallback) {
         final Object value = this.raw(path);
         if (value == null) {
             return fallback;

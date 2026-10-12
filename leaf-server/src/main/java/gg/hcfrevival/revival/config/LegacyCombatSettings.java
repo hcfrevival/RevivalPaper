@@ -27,6 +27,8 @@ import org.jspecify.annotations.Nullable;
  * @param sharpnessPerLevel extra damage per Sharpness level
  * @param criticalMultiplier damage multiplier for a falling hit
  * @param sweepAttack whether a legacy hit may sweep
+ * @param knockbackProfileName the {@code knockback-profile} this world uses
+ * @param knockback that profile
  */
 public record LegacyCombatSettings(
     Set<Identifier> weaponItems,
@@ -36,7 +38,9 @@ public record LegacyCombatSettings(
     double weaknessPerLevel,
     double sharpnessPerLevel,
     double criticalMultiplier,
-    boolean sweepAttack
+    boolean sweepAttack,
+    String knockbackProfileName,
+    KnockbackProfile knockback
 ) {
 
     static final String PATH = "legacy-combat.";
@@ -58,7 +62,7 @@ public record LegacyCombatSettings(
         DEFAULT_WEAPON_DAMAGE = Collections.unmodifiableMap(damage); // keeps revival.yml in tier order
     }
 
-    static LegacyCombatSettings read(final ConfigReader reader, final String world) {
+    static LegacyCombatSettings read(final ConfigReader reader, final String world, final Map<String, KnockbackProfile> profiles) {
         final Set<Identifier> items = new HashSet<>();
         final List<TagKey<Item>> tags = new ArrayList<>();
         final String weaponsPath = ConfigReader.worldPath(world, PATH + "weapons");
@@ -83,6 +87,14 @@ public record LegacyCombatSettings(
             }
         }
 
+        String profileName = reader.getWorldString(world, PATH + "knockback-profile", KnockbackProfile.DEFAULT);
+        KnockbackProfile profile = profiles.get(profileName);
+        if (profile == null) {
+            reader.problem(ConfigReader.worldPath(world, PATH + "knockback-profile"), profileName, "a preset or a profile under " + KnockbackProfile.PROFILES, KnockbackProfile.DEFAULT);
+            profileName = KnockbackProfile.DEFAULT;
+            profile = KnockbackProfile.LEGACY_1_7;
+        }
+
         return new LegacyCombatSettings(
             Set.copyOf(items),
             List.copyOf(tags),
@@ -91,7 +103,9 @@ public record LegacyCombatSettings(
             reader.getWorldDouble(world, PATH + "weakness-per-level", 0.5),
             reader.getWorldDouble(world, PATH + "sharpness-per-level", 1.25),
             reader.getWorldDouble(world, PATH + "critical-multiplier", 1.5),
-            reader.getWorldBoolean(world, PATH + "sweep-attack", false)
+            reader.getWorldBoolean(world, PATH + "sweep-attack", false),
+            profileName,
+            profile
         );
     }
 
