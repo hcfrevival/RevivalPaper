@@ -23,6 +23,9 @@ import org.bukkit.configuration.ConfigurationSection;
  * @param groundPredictionDistance treat an airborne player victim within this many blocks of the ground as landed when
  *     their ping says they already are on their screen; 0 turns it off. Ported from core's ClientGround
  * @param groundPredictionPingOffset milliseconds taken off the player's ping before that comparison
+ * @param sprintArmedLevel the sprint part of the extra-knockback level on the first sprint hit after a sprint start
+ * @param sprintHeldLevel the sprint part on later hits while the sprint is held; 0 in 1.7.10, which needed a w-tap
+ * @param sprintArmRequiresGround a sprint start only arms the next sprint hit when the attacker was on the ground
  */
 public record KnockbackProfile(
     double friction,
@@ -37,7 +40,10 @@ public record KnockbackProfile(
     ResistanceMode resistanceMode,
     MotionModel motionModel,
     double groundPredictionDistance,
-    double groundPredictionPingOffset
+    double groundPredictionPingOffset,
+    double sprintArmedLevel,
+    double sprintHeldLevel,
+    boolean sprintArmRequiresGround
 ) {
 
     public enum ResistanceMode {
@@ -60,7 +66,7 @@ public record KnockbackProfile(
 
     public static final String DEFAULT = "legacy-1.7";
 
-    public static final KnockbackProfile LEGACY_1_7 = new KnockbackProfile(2.0, 2.0, 0.4, 0.4, 0.4000000059604645, 0.5, 0.1, 0.6, 3.9, ResistanceMode.NONE, MotionModel.SPORTBUKKIT, 0.0, 25.0);
+    public static final KnockbackProfile LEGACY_1_7 = new KnockbackProfile(2.0, 2.0, 0.4, 0.4, 0.4000000059604645, 0.5, 0.1, 0.6, 3.9, ResistanceMode.NONE, MotionModel.SPORTBUKKIT, 0.0, 25.0, 1.0, 0.0, false);
 
     /**
      * Built-in presets. Except legacy-1.7, legacy-1.8 and hcfr, the numbers are archived server configs from
@@ -73,20 +79,21 @@ public record KnockbackProfile(
     static {
         final Map<String, KnockbackProfile> presets = new LinkedHashMap<>();
         presets.put(DEFAULT, LEGACY_1_7);
-        presets.put("legacy-1.8", new KnockbackProfile(2.0, 2.0, 0.4, 0.4, 0.4, 0.5, 0.1, 0.6, 3.9, ResistanceMode.ROLL, MotionModel.SPORTBUKKIT, 0.0, 25.0));
+        presets.put("legacy-1.8", new KnockbackProfile(2.0, 2.0, 0.4, 0.4, 0.4, 0.5, 0.1, 0.6, 3.9, ResistanceMode.ROLL, MotionModel.SPORTBUKKIT, 0.0, 25.0, 1.0, 0.0, false));
         presets.put("kohi", preset(2.0, 2.0, 0.35, 0.35, 0.4, 0.425, 0.085));
         presets.put("minehq", preset(2.0, 2.0, 0.36, 0.36, 0.4, 0.45, 0.09));
         presets.put("badlion", preset(2.0, 2.0, 0.34, 0.34, 0.4, 0.48, 0.085));
         presets.put("mmc", preset(1.8, 1.8, 0.32, 0.32, 0.4, 0.5, 0.1));
         presets.put("lunar", preset(1.46, 1.31, 0.54, 0.44, 0.361735, 0.38, 0.0));
         presets.put("velt", preset(10.0, 10.0, 0.325, 0.36, 0.36, 0.5, 0.0));
-        // Today's prod numbers from core's environments/factions/plugins/Factions/mechanics.yml (combat.knockback)
-        presets.put("hcfr", preset(2.0, 2.0, 0.32, 0.38, 0.36, 0.5, 0.0));
+        // Today's prod numbers from core's environments/factions/plugins/Factions/mechanics.yml (combat.knockback):
+        // sprint 0.8 while held, plus sprint-reset 0.5 after a sprint start on the ground (ground-check)
+        presets.put("hcfr", new KnockbackProfile(2.0, 2.0, 0.32, 0.38, 0.36, 0.5, 0.0, 0.6, 3.9, ResistanceMode.NONE, MotionModel.SPORTBUKKIT, 0.0, 25.0, 1.3, 0.8, true));
         PRESETS = java.util.Collections.unmodifiableMap(presets);
     }
 
     private static KnockbackProfile preset(final double friction, final double frictionVertical, final double horizontal, final double vertical, final double verticalCap, final double extraHorizontal, final double extraVertical) {
-        return new KnockbackProfile(friction, frictionVertical, horizontal, vertical, verticalCap, extraHorizontal, extraVertical, 0.6, 3.9, ResistanceMode.NONE, MotionModel.SPORTBUKKIT, 0.0, 25.0);
+        return new KnockbackProfile(friction, frictionVertical, horizontal, vertical, verticalCap, extraHorizontal, extraVertical, 0.6, 3.9, ResistanceMode.NONE, MotionModel.SPORTBUKKIT, 0.0, 25.0, 1.0, 0.0, false);
     }
 
     /** Reads every profile under {@code knockback-profiles}: each starts from the preset of the same name, or legacy-1.7, and overrides the keys it sets. */
@@ -121,7 +128,10 @@ public record KnockbackProfile(
             option(reader, path + "resistance-mode", ResistanceMode.class, base.resistanceMode()),
             option(reader, path + "motion-model", MotionModel.class, base.motionModel()),
             reader.readDouble(path + "ground-prediction-distance", base.groundPredictionDistance()),
-            reader.readDouble(path + "ground-prediction-ping-offset", base.groundPredictionPingOffset())
+            reader.readDouble(path + "ground-prediction-ping-offset", base.groundPredictionPingOffset()),
+            reader.readDouble(path + "sprint-armed-level", base.sprintArmedLevel()),
+            reader.readDouble(path + "sprint-held-level", base.sprintHeldLevel()),
+            reader.readBoolean(path + "sprint-arm-requires-ground", base.sprintArmRequiresGround())
         );
     }
 

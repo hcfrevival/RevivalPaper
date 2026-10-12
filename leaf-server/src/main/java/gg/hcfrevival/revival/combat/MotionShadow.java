@@ -34,6 +34,12 @@ public final class MotionShadow {
         this.z = motion.z;
     }
 
+    /** The attacker slowdown after a sprint or Knockback hit (EntityPlayer.attackTargetEntityWithCurrentItem). */
+    public void scaleHorizontal(final double factor) {
+        this.x *= factor;
+        this.z *= factor;
+    }
+
     /** One server tick for this player, using the onGround flag their client last sent. */
     public void tick(final ServerPlayer player) {
         final boolean onGround = player.onGround();

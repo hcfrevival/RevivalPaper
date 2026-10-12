@@ -156,7 +156,7 @@ public final class ConfigReader {
         }
     }
 
-    private boolean readBoolean(final String path, final boolean fallback) {
+    boolean readBoolean(final String path, final boolean fallback) {
         final Object value = this.raw(path);
         if (value == null) {
             return fallback;
