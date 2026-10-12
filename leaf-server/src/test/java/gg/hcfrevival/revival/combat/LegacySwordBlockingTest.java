@@ -58,11 +58,15 @@ class LegacySwordBlockingTest {
 
         final DataComponentPatch client = LegacySwordBlocking.toClient(sword, server);
 
-        assertEquals(LegacySwordBlocking.DECORATION, client.get(DataComponentMap.EMPTY, DataComponents.BLOCKS_ATTACKS));
+        assertEquals(LegacySwordBlocking.DECORATION, client.get(DataComponentMap.EMPTY, DataComponents.CONSUMABLE));
+        assertEquals(net.minecraft.world.item.ItemUseAnimation.BLOCK, LegacySwordBlocking.DECORATION.animation());
+        assertEquals(72000, LegacySwordBlocking.DECORATION.consumeTicks()); // never finishes eating
+        assertFalse(LegacySwordBlocking.DECORATION.hasConsumeParticles());
         assertEquals(Component.literal("Excalibur"), client.get(DataComponentMap.EMPTY, DataComponents.CUSTOM_NAME));
         assertEquals(null, client.get(DataComponentMap.EMPTY, DataComponents.USE_EFFECTS)); // 0.2 is already the default
         assertEquals(server, LegacySwordBlocking.fromClient(client));
-        assertFalse(sword.has(DataComponents.BLOCKS_ATTACKS)); // the server's own copy never blocks like a shield
+        assertFalse(sword.has(DataComponents.CONSUMABLE)); // the server's own copy is never edible
+        assertFalse(sword.has(DataComponents.BLOCKS_ATTACKS)); // nor a shield
     }
 
     @Test
