@@ -142,7 +142,7 @@ class KnockbackEngineTest {
 
     private static KnockbackProfile withResistance(final ResistanceMode mode) {
         final KnockbackProfile p = KnockbackProfile.LEGACY_1_7;
-        return new KnockbackProfile(p.friction(), p.frictionVertical(), p.horizontal(), p.vertical(), p.verticalCap(), p.extraHorizontal(), p.extraVertical(), p.attackerSlowdown(), p.velocityClamp(), mode);
+        return new KnockbackProfile(p.friction(), p.frictionVertical(), p.horizontal(), p.vertical(), p.verticalCap(), p.extraHorizontal(), p.extraVertical(), p.attackerSlowdown(), p.velocityClamp(), mode, p.motionModel(), p.groundPredictionDistance(), p.groundPredictionPingOffset());
     }
 
     @Test

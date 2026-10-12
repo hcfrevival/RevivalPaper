@@ -18,3 +18,7 @@ leaf-server/src/minecraft/java/net/minecraft/world/entity/player/Player.java | i
 leaf-server/src/minecraft/java/net/minecraft/world/entity/player/Player.java | if (gg.hcfrevival.revival.combat.LegacyKnockback.profile(this, damageSource) == null) // Revival - Knockback engine
 leaf-server/src/minecraft/java/net/minecraft/world/entity/player/Player.java | final double attackerSlowdown = gg.hcfrevival.revival.combat.LegacyKnockback.attackerSlowdown(this, damageSource); // Revival - Knockback engine
 leaf-server/src/minecraft/java/net/minecraft/world/entity/player/Player.java | this.setDeltaMovement(this.getDeltaMovement().multiply(attackerSlowdown, 1.0, attackerSlowdown)); // Revival - Knockback engine
+leaf-server/src/minecraft/java/net/minecraft/server/level/ServerPlayer.java | public final gg.hcfrevival.revival.combat.MotionShadow revivalMotionShadow = new gg.hcfrevival.revival.combat.MotionShadow(); // Revival - Consistent knockback
+leaf-server/src/minecraft/java/net/minecraft/server/level/ServerPlayer.java | this.revivalMotionShadow.tick(this); // Revival - Consistent knockback
+leaf-server/src/minecraft/java/net/minecraft/world/entity/player/Player.java | // Revival start - Consistent knockback
+paper-server/src/main/java/org/bukkit/craftbukkit/entity/CraftEntity.java | player.revivalMotionShadow.set(this.entity.getDeltaMovement()); // Revival - Consistent knockback
