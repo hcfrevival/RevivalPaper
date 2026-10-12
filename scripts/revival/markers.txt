@@ -9,3 +9,7 @@ paper-server/src/main/java/org/bukkit/craftbukkit/Main.java | // Revival start -
 paper-server/src/main/java/org/bukkit/craftbukkit/CraftServer.java | gg.hcfrevival.revival.config.RevivalConfig.reload(); // Revival - RevivalPaper config
 paper-server/src/main/java/org/bukkit/craftbukkit/CraftServer.java | gg.hcfrevival.revival.config.RevivalConfig.registerCommands(); // Revival - RevivalPaper config
 paper-server/src/main/java/io/papermc/paper/ServerBuildInfoImpl.java | || brandId.equals(BRAND_LEAF_ID); // Revival - Rebrand
+leaf-server/src/minecraft/java/net/minecraft/world/entity/player/Player.java | // Revival start - Legacy attack damage
+leaf-server/src/minecraft/java/net/minecraft/world/entity/player/Player.java | gg.hcfrevival.revival.combat.LegacyAttack.canCriticalAttack(this, entity) : fullStrengthAttack && this.canCriticalAttack(entity); // Revival - Legacy attack damage
+leaf-server/src/minecraft/java/net/minecraft/world/entity/player/Player.java | (float) legacyCombat.criticalMultiplier() : (float) this.level().purpurConfig.playerCriticalDamageMultiplier; // Purpur - Add config change multiplier critical damage value // Revival - Legacy attack damage
+leaf-server/src/minecraft/java/net/minecraft/world/entity/player/Player.java | boolean sweepAttack = (legacyCombat == null || legacyCombat.sweepAttack()) && this.isSweepAttack(fullStrengthAttack, criticalAttack, knockbackAttack); // Revival - Legacy attack damage

@@ -1,7 +1,12 @@
 package gg.hcfrevival.revival.config;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import org.bukkit.configuration.ConfigurationSection;
 import org.bukkit.configuration.file.YamlConfiguration;
 import org.jspecify.annotations.Nullable;
 
@@ -22,7 +27,7 @@ public final class ConfigReader {
     public static final String DEFAULT_WORLD = "default";
 
     private final YamlConfiguration config;
-    private final List<String> problems = new ArrayList<>();
+    private final Set<String> problems = new LinkedHashSet<>(); // a bad default-section value is read once per world
 
     public ConfigReader(final YamlConfiguration config) {
         this.config = config;
@@ -59,21 +64,7 @@ public final class ConfigReader {
 
     public List<String> getStringList(final String path, final List<String> def) {
         this.config.addDefault(path, def);
-        final Object value = this.raw(path);
-        if (value == null) {
-            return List.copyOf(def);
-        }
-        if (value instanceof final List<?> list) {
-            final List<String> strings = new ArrayList<>(list.size());
-            for (final Object element : list) {
-                if (element != null) {
-                    strings.add(element.toString());
-                }
-            }
-            return List.copyOf(strings);
-        }
-        this.problem(path, value, "a list", def);
-        return List.copyOf(def);
+        return this.readStringList(path, List.copyOf(def));
     }
 
     public void set(final String path, final Object value) {
@@ -101,8 +92,68 @@ public final class ConfigReader {
         return DEFAULT_WORLD.equals(world) ? fallback : this.readString(worldPath(world, path), fallback);
     }
 
+    public List<String> getWorldStringList(final String world, final String path, final List<String> def) {
+        final List<String> fallback = this.getStringList(worldPath(DEFAULT_WORLD, path), def);
+        return DEFAULT_WORLD.equals(world) ? fallback : this.readStringList(worldPath(world, path), fallback);
+    }
+
+    /**
+     * A section of numbers keyed by name. Every default key is written back to the default section; a world
+     * section overrides or adds single keys and inherits the rest.
+     */
+    public Map<String, Double> getWorldDoubleMap(final String world, final String path, final Map<String, Double> def) {
+        final Map<String, Double> values = new LinkedHashMap<>();
+        final String defaultPath = worldPath(DEFAULT_WORLD, path);
+        for (final Map.Entry<String, Double> entry : def.entrySet()) {
+            values.put(entry.getKey(), this.getDouble(defaultPath + "." + entry.getKey(), entry.getValue()));
+        }
+        this.readDoubleSection(defaultPath, values, def.keySet());
+        if (!DEFAULT_WORLD.equals(world)) {
+            this.readDoubleSection(worldPath(world, path), values, Set.of());
+        }
+        return values;
+    }
+
     public static String worldPath(final String world, final String path) {
         return WORLD_SETTINGS + "." + world + "." + path;
+    }
+
+    private List<String> readStringList(final String path, final List<String> fallback) {
+        final Object value = this.raw(path);
+        if (value == null) {
+            return fallback;
+        }
+        if (value instanceof final List<?> list) {
+            final List<String> strings = new ArrayList<>(list.size());
+            for (final Object element : list) {
+                if (element != null) {
+                    strings.add(element.toString());
+                }
+            }
+            return List.copyOf(strings);
+        }
+        this.problem(path, value, "a list", fallback);
+        return fallback;
+    }
+
+    // Adds or replaces every number written in the section at path, except keys already read; a bad entry keeps the current value or is skipped
+    private void readDoubleSection(final String path, final Map<String, Double> values, final Set<String> alreadyRead) {
+        final ConfigurationSection section = this.config.getConfigurationSection(path);
+        if (section == null) {
+            return;
+        }
+        for (final String key : section.getKeys(false)) {
+            if (alreadyRead.contains(key)) {
+                continue;
+            }
+            final Object value = section.get(key, null);
+            if (value instanceof final Number number) {
+                values.put(key, number.doubleValue());
+            } else if (value != null) {
+                final Double current = values.get(key);
+                this.problem(path + "." + key, value, "a number", current != null ? current : "nothing (skipped)");
+            }
+        }
     }
 
     private boolean readBoolean(final String path, final boolean fallback) {
@@ -159,7 +210,7 @@ public final class ConfigReader {
         return this.config.get(path, null);
     }
 
-    private void problem(final String path, final Object value, final String expected, final Object fallback) {
+    void problem(final String path, final Object value, final String expected, final Object fallback) {
         this.problems.add("revival.yml: " + path + " is '" + value + "', expected " + expected + "; using " + fallback);
     }
 }
