@@ -77,7 +77,14 @@ unless there is no other way, and if you do, say why in the PR.
 python3 scripts/revival/check-markers.py  # every hook survived patching
 ./gradlew :leaf-server:runRevivalTests    # every @RevivalTest under gg.hcfrevival.revival
 ./gradlew createPaperclipJar              # leaf-server/build/libs/leaf-paperclip-26.3*.jar
+./gradlew :leaf-server:revivalLiveTestPlugin && python3 scripts/revival/live-tests.py   # live-server tests
+python3 scripts/revival/core-contract.py --core <built core checkout>                     # core's harnesses on the fork
 ```
+
+- Live-server tests live in `leaf-server/src/revivalLiveTest/java` as a plugin. Two fake players on recording connections
+  fight through the real packet handlers, once with the sync entity tracker and once with Leaf's async one. Add a
+  scenario there for every behaviour that only shows on a running server (packets, events, ticks).
+- `docs/revival/grimac-checklist.md` lists the anticheat checks that need a real client before a cutover.
 
 - Tag tests with `@gg.hcfrevival.revival.RevivalTest`. Math and config tests are plain JUnit; tests that
   need registries add Paper's test extensions.

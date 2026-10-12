@@ -19,6 +19,8 @@ jobs:
     timeout-minutes: 120
     env:
       MC_VERSION: "26.3"
+      # Read access to hcfrevival/core for the core contract tests; the steps are skipped without it
+      CORE_READ_TOKEN: ${{ secrets.CORE_READ_TOKEN }}
 
     steps:
       - name: Checkout repository
@@ -46,6 +48,27 @@ jobs:
         run: ./gradlew :leaf-server:runRevivalTests --stacktrace --no-daemon
       - name: Create Paperclip jar
         run: ./gradlew createPaperclipJar --stacktrace --no-daemon
+      - name: Run live-server tests (sync and async entity tracker)
+        run: |
+          ./gradlew :leaf-server:revivalLiveTestPlugin --stacktrace --no-daemon
+          python3 scripts/revival/live-tests.py
+
+      - name: Check out core for contract tests
+        if: ${{ env.CORE_READ_TOKEN != '' }}
+        uses: actions/checkout@v5
+        with:
+          repository: hcfrevival/core
+          ref: dev
+          token: ${{ env.CORE_READ_TOKEN }}
+          path: core
+      - name: Run core contract tests
+        if: ${{ env.CORE_READ_TOKEN != '' }}
+        # Reports without blocking until core's Rogue harness supports 26.3 and RevivalPaper's numbers (core PR C1)
+        continue-on-error: true
+        run: |
+          ./gradlew :leaf-api:jar --stacktrace --no-daemon
+          (cd core && chmod +x mvnw && ./mvnw -q -B -pl classes,essentials,events,factions,arena -am package -DskipTests)
+          python3 scripts/revival/core-contract.py --core core
 
       - name: Rename Paperclip jar
         run: |
@@ -62,5 +85,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: revival-test-reports
-          path: leaf-server/build/reports/tests/
+          path: |
+            leaf-server/build/reports/tests/
+            leaf-server/build/revival-live/logs/
           if-no-files-found: ignore

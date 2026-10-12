@@ -29,3 +29,17 @@ afterEvaluate {
         }
     }
 }
+
+// Live-server tests: a plugin that scripts/revival/live-tests.py drops into a throwaway server. It compiles against the
+// server itself (Minecraft, Paper and RevivalPaper classes), so it can drive fake players through real packet handlers.
+val revivalSourceSets = the<SourceSetContainer>()
+val revivalLiveTest = revivalSourceSets.create("revivalLiveTest") { // src/revivalLiveTest/{java,resources}
+    compileClasspath += revivalSourceSets["main"].output + revivalSourceSets["main"].compileClasspath
+}
+tasks.register<Jar>("revivalLiveTestPlugin") {
+    group = "verification"
+    description = "Builds the RevivalPaper live-test plugin (leaf-server/build/libs/revival-live-tests.jar)"
+    from(revivalLiveTest.output)
+    archiveFileName.set("revival-live-tests.jar")
+    destinationDirectory.set(layout.buildDirectory.dir("libs"))
+}

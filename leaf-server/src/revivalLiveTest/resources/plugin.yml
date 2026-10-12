@@ -1,0 +1,5 @@
+name: RevivalLiveTests
+version: 1
+main: gg.hcfrevival.revival.livetest.RevivalLiveTests
+api-version: '26.3'
+description: RevivalPaper live-server tests. Does nothing unless started by scripts/revival/live-tests.py.
