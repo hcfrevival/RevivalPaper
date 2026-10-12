@@ -1,0 +1,60 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Mon, 12 Oct 2026 09:30:00 +0000
+Subject: [PATCH] RevivalPaper config
+
+Adds the --revival-settings option (default revival.yml), reloads
+revival.yml and re-registers /revival on /reload, and keeps plugins
+that check for the Leaf brand working now that the jar reports
+hcfrevival:revivalpaper.
+
+diff --git a/src/main/java/io/papermc/paper/ServerBuildInfoImpl.java b/src/main/java/io/papermc/paper/ServerBuildInfoImpl.java
+--- a/src/main/java/io/papermc/paper/ServerBuildInfoImpl.java
++++ b/src/main/java/io/papermc/paper/ServerBuildInfoImpl.java
+@@ -72,7 +72,8 @@ public record ServerBuildInfoImpl(
+             || brandId.equals(BRAND_PAPER_ID)
+             || brandId.equals(BRAND_GALE_ID) // Gale - branding changes
+             || brandId.equals(BRAND_PUFFERFISH_ID)
+-            || brandId.equals(BRAND_PURPUR_ID);
++            || brandId.equals(BRAND_PURPUR_ID)
++            || brandId.equals(BRAND_LEAF_ID); // Revival - Rebrand
+             // Leaf end - Rebrand
+     }
+ 
+diff --git a/src/main/java/org/bukkit/craftbukkit/CraftServer.java b/src/main/java/org/bukkit/craftbukkit/CraftServer.java
+--- a/src/main/java/org/bukkit/craftbukkit/CraftServer.java
++++ b/src/main/java/org/bukkit/craftbukkit/CraftServer.java
+@@ -1007,6 +1007,7 @@ public final class CraftServer implements Server {
+         this.console.paperConfigurations.reloadConfigs(this.console);
+         org.purpurmc.purpur.PurpurConfig.init((File) console.options.valueOf("purpur-settings")); // Purpur - Purpur config files
+         this.console.galeConfigurations.reloadConfigs(this.console); // Gale - Gale configuration
++        gg.hcfrevival.revival.config.RevivalConfig.reload(); // Revival - RevivalPaper config
+         for (ServerLevel world : this.console.getAllLevels()) {
+             // world.serverLevelData.setDifficulty(config.difficulty); // Paper - per level difficulty
+             world.setSpawnSettings(world.isSpawningMonsters()); // Paper - per level difficulty (from MinecraftServer#setDifficulty(ServerLevel, Difficulty, boolean))
+@@ -1041,6 +1042,7 @@ public final class CraftServer implements Server {
+         io.papermc.paper.command.PaperCommands.registerCommands(this.console); // Paper
+         this.spark.registerCommandBeforePlugins(this); // Paper - spark
+         org.purpurmc.purpur.PurpurConfig.registerCommands(); // Purpur - Purpur config files
++        gg.hcfrevival.revival.config.RevivalConfig.registerCommands(); // Revival - RevivalPaper config
+         this.overrideAllCommandBlockCommands = this.commandsConfiguration.getStringList("command-block-overrides").contains("*");
+         this.ignoreVanillaPermissions = this.commandsConfiguration.getBoolean("ignore-vanilla-permissions");
+ 
+diff --git a/src/main/java/org/bukkit/craftbukkit/Main.java b/src/main/java/org/bukkit/craftbukkit/Main.java
+--- a/src/main/java/org/bukkit/craftbukkit/Main.java
++++ b/src/main/java/org/bukkit/craftbukkit/Main.java
+@@ -147,6 +147,14 @@ public class Main {
+                     .describedAs("Yml file");
+                 // Purpur end - Purpur config files
+ 
++                // Revival start - RevivalPaper config
++                this.acceptsAll(asList("revival", "revival-settings"), "File for RevivalPaper settings")
++                    .withRequiredArg()
++                    .ofType(File.class)
++                    .defaultsTo(new File("revival.yml"))
++                    .describedAs("Yml file");
++                // Revival end - RevivalPaper config
++
+                 this.accepts("server-name", "Name of the server")
+                         .withRequiredArg()
+                         .ofType(String.class)

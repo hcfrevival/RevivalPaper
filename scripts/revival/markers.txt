@@ -1,0 +1,11 @@
+# Every RevivalPaper hook that must survive in the applied sources, one per line:
+#   <applied file> | <text that must appear in it>
+# check-markers.py fails CI when a listed marker is missing (a hunk was dropped while rebasing onto a new
+# Leaf or Minecraft version) or when a Revival marker appears that is not listed here.
+# Add a line in the same PR that adds a hook.
+
+leaf-server/src/minecraft/java/net/minecraft/server/dedicated/DedicatedServer.java | // Revival start - RevivalPaper config
+paper-server/src/main/java/org/bukkit/craftbukkit/Main.java | // Revival start - RevivalPaper config
+paper-server/src/main/java/org/bukkit/craftbukkit/CraftServer.java | gg.hcfrevival.revival.config.RevivalConfig.reload(); // Revival - RevivalPaper config
+paper-server/src/main/java/org/bukkit/craftbukkit/CraftServer.java | gg.hcfrevival.revival.config.RevivalConfig.registerCommands(); // Revival - RevivalPaper config
+paper-server/src/main/java/io/papermc/paper/ServerBuildInfoImpl.java | || brandId.equals(BRAND_LEAF_ID); // Revival - Rebrand

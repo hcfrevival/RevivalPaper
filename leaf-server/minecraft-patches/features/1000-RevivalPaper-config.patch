@@ -1,0 +1,27 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Mon, 12 Oct 2026 09:30:00 +0000
+Subject: [PATCH] RevivalPaper config
+
+Loads revival.yml at startup and registers /revival. The config and
+command live in gg.hcfrevival.revival; this patch only calls into them.
+
+diff --git a/net/minecraft/server/dedicated/DedicatedServer.java b/net/minecraft/server/dedicated/DedicatedServer.java
+--- a/net/minecraft/server/dedicated/DedicatedServer.java
++++ b/net/minecraft/server/dedicated/DedicatedServer.java
+@@ -265,6 +265,15 @@ public class DedicatedServer extends MinecraftServer implements ServerInterface
+         org.purpurmc.purpur.PurpurConfig.registerCommands();
+         // Purpur end - Purpur config files
+         org.dreeam.leaf.command.LeafCommands.registerCommands(this); // Leaf - Leaf commands
++        // Revival start - RevivalPaper config
++        try {
++            gg.hcfrevival.revival.config.RevivalConfig.init((java.io.File) options.valueOf("revival-settings"));
++        } catch (Exception e) {
++            DedicatedServer.LOGGER.error("Unable to load RevivalPaper configuration (revival.yml)", e);
++            return false;
++        }
++        gg.hcfrevival.revival.config.RevivalConfig.registerCommands();
++        // Revival end - RevivalPaper config
+         // Leaf start - SparklyPaper - parallel world ticking
+         if (org.dreeam.leaf.config.modules.async.SparklyPaperParallelWorldTicking.enabled) {
+             serverLevelTickingSemaphore = new java.util.concurrent.Semaphore(org.dreeam.leaf.config.modules.async.SparklyPaperParallelWorldTicking.threads);
