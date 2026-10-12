@@ -32,6 +32,8 @@ import org.jspecify.annotations.Nullable;
  * @param legacyArmor a legacy hit is reduced 4% per armor point, ignoring toughness, as in 1.7.10
  * @param legacyEnchantProtection a legacy hit is reduced by 1.7.10 Protection instead of 26.x's
  * @param randomizeProtection 1.7.10 rolled each hit's Protection between half and all of it; off uses all of it
+ * @param hideCooldownIndicator while a legacy weapon is held, max out attack speed so the client shows no cooldown bar
+ * @param maxAttacksPerTick legacy attacks a player may land per tick; 0 is unlimited, as in 1.7.10
  */
 public record LegacyCombatSettings(
     Set<Identifier> weaponItems,
@@ -46,7 +48,9 @@ public record LegacyCombatSettings(
     KnockbackProfile knockback,
     boolean legacyArmor,
     boolean legacyEnchantProtection,
-    boolean randomizeProtection
+    boolean randomizeProtection,
+    boolean hideCooldownIndicator,
+    int maxAttacksPerTick
 ) {
 
     static final String PATH = "legacy-combat.";
@@ -114,7 +118,9 @@ public record LegacyCombatSettings(
             profile,
             reader.getWorldBoolean(world, PATH + "legacy-armor", true),
             reader.getWorldBoolean(world, PATH + "legacy-enchant-protection", true),
-            reader.getWorldBoolean(world, PATH + "randomize-protection", true)
+            reader.getWorldBoolean(world, PATH + "randomize-protection", true),
+            reader.getWorldBoolean(world, PATH + "hide-cooldown-indicator", true),
+            reader.getWorldInt(world, PATH + "max-attacks-per-tick", 0)
         );
     }
 

@@ -1,0 +1,42 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: j-rockwell <john@llewkcor.com>
+Date: Mon, 12 Oct 2026 10:02:42 -0700
+Subject: [PATCH] Hit registration
+
+While a legacy weapon is held, a transient attack-speed modifier hides
+the cooldown, refreshed each tick and before each attack; an optional cap
+limits legacy attacks per tick. The logic lives in
+gg.hcfrevival.revival.combat; this patch only calls into it.
+
+diff --git a/net/minecraft/server/level/ServerPlayer.java b/net/minecraft/server/level/ServerPlayer.java
+index b40ae2621443ca490063dfca7a6f9e47ab270b5b..66498fd726b537a9106064452b3b842b6e12a086 100644
+--- a/net/minecraft/server/level/ServerPlayer.java
++++ b/net/minecraft/server/level/ServerPlayer.java
+@@ -216,6 +216,7 @@ public class ServerPlayer extends Player implements ca.spottedleaf.moonrise.patc
+     public final gg.hcfrevival.revival.combat.MotionShadow revivalMotionShadow = new gg.hcfrevival.revival.combat.MotionShadow(); // Revival - Consistent knockback
+     public final gg.hcfrevival.revival.combat.SprintLedger revivalSprintLedger = new gg.hcfrevival.revival.combat.SprintLedger(); // Revival - Sprint
+     public net.minecraft.world.entity.@org.jspecify.annotations.Nullable Entity revivalBaseKnockTarget; // Revival - Damage immunity
++    public final gg.hcfrevival.revival.combat.LegacyHitRegistration revivalHitRegistration = new gg.hcfrevival.revival.combat.LegacyHitRegistration(); // Revival - Hit registration
+     private static final int NEUTRAL_MOB_DEATH_NOTIFICATION_RADII_XZ = 32;
+     private static final int NEUTRAL_MOB_DEATH_NOTIFICATION_RADII_Y = 10;
+     private static final int FLY_STAT_RECORDING_SPEED = 25;
+@@ -743,6 +744,7 @@ public class ServerPlayer extends Player implements ca.spottedleaf.moonrise.patc
+     public void tick() {
+         hasTickedAtLeastOnceInNewWorld = true; // Leaf - SparklyPaper - parallel world ticking (see: PARALLEL_NOTES.md - Opening an inventory after a world switch)
+         this.revivalMotionShadow.tick(this); // Revival - Consistent knockback
++        this.revivalHitRegistration.tick(this); // Revival - Hit registration
+         // CraftBukkit start
+         if (this.joining) {
+             this.joining = false;
+diff --git a/net/minecraft/world/entity/player/Player.java b/net/minecraft/world/entity/player/Player.java
+index 78cf0009d3337db920f2cd2e72b6d1bc496401da..5b071dde7dc75d3ce6bb47a9c55b11d1c6ab4363 100644
+--- a/net/minecraft/world/entity/player/Player.java
++++ b/net/minecraft/world/entity/player/Player.java
+@@ -1067,6 +1067,7 @@ public abstract class Player extends Avatar implements ContainerUser {
+     }
+ 
+     public void attack(final Entity entity) {
++        if (this instanceof net.minecraft.server.level.ServerPlayer serverPlayer && !serverPlayer.revivalHitRegistration.beforeAttack(serverPlayer)) return; // Revival - Hit registration
+         // Paper start - PlayerAttackEntityEvent
+         boolean willAttack = !this.cannotAttack(entity); // Vanilla logic
+         io.papermc.paper.event.player.PrePlayerAttackEntityEvent playerAttackEntityEvent = new io.papermc.paper.event.player.PrePlayerAttackEntityEvent(

@@ -32,3 +32,6 @@ leaf-server/src/minecraft/java/net/minecraft/world/entity/LivingEntity.java | th
 leaf-server/src/minecraft/java/net/minecraft/world/entity/LivingEntity.java | // Revival start - Legacy defence
 leaf-server/src/minecraft/java/net/minecraft/world/entity/LivingEntity.java | gg.hcfrevival.revival.combat.LegacyDefence.afterArmor(mod.floatValue(), LivingEntity.this.getArmorValue()) : LivingEntity.this.getDamageAfterArmorAbsorb(damagesource, mod.floatValue()))); // Revival - Legacy defence
 leaf-server/src/minecraft/java/net/minecraft/world/entity/LivingEntity.java | gg.hcfrevival.revival.combat.LegacyDefence.afterProtection(mod.floatValue(), legacyProtection) : LivingEntity.this.getDamageAfterMagicAbsorb(damagesource, mod.floatValue()))); // Revival - Legacy defence
+leaf-server/src/minecraft/java/net/minecraft/server/level/ServerPlayer.java | revivalHitRegistration = new gg.hcfrevival.revival.combat.LegacyHitRegistration(); // Revival - Hit registration
+leaf-server/src/minecraft/java/net/minecraft/server/level/ServerPlayer.java | this.revivalHitRegistration.tick(this); // Revival - Hit registration
+leaf-server/src/minecraft/java/net/minecraft/world/entity/player/Player.java | !serverPlayer.revivalHitRegistration.beforeAttack(serverPlayer)) return; // Revival - Hit registration
