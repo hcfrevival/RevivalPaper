@@ -7,7 +7,6 @@ import net.minecraft.network.protocol.game.ClientboundSetEntityMotionPacket;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.damagesource.DamageSource;
-import net.minecraft.world.damagesource.DamageTypes;
 import net.minecraft.world.effect.MobEffects;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
@@ -39,22 +38,44 @@ public final class LegacyKnockback {
 
     /** The knockback profile when this damage is a legacy melee hit by attacker, or null. */
     public static @Nullable KnockbackProfile profile(final @Nullable Entity attacker, final DamageSource source) {
-        if (!(attacker instanceof final Player player) || source.getDirectEntity() != player || !source.is(DamageTypes.PLAYER_ATTACK)) {
-            return null;
-        }
-        final LegacyCombatSettings settings = LegacyAttack.settings(player, player.getWeaponItem());
+        final LegacyCombatSettings settings = source.getDirectEntity() == attacker ? LegacyAttack.settings(source) : null;
         return settings != null ? settings.knockback() : null;
     }
 
-    /** The victim's motion after a legacy hit, or null when the knock stays 26.x. */
-    public static @Nullable Vec3 targetMovement(final LivingEntity victim, final DamageSource source, final @Nullable Entity attacker, final Vec3 current, final double xd, final double zd) {
+    /**
+     * The victim's motion after a legacy hit, or null when the knock stays 26.x. The base knock (from the damage)
+     * carries the extra knock too; the extra-knock call ({@code comesFromEffect}) only reaches here when the hit
+     * was an overflow inside the damage window, which 1.7.10 still pushed by the extra knock alone.
+     */
+    public static @Nullable Vec3 targetMovement(final LivingEntity victim, final DamageSource source, final @Nullable Entity attacker, final Vec3 current, final double xd, final double zd, final boolean comesFromEffect) {
         final KnockbackProfile profile = profile(attacker, source);
         if (profile == null) {
             return null;
         }
-        final Player player = (Player) attacker;
+        final ServerPlayer player = (ServerPlayer) attacker;
         final double level = knockbackLevel(player, player.getWeaponItem()) + sprintLevel(player, profile);
+        if (comesFromEffect) {
+            if (victim instanceof final ServerPlayer target) {
+                target.syncVelocity = true; // the overflow hit didn't mark the victim hurt, but 1.7.10 still sent this push
+            }
+            return KnockbackEngine.extraKnock(motion(victim, current, profile), player.getYRot(), level, profile);
+        }
+        player.revivalBaseKnockTarget = victim;
         return KnockbackEngine.knockback(motion(victim, current, profile), xd, zd, player.getYRot(), level, profile, victim.getAttributeValue(Attributes.KNOCKBACK_RESISTANCE), victim.getRandom());
+    }
+
+    /**
+     * Whether {@code Player.causeExtraKnockback} should knock the target itself: always for a 26.x hit, and for a
+     * legacy hit only when the damage didn't already knock the target with base and extra knock together.
+     */
+    public static boolean needsExtraKnock(final Player attacker, final Entity target, final DamageSource source) {
+        if (profile(attacker, source) == null) {
+            return true;
+        }
+        final ServerPlayer player = (ServerPlayer) attacker;
+        final boolean knocked = player.revivalBaseKnockTarget == target;
+        player.revivalBaseKnockTarget = null;
+        return !knocked;
     }
 
     /**

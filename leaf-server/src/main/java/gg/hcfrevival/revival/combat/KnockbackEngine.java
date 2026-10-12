@@ -53,6 +53,23 @@ public final class KnockbackEngine {
             z += Mth.cos(attackerYaw * Mth.DEG_TO_RAD) * extra;
         }
 
+        return clamp(x, y, z, profile);
+    }
+
+    /**
+     * The extra knock alone, for an overflow hit inside the damage window: 1.7.10's attackEntityFrom still returned
+     * true, so EntityPlayer added {@code (-sin(yaw) × level × 0.5, 0.1, cos(yaw) × level × 0.5)} with addVelocity,
+     * which ignores knockback resistance.
+     */
+    public static Vec3 extraKnock(final Vec3 current, final float attackerYaw, final double level, final KnockbackProfile profile) {
+        if (level <= 0.0) {
+            return current;
+        }
+        final double extra = level * profile.extraHorizontal();
+        return clamp(current.x - Mth.sin(attackerYaw * Mth.DEG_TO_RAD) * extra, current.y + profile.extraVertical(), current.z + Mth.cos(attackerYaw * Mth.DEG_TO_RAD) * extra, profile);
+    }
+
+    private static Vec3 clamp(final double x, final double y, final double z, final KnockbackProfile profile) {
         final double clamp = profile.velocityClamp();
         return new Vec3(Mth.clamp(x, -clamp, clamp), Mth.clamp(y, -clamp, clamp), Mth.clamp(z, -clamp, clamp));
     }

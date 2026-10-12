@@ -1,0 +1,96 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: j-rockwell <john@llewkcor.com>
+Date: Mon, 12 Oct 2026 09:49:28 -0700
+Subject: [PATCH] Damage immunity and defence
+
+A legacy hit uses 1.7.10 armor and Protection inside CraftBukkit's damage
+modifiers (Protection rolled once per hit), keeps lastHurt as the raw
+damage before blocking, and an overflow hit inside the damage window still
+gets the extra knock. The logic lives in gg.hcfrevival.revival.combat;
+this patch only calls into it.
+
+diff --git a/net/minecraft/server/level/ServerPlayer.java b/net/minecraft/server/level/ServerPlayer.java
+index b3d4a9e1e7b645d19f5dab7ce6c4451051c9ff81..b40ae2621443ca490063dfca7a6f9e47ab270b5b 100644
+--- a/net/minecraft/server/level/ServerPlayer.java
++++ b/net/minecraft/server/level/ServerPlayer.java
+@@ -215,6 +215,7 @@ public class ServerPlayer extends Player implements ca.spottedleaf.moonrise.patc
+     public long lastSave = MinecraftServer.currentTick; // Paper - Incremental chunk and player saving
+     public final gg.hcfrevival.revival.combat.MotionShadow revivalMotionShadow = new gg.hcfrevival.revival.combat.MotionShadow(); // Revival - Consistent knockback
+     public final gg.hcfrevival.revival.combat.SprintLedger revivalSprintLedger = new gg.hcfrevival.revival.combat.SprintLedger(); // Revival - Sprint
++    public net.minecraft.world.entity.@org.jspecify.annotations.Nullable Entity revivalBaseKnockTarget; // Revival - Damage immunity
+     private static final int NEUTRAL_MOB_DEATH_NOTIFICATION_RADII_XZ = 32;
+     private static final int NEUTRAL_MOB_DEATH_NOTIFICATION_RADII_Y = 10;
+     private static final int FLY_STAT_RECORDING_SPEED = 25;
+diff --git a/net/minecraft/world/entity/LivingEntity.java b/net/minecraft/world/entity/LivingEntity.java
+index 8471583e7a85c68dbf3bb23e1ed6166d3beb02c6..62c2b0a0dad0fa59d4e40fa9c88c4b3a4f60f2ba 100644
+--- a/net/minecraft/world/entity/LivingEntity.java
++++ b/net/minecraft/world/entity/LivingEntity.java
+@@ -1566,7 +1566,7 @@ public abstract class LivingEntity extends Entity implements Attackable, Waypoin
+             }
+             if (this instanceof ServerPlayer && event.getDamage() == 0 && originalDamage == 0) return false; // Paper - revert to vanilla damage - players are not affected by damage that is 0 - skip damage if the vanilla damage is 0 and was not modified by plugins in the event.
+             // CraftBukkit end
+-            this.lastHurt = damage;
++            this.lastHurt = gg.hcfrevival.revival.combat.LegacyDefence.lastHurt(source, damage, event); // Revival - Damage immunity
+             tookFullDamage = false;
+         } else {
+             // Paper start - only call damage event when actuallyHurt will be called - move call logic down
+@@ -1578,7 +1578,7 @@ public abstract class LivingEntity extends Entity implements Attackable, Waypoin
+                 return false;
+             }
+             if (this instanceof ServerPlayer && event.getDamage() == 0 && originalDamage == 0) return false; // Paper - revert to vanilla damage - players are not affected by damage that is 0 - skip damage if the vanilla damage is 0 and was not modified by plugins in the event.
+-            this.lastHurt = damage;
++            this.lastHurt = gg.hcfrevival.revival.combat.LegacyDefence.lastHurt(source, damage, event); // Revival - Damage immunity
+             this.damageCooldownTime = this.invulnerableDuration; // CraftBukkit - restore use of maxNoDamageTicks
+             // this.actuallyHurt(level, source, damage);
+             // CraftBukkit end
+@@ -2175,7 +2175,7 @@ public abstract class LivingEntity extends Entity implements Attackable, Waypoin
+                 deltaMovement.z / 2.0 - deltaVector.z
+             );
+             // Revival start - Knockback engine
+-            final Vec3 legacyMovement = gg.hcfrevival.revival.combat.LegacyKnockback.targetMovement(this, source, attacker, deltaMovement, xd, zd);
++            final Vec3 legacyMovement = gg.hcfrevival.revival.combat.LegacyKnockback.targetMovement(this, source, attacker, deltaMovement, xd, zd, comesFromEffect);
+             if (legacyMovement != null) {
+                 targetMovement = legacyMovement;
+             }
+@@ -2521,6 +2521,10 @@ public abstract class LivingEntity extends Entity implements Attackable, Waypoin
+     // CraftBukkit start
+     private EntityDamageEvent handleEntityDamage(final DamageSource damagesource, float damage, final float invulnerabilityRelatedLastDamage) { // Paper - fix invulnerability reduction in EntityDamageEvent
+         float originalDamage = damage;
++        // Revival start - Legacy defence
++        final gg.hcfrevival.revival.config.LegacyCombatSettings legacyDefence = gg.hcfrevival.revival.combat.LegacyAttack.settings(damagesource);
++        final int legacyProtection = gg.hcfrevival.revival.combat.LegacyDefence.rollProtection(this, legacyDefence); // once per hit, so recalculating the modifiers never rerolls
++        // Revival end - Legacy defence
+         // Paper start - fix invulnerability reduction in EntityDamageEvent
+         final com.google.common.base.Function<Double, Double> invulnerabilityReductionEquation = mod -> {
+             if (invulnerabilityRelatedLastDamage == 0) return 0.0; // no last damage, no reduction
+@@ -2564,7 +2568,7 @@ public abstract class LivingEntity extends Entity implements Attackable, Waypoin
+         float blockingModifier = blocking.apply((double) damage).floatValue();
+         damage += blockingModifier;
+ 
+-        com.google.common.base.Function<Double, Double> armor = mod -> -(mod - LivingEntity.this.getDamageAfterArmorAbsorb(damagesource, mod.floatValue()));
++        com.google.common.base.Function<Double, Double> armor = mod -> -(mod - (legacyDefence != null && legacyDefence.legacyArmor() ? gg.hcfrevival.revival.combat.LegacyDefence.afterArmor(mod.floatValue(), LivingEntity.this.getArmorValue()) : LivingEntity.this.getDamageAfterArmorAbsorb(damagesource, mod.floatValue()))); // Revival - Legacy defence
+         float armorModifier = armor.apply((double) damage).floatValue();
+         damage += armorModifier;
+ 
+@@ -2581,7 +2585,7 @@ public abstract class LivingEntity extends Entity implements Attackable, Waypoin
+         float resistanceModifier = resistance.apply((double) damage).floatValue();
+         damage += resistanceModifier;
+ 
+-        com.google.common.base.Function<Double, Double> magic = mod -> -(mod - LivingEntity.this.getDamageAfterMagicAbsorb(damagesource, mod.floatValue()));
++        com.google.common.base.Function<Double, Double> magic = mod -> -(mod - (legacyProtection != gg.hcfrevival.revival.combat.LegacyDefence.MODERN ? gg.hcfrevival.revival.combat.LegacyDefence.afterProtection(mod.floatValue(), legacyProtection) : LivingEntity.this.getDamageAfterMagicAbsorb(damagesource, mod.floatValue()))); // Revival - Legacy defence
+         float magicModifier = magic.apply((double) damage).floatValue();
+         damage += magicModifier;
+ 
+diff --git a/net/minecraft/world/entity/player/Player.java b/net/minecraft/world/entity/player/Player.java
+index f68bc15e77e7b475986989f18ea090bfaaa1e730..78cf0009d3337db920f2cd2e72b6d1bc496401da 100644
+--- a/net/minecraft/world/entity/player/Player.java
++++ b/net/minecraft/world/entity/player/Player.java
+@@ -1267,7 +1267,7 @@ public abstract class Player extends Avatar implements ContainerUser {
+     ) {
+         if (knockbackAmount > 0.0F) {
+             if (entity instanceof LivingEntity livingTarget) {
+-                if (gg.hcfrevival.revival.combat.LegacyKnockback.profile(this, damageSource) == null) // Revival - Knockback engine
++                if (gg.hcfrevival.revival.combat.LegacyKnockback.needsExtraKnock(this, entity, damageSource)) // Revival - Damage immunity: an overflow legacy hit still gets the extra knock
+                 livingTarget.knockback(
+                     knockbackAmount, Mth.sin(this.getYRot() * Mth.DEG_TO_RAD), -Mth.cos(this.getYRot() * Mth.DEG_TO_RAD), damageSource, damage, comesFromEffect, this, io.papermc.paper.event.entity.EntityKnockbackEvent.Cause.ENTITY_ATTACK // Paper - knockback events
+                 );

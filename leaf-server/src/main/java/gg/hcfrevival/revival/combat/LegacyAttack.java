@@ -10,6 +10,7 @@ import net.minecraft.resources.Identifier;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.tags.TagKey;
 import net.minecraft.world.damagesource.DamageSource;
+import net.minecraft.world.damagesource.DamageTypes;
 import net.minecraft.world.effect.MobEffectInstance;
 import net.minecraft.world.effect.MobEffects;
 import net.minecraft.world.entity.Entity;
@@ -41,6 +42,13 @@ public final class LegacyAttack {
         final LegacyCombatSettings settings = Revival.settings().legacyCombat(attacker.level().getWorld().getName());
         final Identifier id = BuiltInRegistries.ITEM.getKey(weapon.getItem());
         return settings.weaponDamage().containsKey(id) && isWeapon(weapon, id, settings) ? settings : null;
+    }
+
+    /** The settings for this damage when it is a legacy melee hit, or null when it stays 26.x. */
+    public static @Nullable LegacyCombatSettings settings(final DamageSource source) {
+        return source.getEntity() instanceof final Player player && source.getDirectEntity() == player && source.is(DamageTypes.PLAYER_ATTACK)
+            ? settings(player, player.getWeaponItem())
+            : null;
     }
 
     /** The weapon's 1.7.10 damage with Strength and Weakness applied. Other attack-damage modifiers are ignored, as in 1.7.10. */
