@@ -157,6 +157,6 @@ class KnockbackEngineTest {
 
     @Test
     void everyPresetIsListed() {
-        assertEquals(List.of("legacy-1.7", "legacy-1.8", "kohi", "minehq", "badlion", "mmc", "lunar", "velt", "hcfr"), List.copyOf(KnockbackProfile.PRESETS.keySet()));
+        assertEquals(List.of("legacy-1.7", "legacy-1.8", "kohi", "minehq", "badlion", "mmc", "lunar", "velt", "hcfr", "hcfr-projectile"), List.copyOf(KnockbackProfile.PRESETS.keySet()));
     }
 }

@@ -85,6 +85,54 @@ class LegacyCombatSettingsTest {
     }
 
     @Test
+    void projectileDefaultsAndOverrides() throws InvalidConfigurationException {
+        final ConfigReader reader = reader("""
+            world-settings:
+              arena:
+                legacy-combat:
+                  projectiles:
+                    knockback-profile: hcfr-projectile
+                    knockback-origin: projectile
+                    victims: players
+                    arrow:
+                      launchers: [minecraft:bow, minecraft:crossbow]
+                    fishing-rod:
+                      reel-pull-players: vanilla
+                      reel-durability: 5
+              hub:
+                legacy-combat:
+                  projectiles:
+                    shooters: everyone
+            """);
+        final RevivalSettings settings = RevivalConfig.read(reader);
+
+        final LegacyProjectileSettings defaults = settings.legacyCombat().projectiles();
+        assertTrue(defaults.enabled());
+        assertEquals("inherit", defaults.knockbackProfile());
+        assertTrue(defaults.knockbackFromShooter());
+        assertFalse(defaults.playerShootersOnly());
+        assertTrue(defaults.zeroDamageHits());
+        assertEquals(Set.of(Identifier.withDefaultNamespace("bow")), defaults.arrowLaunchers());
+        assertEquals(0.6, defaults.punchPerLevel());
+        assertTrue(defaults.rodHookOnlyIfHit());
+        assertTrue(defaults.rodReelPullsPlayers());
+        assertEquals(3, defaults.rodReelDurability());
+        assertEquals(1.5, defaults.rodCastSpeed());
+        assertEquals(0.04, defaults.rodGravity());
+
+        final LegacyProjectileSettings arena = settings.legacyCombat("arena").projectiles();
+        assertEquals("hcfr-projectile", arena.knockbackProfile());
+        assertFalse(arena.knockbackFromShooter());
+        assertTrue(arena.playerVictimsOnly());
+        assertEquals(Set.of(Identifier.withDefaultNamespace("bow"), Identifier.withDefaultNamespace("crossbow")), arena.arrowLaunchers());
+        assertFalse(arena.rodReelPullsPlayers());
+        assertEquals(5, arena.rodReelDurability());
+
+        assertEquals(1, reader.problems().size()); // shooters: everyone
+        assertFalse(settings.legacyCombat("hub").projectiles().playerShootersOnly());
+    }
+
+    @Test
     void emptyWeaponListTurnsLegacyCombatOff() throws InvalidConfigurationException {
         final RevivalSettings settings = RevivalConfig.read(reader("""
             world-settings:

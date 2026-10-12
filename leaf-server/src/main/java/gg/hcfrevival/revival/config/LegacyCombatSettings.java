@@ -34,6 +34,7 @@ import org.jspecify.annotations.Nullable;
  * @param randomizeProtection 1.7.10 rolled each hit's Protection between half and all of it; off uses all of it
  * @param hideCooldownIndicator while a legacy weapon is held, max out attack speed so the client shows no cooldown bar
  * @param maxAttacksPerTick legacy attacks a player may land per tick; 0 is unlimited, as in 1.7.10
+ * @param projectiles which projectiles hit and knock like 1.7.10
  */
 public record LegacyCombatSettings(
     Set<Identifier> weaponItems,
@@ -50,7 +51,8 @@ public record LegacyCombatSettings(
     boolean legacyEnchantProtection,
     boolean randomizeProtection,
     boolean hideCooldownIndicator,
-    int maxAttacksPerTick
+    int maxAttacksPerTick,
+    LegacyProjectileSettings projectiles
 ) {
 
     static final String PATH = "legacy-combat.";
@@ -76,7 +78,7 @@ public record LegacyCombatSettings(
     LegacyCombatSettings withKnockback(final String name, final KnockbackProfile profile) {
         return new LegacyCombatSettings(this.weaponItems, this.weaponTags, this.weaponDamage, this.strengthPerLevel, this.weaknessPerLevel,
             this.sharpnessPerLevel, this.criticalMultiplier, this.sweepAttack, name, profile, this.legacyArmor, this.legacyEnchantProtection,
-            this.randomizeProtection, this.hideCooldownIndicator, this.maxAttacksPerTick);
+            this.randomizeProtection, this.hideCooldownIndicator, this.maxAttacksPerTick, this.projectiles);
     }
 
     /** Whether any weapon is a legacy weapon in this world; {@code weapons: []} turns legacy combat off. */
@@ -132,7 +134,8 @@ public record LegacyCombatSettings(
             reader.getWorldBoolean(world, PATH + "legacy-enchant-protection", true),
             reader.getWorldBoolean(world, PATH + "randomize-protection", true),
             reader.getWorldBoolean(world, PATH + "hide-cooldown-indicator", true),
-            reader.getWorldInt(world, PATH + "max-attacks-per-tick", 0)
+            reader.getWorldInt(world, PATH + "max-attacks-per-tick", 0),
+            LegacyProjectileSettings.read(reader, world)
         );
     }
 

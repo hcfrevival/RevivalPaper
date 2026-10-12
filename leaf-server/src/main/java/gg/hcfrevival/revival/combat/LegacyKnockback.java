@@ -115,7 +115,7 @@ public final class LegacyKnockback {
     public static @Nullable Vec3 targetMovement(final LivingEntity victim, final DamageSource source, final @Nullable Entity attacker, final Vec3 current, final double xd, final double zd, final boolean comesFromEffect) {
         final KnockbackProfile profile = profile(attacker, source);
         if (profile == null) {
-            return null;
+            return comesFromEffect ? null : LegacyProjectiles.targetMovement(victim, source, current, xd, zd);
         }
         final ServerPlayer player = (ServerPlayer) attacker;
         final double level = knockbackLevel(player, player.getWeaponItem()) + sprintLevel(player, profile);
@@ -171,7 +171,7 @@ public final class LegacyKnockback {
     }
 
     // The motion a victim is knocked from: a player's 1.7 server motion, or the entity's own for mobs and model none
-    private static Vec3 motion(final LivingEntity victim, final Vec3 current, final KnockbackProfile profile) {
+    static Vec3 motion(final LivingEntity victim, final Vec3 current, final KnockbackProfile profile) {
         if (!(victim instanceof final ServerPlayer player) || profile.motionModel() == KnockbackProfile.MotionModel.NONE) {
             return current;
         }

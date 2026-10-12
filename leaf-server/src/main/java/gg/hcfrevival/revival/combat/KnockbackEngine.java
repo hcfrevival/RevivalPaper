@@ -69,6 +69,19 @@ public final class KnockbackEngine {
         return clamp(current.x - Mth.sin(attackerYaw * Mth.DEG_TO_RAD) * extra, current.y + profile.extraVertical(), current.z + Mth.cos(attackerYaw * Mth.DEG_TO_RAD) * extra, profile);
     }
 
+    /**
+     * Punch on top of an arrow's knock: 1.7.10 EntityArrow added {@code (motX / speed × level × 0.6, 0.1,
+     * motZ / speed × level × 0.6)} along the arrow's flight with addVelocity, ignoring knockback resistance.
+     */
+    public static Vec3 punch(final Vec3 knocked, final double flightX, final double flightZ, final int level, final double perLevel, final double vertical, final KnockbackProfile profile) {
+        final double speed = Math.sqrt(flightX * flightX + flightZ * flightZ);
+        if (level <= 0 || speed <= 0.0) {
+            return knocked;
+        }
+        final double push = level * perLevel / speed;
+        return clamp(knocked.x + flightX * push, knocked.y + vertical, knocked.z + flightZ * push, profile);
+    }
+
     private static Vec3 clamp(final double x, final double y, final double z, final KnockbackProfile profile) {
         final double clamp = profile.velocityClamp();
         return new Vec3(Mth.clamp(x, -clamp, clamp), Mth.clamp(y, -clamp, clamp), Mth.clamp(z, -clamp, clamp));

@@ -90,6 +90,8 @@ public record KnockbackProfile(
         // Today's prod numbers from core's environments/factions/plugins/Factions/mechanics.yml (combat.knockback):
         // sprint 0.8 while held, plus sprint-reset 0.5 after a sprint start on the ground (ground-check)
         presets.put("hcfr", new KnockbackProfile(2.0, 2.0, 0.32, 0.38, 0.36, 0.5, 0.0, 0.6, 3.9, ResistanceMode.NONE, MotionModel.SPORTBUKKIT, 0.0, 25.0, 1.3, 0.8, true));
+        // Prod's arrow knock (projectile-horizontal 0.2, projectile-vertical 0.25), for legacy-combat.projectiles.knockback-profile
+        presets.put("hcfr-projectile", preset(2.0, 2.0, 0.2, 0.25, 0.36, 0.5, 0.0));
         PRESETS = java.util.Collections.unmodifiableMap(presets);
     }
 
