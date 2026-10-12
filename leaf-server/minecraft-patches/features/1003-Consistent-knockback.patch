@@ -1,0 +1,46 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: j-rockwell <john@llewkcor.com>
+Date: Mon, 12 Oct 2026 09:27:20 -0700
+Subject: [PATCH] Consistent knockback
+
+A player hit by a legacy weapon is knocked from their 1.7.10 server
+motion (MotionShadow), gets one velocity packet built from the knock,
+and a plugin setVelocity resets that motion. The logic lives in
+gg.hcfrevival.revival.combat; this patch only calls into it.
+
+diff --git a/net/minecraft/server/level/ServerPlayer.java b/net/minecraft/server/level/ServerPlayer.java
+index edd6c7e52b44e6f0546c7bef1218937a75d91f2e..788cafa0e2115b007c810382d5a490489fe5bb0e 100644
+--- a/net/minecraft/server/level/ServerPlayer.java
++++ b/net/minecraft/server/level/ServerPlayer.java
+@@ -213,6 +213,7 @@ import org.slf4j.Logger;
+ public class ServerPlayer extends Player implements ca.spottedleaf.moonrise.patches.chunk_system.player.ChunkSystemServerPlayer { // Paper - rewrite chunk system
+     private static final Logger LOGGER = LogUtils.getLogger();
+     public long lastSave = MinecraftServer.currentTick; // Paper - Incremental chunk and player saving
++    public final gg.hcfrevival.revival.combat.MotionShadow revivalMotionShadow = new gg.hcfrevival.revival.combat.MotionShadow(); // Revival - Consistent knockback
+     private static final int NEUTRAL_MOB_DEATH_NOTIFICATION_RADII_XZ = 32;
+     private static final int NEUTRAL_MOB_DEATH_NOTIFICATION_RADII_Y = 10;
+     private static final int FLY_STAT_RECORDING_SPEED = 25;
+@@ -739,6 +740,7 @@ public class ServerPlayer extends Player implements ca.spottedleaf.moonrise.patc
+     @Override
+     public void tick() {
+         hasTickedAtLeastOnceInNewWorld = true; // Leaf - SparklyPaper - parallel world ticking (see: PARALLEL_NOTES.md - Opening an inventory after a world switch)
++        this.revivalMotionShadow.tick(this); // Revival - Consistent knockback
+         // CraftBukkit start
+         if (this.joining) {
+             this.joining = false;
+diff --git a/net/minecraft/world/entity/player/Player.java b/net/minecraft/world/entity/player/Player.java
+index 0ebd8508556bf58a21c61bc9eb2e81f26dff1f1c..8565a3d0bebc399639bbb53acb0c8fefa5858c98 100644
+--- a/net/minecraft/world/entity/player/Player.java
++++ b/net/minecraft/world/entity/player/Player.java
+@@ -1284,6 +1284,11 @@ public abstract class Player extends Avatar implements ContainerUser {
+             // Paper end - Configurable sprint interruption on attack
+         }
+ 
++        // Revival start - Consistent knockback
++        if (gg.hcfrevival.revival.combat.LegacyKnockback.sendVelocity(this, entity, oldMovement, damageSource)) {
++            return;
++        }
++        // Revival end - Consistent knockback
+         if (entity instanceof ServerPlayer serverPlayer && entity.syncVelocity) {
+             // CraftBukkit start - Add Velocity Event
+             boolean cancelled = false;

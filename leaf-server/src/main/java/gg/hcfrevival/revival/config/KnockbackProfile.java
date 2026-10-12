@@ -19,6 +19,10 @@ import org.bukkit.configuration.ConfigurationSection;
  * @param attackerSlowdown the attacker's horizontal motion is multiplied by this when the level is above zero
  * @param velocityClamp each axis of the result is clamped to ±this, the most a 1.7 velocity packet could carry
  * @param resistanceMode how the knockback-resistance attribute applies
+ * @param motionModel which motion a player victim is knocked from
+ * @param groundPredictionDistance treat an airborne player victim within this many blocks of the ground as landed when
+ *     their ping says they already are on their screen; 0 turns it off. Ported from core's ClientGround
+ * @param groundPredictionPingOffset milliseconds taken off the player's ping before that comparison
  */
 public record KnockbackProfile(
     double friction,
@@ -30,7 +34,10 @@ public record KnockbackProfile(
     double extraVertical,
     double attackerSlowdown,
     double velocityClamp,
-    ResistanceMode resistanceMode
+    ResistanceMode resistanceMode,
+    MotionModel motionModel,
+    double groundPredictionDistance,
+    double groundPredictionPingOffset
 ) {
 
     public enum ResistanceMode {
@@ -42,9 +49,18 @@ public record KnockbackProfile(
         SCALE
     }
 
+    public enum MotionModel {
+        /** SportBukkit 1.7.10: knock from the player's 1.7 server motion, which the knock never changes, so every hit lands the same. */
+        SPORTBUKKIT,
+        /** 1.7.10: knock from the player's 1.7 server motion, which keeps the knock, so combo hits compound. */
+        VANILLA_1_7,
+        /** Knock from 26.x's live server motion. */
+        NONE
+    }
+
     public static final String DEFAULT = "legacy-1.7";
 
-    public static final KnockbackProfile LEGACY_1_7 = new KnockbackProfile(2.0, 2.0, 0.4, 0.4, 0.4000000059604645, 0.5, 0.1, 0.6, 3.9, ResistanceMode.NONE);
+    public static final KnockbackProfile LEGACY_1_7 = new KnockbackProfile(2.0, 2.0, 0.4, 0.4, 0.4000000059604645, 0.5, 0.1, 0.6, 3.9, ResistanceMode.NONE, MotionModel.SPORTBUKKIT, 0.0, 25.0);
 
     /**
      * Built-in presets. Except legacy-1.7, legacy-1.8 and hcfr, the numbers are archived server configs from
@@ -57,7 +73,7 @@ public record KnockbackProfile(
     static {
         final Map<String, KnockbackProfile> presets = new LinkedHashMap<>();
         presets.put(DEFAULT, LEGACY_1_7);
-        presets.put("legacy-1.8", new KnockbackProfile(2.0, 2.0, 0.4, 0.4, 0.4, 0.5, 0.1, 0.6, 3.9, ResistanceMode.ROLL));
+        presets.put("legacy-1.8", new KnockbackProfile(2.0, 2.0, 0.4, 0.4, 0.4, 0.5, 0.1, 0.6, 3.9, ResistanceMode.ROLL, MotionModel.SPORTBUKKIT, 0.0, 25.0));
         presets.put("kohi", preset(2.0, 2.0, 0.35, 0.35, 0.4, 0.425, 0.085));
         presets.put("minehq", preset(2.0, 2.0, 0.36, 0.36, 0.4, 0.45, 0.09));
         presets.put("badlion", preset(2.0, 2.0, 0.34, 0.34, 0.4, 0.48, 0.085));
@@ -70,7 +86,7 @@ public record KnockbackProfile(
     }
 
     private static KnockbackProfile preset(final double friction, final double frictionVertical, final double horizontal, final double vertical, final double verticalCap, final double extraHorizontal, final double extraVertical) {
-        return new KnockbackProfile(friction, frictionVertical, horizontal, vertical, verticalCap, extraHorizontal, extraVertical, 0.6, 3.9, ResistanceMode.NONE);
+        return new KnockbackProfile(friction, frictionVertical, horizontal, vertical, verticalCap, extraHorizontal, extraVertical, 0.6, 3.9, ResistanceMode.NONE, MotionModel.SPORTBUKKIT, 0.0, 25.0);
     }
 
     /** Reads every profile under {@code knockback-profiles}: each starts from the preset of the same name, or legacy-1.7, and overrides the keys it sets. */
@@ -102,17 +118,30 @@ public record KnockbackProfile(
             reader.readDouble(path + "extra-vertical", base.extraVertical()),
             reader.readDouble(path + "attacker-slowdown", base.attackerSlowdown()),
             reader.readDouble(path + "velocity-clamp", base.velocityClamp()),
-            resistanceMode(reader, path + "resistance-mode", base.resistanceMode())
+            option(reader, path + "resistance-mode", ResistanceMode.class, base.resistanceMode()),
+            option(reader, path + "motion-model", MotionModel.class, base.motionModel()),
+            reader.readDouble(path + "ground-prediction-distance", base.groundPredictionDistance()),
+            reader.readDouble(path + "ground-prediction-ping-offset", base.groundPredictionPingOffset())
         );
     }
 
-    private static ResistanceMode resistanceMode(final ConfigReader reader, final String path, final ResistanceMode fallback) {
-        final String value = reader.readString(path, fallback.name().toLowerCase(Locale.ROOT));
-        try {
-            return ResistanceMode.valueOf(value.toUpperCase(Locale.ROOT));
-        } catch (final IllegalArgumentException e) {
-            reader.problem(path, value, "none, roll or scale", fallback.name().toLowerCase(Locale.ROOT));
-            return fallback;
+    // Options are written lower-case with dashes, e.g. vanilla-1.7 for VANILLA_1_7
+    private static <E extends Enum<E>> E option(final ConfigReader reader, final String path, final Class<E> type, final E fallback) {
+        final String value = reader.readString(path, name(fallback));
+        for (final E constant : type.getEnumConstants()) {
+            if (name(constant).equals(value.toLowerCase(Locale.ROOT))) {
+                return constant;
+            }
         }
+        final StringBuilder expected = new StringBuilder();
+        for (final E constant : type.getEnumConstants()) {
+            expected.append(expected.isEmpty() ? "" : ", ").append(name(constant));
+        }
+        reader.problem(path, value, "one of " + expected, name(fallback));
+        return fallback;
+    }
+
+    static String name(final Enum<?> constant) {
+        return constant.name().toLowerCase(Locale.ROOT).replace('_', '-').replace("1-7", "1.7");
     }
 }

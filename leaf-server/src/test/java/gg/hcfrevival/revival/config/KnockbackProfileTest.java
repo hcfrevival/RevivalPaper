@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import gg.hcfrevival.revival.RevivalTest;
+import gg.hcfrevival.revival.config.KnockbackProfile.MotionModel;
 import gg.hcfrevival.revival.config.KnockbackProfile.ResistanceMode;
 import org.bukkit.configuration.InvalidConfigurationException;
 import org.bukkit.configuration.file.YamlConfiguration;
@@ -55,6 +56,8 @@ class KnockbackProfileTest {
               floaty:
                 friction: 3.0
                 resistance-mode: scale
+                motion-model: vanilla-1.7
+                ground-prediction-distance: 1.3
             world-settings:
               arena:
                 legacy-combat:
@@ -71,6 +74,10 @@ class KnockbackProfileTest {
         assertEquals(3.0, floaty.friction());
         assertEquals(3.0, floaty.frictionVertical()); // follows friction unless set
         assertEquals(ResistanceMode.SCALE, floaty.resistanceMode());
+        assertEquals(MotionModel.VANILLA_1_7, floaty.motionModel());
+        assertEquals(1.3, floaty.groundPredictionDistance());
+        assertEquals(MotionModel.SPORTBUKKIT, kohi.motionModel());
+        assertEquals(0.0, kohi.groundPredictionDistance());
         assertSame(KnockbackProfile.LEGACY_1_7, settings.legacyCombat().knockback());
     }
 
@@ -81,6 +88,7 @@ class KnockbackProfileTest {
               broken:
                 horizontal: far
                 resistance-mode: sometimes
+                motion-model: rubber-band
             world-settings:
               default:
                 legacy-combat:
@@ -88,7 +96,7 @@ class KnockbackProfileTest {
             """);
         final RevivalSettings settings = RevivalConfig.read(reader);
 
-        assertEquals(3, reader.problems().size());
+        assertEquals(4, reader.problems().size());
         assertEquals("legacy-1.7", settings.legacyCombat().knockbackProfileName());
         assertSame(KnockbackProfile.LEGACY_1_7, settings.legacyCombat().knockback());
     }

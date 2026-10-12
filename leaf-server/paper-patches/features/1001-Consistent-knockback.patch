@@ -1,0 +1,22 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: j-rockwell <john@llewkcor.com>
+Date: Mon, 12 Oct 2026 09:27:20 -0700
+Subject: [PATCH] Consistent knockback
+
+A player hit by a legacy weapon is knocked from their 1.7.10 server
+motion (MotionShadow), gets one velocity packet built from the knock,
+and a plugin setVelocity resets that motion. The logic lives in
+gg.hcfrevival.revival.combat; this patch only calls into it.
+
+diff --git a/src/main/java/org/bukkit/craftbukkit/entity/CraftEntity.java b/src/main/java/org/bukkit/craftbukkit/entity/CraftEntity.java
+index a0ad55bfd09c4a6c7b2ab29cbc3265dea0a5fe29..60608c3ac99af2ab6612468d2ec8e9afe6fb920f 100644
+--- a/src/main/java/org/bukkit/craftbukkit/entity/CraftEntity.java
++++ b/src/main/java/org/bukkit/craftbukkit/entity/CraftEntity.java
+@@ -232,6 +232,7 @@ public abstract class CraftEntity implements org.bukkit.entity.Entity {
+         // Paper end
+         this.entity.setDeltaMovement(CraftVector.toVec3(velocity));
+         this.entity.syncVelocity = true;
++        if (this.entity instanceof net.minecraft.server.level.ServerPlayer player) player.revivalMotionShadow.set(this.entity.getDeltaMovement()); // Revival - Consistent knockback
+     }
+ 
+     /**
