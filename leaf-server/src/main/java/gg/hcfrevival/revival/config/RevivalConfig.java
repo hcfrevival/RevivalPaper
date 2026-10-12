@@ -68,7 +68,11 @@ public final class RevivalConfig {
             final Loaded loaded = load(file);
             settings = loaded.settings();
             return new Reload(true, loaded.problems());
-        } catch (final IOException | InvalidConfigurationException e) {
+        } catch (final InvalidConfigurationException e) {
+            // The YAML error names the line and column; a stack trace adds nothing for the person fixing the file
+            LOGGER.error("Could not reload {}; the previous settings are still live. {}", file, e.getMessage());
+            return new Reload(false, List.of());
+        } catch (final IOException e) {
             LOGGER.error("Could not reload {}; the previous settings are still live", file, e);
             return new Reload(false, List.of());
         }
