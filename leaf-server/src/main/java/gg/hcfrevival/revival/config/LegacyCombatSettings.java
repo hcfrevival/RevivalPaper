@@ -29,6 +29,9 @@ import org.jspecify.annotations.Nullable;
  * @param sweepAttack whether a legacy hit may sweep
  * @param knockbackProfileName the {@code knockback-profile} this world uses
  * @param knockback that profile
+ * @param legacyArmor a legacy hit is reduced 4% per armor point, ignoring toughness, as in 1.7.10
+ * @param legacyEnchantProtection a legacy hit is reduced by 1.7.10 Protection instead of 26.x's
+ * @param randomizeProtection 1.7.10 rolled each hit's Protection between half and all of it; off uses all of it
  */
 public record LegacyCombatSettings(
     Set<Identifier> weaponItems,
@@ -40,7 +43,10 @@ public record LegacyCombatSettings(
     double criticalMultiplier,
     boolean sweepAttack,
     String knockbackProfileName,
-    KnockbackProfile knockback
+    KnockbackProfile knockback,
+    boolean legacyArmor,
+    boolean legacyEnchantProtection,
+    boolean randomizeProtection
 ) {
 
     static final String PATH = "legacy-combat.";
@@ -105,7 +111,10 @@ public record LegacyCombatSettings(
             reader.getWorldDouble(world, PATH + "critical-multiplier", 1.5),
             reader.getWorldBoolean(world, PATH + "sweep-attack", false),
             profileName,
-            profile
+            profile,
+            reader.getWorldBoolean(world, PATH + "legacy-armor", true),
+            reader.getWorldBoolean(world, PATH + "legacy-enchant-protection", true),
+            reader.getWorldBoolean(world, PATH + "randomize-protection", true)
         );
     }
 

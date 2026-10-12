@@ -1,6 +1,7 @@
 package gg.hcfrevival.revival.config;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -63,6 +64,24 @@ class LegacyCombatSettingsTest {
         assertEquals(1.0, arena.sharpnessPerLevel());
         assertEquals(1.0, settings.legacyCombat().sharpnessPerLevel());
         assertSame(settings.legacyCombat(), settings.legacyCombat("world_nether"));
+    }
+
+    @Test
+    void defenceDefaultsToOneSevenTenAndCanBeTurnedOffPerWorld() throws InvalidConfigurationException {
+        final RevivalSettings settings = RevivalConfig.read(reader("""
+            world-settings:
+              arena:
+                legacy-combat:
+                  legacy-armor: false
+                  randomize-protection: false
+            """));
+
+        assertTrue(settings.legacyCombat().legacyArmor());
+        assertTrue(settings.legacyCombat().legacyEnchantProtection());
+        assertTrue(settings.legacyCombat().randomizeProtection());
+        assertFalse(settings.legacyCombat("arena").legacyArmor());
+        assertTrue(settings.legacyCombat("arena").legacyEnchantProtection());
+        assertFalse(settings.legacyCombat("arena").randomizeProtection());
     }
 
     @Test

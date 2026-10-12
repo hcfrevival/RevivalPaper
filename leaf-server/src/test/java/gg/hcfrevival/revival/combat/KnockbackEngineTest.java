@@ -91,6 +91,16 @@ class KnockbackEngineTest {
     }
 
     @Test
+    void overflowHitGetsTheExtraKnockAlone() {
+        final Vec3 current = new Vec3(0.1, 0.2, 0.0);
+        final Vec3 sprint = KnockbackEngine.extraKnock(current, 0.0F, 1.0, KnockbackProfile.LEGACY_1_7);
+        assertEquals(0.1, sprint.x, EPSILON);
+        assertEquals(0.3, sprint.y, 1.0E-9);
+        assertEquals(0.5, sprint.z, EPSILON);
+        assertSame(current, KnockbackEngine.extraKnock(current, 0.0F, 0.0, KnockbackProfile.LEGACY_1_7));
+    }
+
+    @Test
     void coincidingPositionsStillKnock() {
         final Vec3 knocked = KnockbackEngine.knockback(STANDING, 0.0, 0.0, 0.0F, 0.0, KnockbackProfile.LEGACY_1_7, 0.0, RandomSource.create(0L));
         assertEquals(0.4, Math.sqrt(knocked.x * knocked.x + knocked.z * knocked.z), EPSILON);
