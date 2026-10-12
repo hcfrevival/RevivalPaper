@@ -329,9 +329,10 @@ public final class RevivalLiveTests extends JavaPlugin implements Listener {
         this.reset(Items.DIAMOND_SWORD, 20);
         final ItemStack sword = new ItemStack(Items.DIAMOND_SWORD);
         final DataComponentPatch clientPatch = this.encodedPatch(sword);
-        this.check(clientPatch.get(DataComponentMap.EMPTY, DataComponents.BLOCKS_ATTACKS) != null, "clients get a blocking component on swords");
-        this.check(!sword.has(DataComponents.BLOCKS_ATTACKS), "the server's sword has no blocking component");
-        this.check(!this.roundTrip(sword).has(DataComponents.BLOCKS_ATTACKS), "a sword a client sends back loses the decoration");
+        final var edible = clientPatch.get(DataComponentMap.EMPTY, DataComponents.CONSUMABLE);
+        this.check(edible != null && edible.animation() == net.minecraft.world.item.ItemUseAnimation.BLOCK, "clients get an edible sword with the block animation");
+        this.check(!sword.has(DataComponents.CONSUMABLE) && !sword.has(DataComponents.BLOCKS_ATTACKS), "the server's sword is neither edible nor a shield");
+        this.check(!this.roundTrip(sword).has(DataComponents.CONSUMABLE), "a sword a client sends back loses the decoration");
 
         this.victim.setItemInHand(InteractionHand.MAIN_HAND, sword);
         this.victim.connection.handleUseItem(new ServerboundUseItemPacket(InteractionHand.MAIN_HAND, 0, 180.0F, 0.0F));
