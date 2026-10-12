@@ -3,7 +3,9 @@ package gg.hcfrevival.revival.config;
 import gg.hcfrevival.revival.command.RevivalCommand;
 import java.io.File;
 import java.io.IOException;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import net.minecraft.server.MinecraftServer;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -38,14 +40,15 @@ public final class RevivalConfig {
     private static final Logger LOGGER = LogManager.getLogger("RevivalPaper");
 
     private static @Nullable File configFile;
-    private static volatile RevivalSettings settings = RevivalSettings.DEFAULTS;
+    private static volatile @Nullable RevivalSettings settings;
 
     private RevivalConfig() {
     }
 
     /** The live settings. Cheap to call on hot paths; hold the result for the length of one action. */
     public static RevivalSettings settings() {
-        return settings;
+        final RevivalSettings live = settings;
+        return live != null ? live : RevivalSettings.DEFAULTS;
     }
 
     /**
@@ -111,7 +114,13 @@ public final class RevivalConfig {
         if (!yaml.isConfigurationSection(ConfigReader.WORLD_SETTINGS + "." + ConfigReader.DEFAULT_WORLD)) {
             yaml.createSection(ConfigReader.WORLD_SETTINGS + "." + ConfigReader.DEFAULT_WORLD);
         }
-        return new RevivalSettings(Math.max(version, CURRENT_VERSION));
+        final Map<String, LegacyCombatSettings> worlds = new HashMap<>();
+        for (final String world : yaml.getConfigurationSection(ConfigReader.WORLD_SETTINGS).getKeys(false)) {
+            if (!ConfigReader.DEFAULT_WORLD.equals(world)) {
+                worlds.put(world, LegacyCombatSettings.read(reader, world));
+            }
+        }
+        return new RevivalSettings(Math.max(version, CURRENT_VERSION), LegacyCombatSettings.read(reader, ConfigReader.DEFAULT_WORLD), Map.copyOf(worlds));
     }
 
     /** The outcome of {@link #reload()}: whether the new settings went live, and any values that fell back to defaults. */
