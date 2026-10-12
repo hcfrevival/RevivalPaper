@@ -31,6 +31,13 @@ public final class RevivalConfig {
         "Values under world-settings.default apply to every world. To change one world, add",
         "world-settings.<world name> with only the keys that differ.",
         "",
+        "Knockback presets (legacy-1.7, legacy-1.8, kohi, minehq, badlion, mmc, lunar, velt, hcfr) are built in.",
+        "Pick one with legacy-combat.knockback-profile. Under knockback-profiles, a profile named after a preset",
+        "overrides only the keys it sets; any other name starts from legacy-1.7. Keys: friction, friction-vertical,",
+        "horizontal, vertical, vertical-cap, extra-horizontal, extra-vertical, attacker-slowdown, velocity-clamp,",
+        "resistance-mode (none, roll or scale). Preset numbers come from the server-config archives curated by",
+        "Mental (github.com/owengregson/Mental, MIT, (c) 2024 Owen Gregson); their authenticity can't be verified.",
+        "",
         "Apply changes with /revival reload. If the file has a mistake, the reload is refused and the",
         "previous settings stay live; the console says what is wrong.",
         "",
@@ -114,13 +121,14 @@ public final class RevivalConfig {
         if (!yaml.isConfigurationSection(ConfigReader.WORLD_SETTINGS + "." + ConfigReader.DEFAULT_WORLD)) {
             yaml.createSection(ConfigReader.WORLD_SETTINGS + "." + ConfigReader.DEFAULT_WORLD);
         }
+        final Map<String, KnockbackProfile> profiles = KnockbackProfile.readAll(reader);
         final Map<String, LegacyCombatSettings> worlds = new HashMap<>();
         for (final String world : yaml.getConfigurationSection(ConfigReader.WORLD_SETTINGS).getKeys(false)) {
             if (!ConfigReader.DEFAULT_WORLD.equals(world)) {
-                worlds.put(world, LegacyCombatSettings.read(reader, world));
+                worlds.put(world, LegacyCombatSettings.read(reader, world, profiles));
             }
         }
-        return new RevivalSettings(Math.max(version, CURRENT_VERSION), LegacyCombatSettings.read(reader, ConfigReader.DEFAULT_WORLD), Map.copyOf(worlds));
+        return new RevivalSettings(Math.max(version, CURRENT_VERSION), LegacyCombatSettings.read(reader, ConfigReader.DEFAULT_WORLD, profiles), Map.copyOf(worlds));
     }
 
     /** The outcome of {@link #reload()}: whether the new settings went live, and any values that fell back to defaults. */

@@ -26,7 +26,7 @@ import org.jspecify.annotations.Nullable;
 /**
  * Called from {@code Player.attack} (patch 1001). A player melee hit with a legacy weapon uses 1.7.10 damage:
  * the weapon's 1.7.10 damage with 1.7.10 Strength and Weakness, 1.7.10 Sharpness, the 1.7.10 crit rule, and
- * no sweep. Knockback, sprint, hit cadence and damage immunity stay 26.x.
+ * no sweep. Knockback is {@link LegacyKnockback}; sprint, hit cadence and damage immunity stay 26.x.
  */
 public final class LegacyAttack {
 
