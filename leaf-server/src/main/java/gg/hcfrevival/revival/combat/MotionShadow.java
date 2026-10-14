@@ -17,6 +17,9 @@ public final class MotionShadow {
     static final double DRAG = 0.98;
     static final double AIR_FRICTION = 0.91;
     static final double MIN_MOTION = 0.005;
+    static final double WATER_DRAG = 0.8;
+    static final double LAVA_DRAG = 0.5;
+    static final double LIQUID_GRAVITY = 0.02;
     static final int MAX_LANDING_TICKS = 20;
 
     private double x;
@@ -47,15 +50,17 @@ public final class MotionShadow {
         final double blockFriction = onGround && (this.x != 0.0 || this.z != 0.0)
             ? player.level().getBlockState(player.getBlockPosBelowThatAffectsMyMovement()).getBlock().getFriction()
             : 0.6;
-        this.step(onGround, player.getAttributeValue(Attributes.GRAVITY), blockFriction);
+        final double liquidDrag = player.isInWater() ? WATER_DRAG : player.isInLava() ? LAVA_DRAG : 0.0;
+        this.step(onGround, player.getAttributeValue(Attributes.GRAVITY), blockFriction, liquidDrag);
     }
 
     /**
      * One tick of 1.7.10 player motion with no input: tiny motion snaps to zero, the floor stops downward motion,
-     * then gravity, drag and friction apply.
-     * shortcut: water, lava, ladders, flight and walls use the land and air rules; add them if a profile needs them.
+     * then gravity, drag and friction apply. In water or lava ({@code liquidDrag} 0.8 or 0.5, 0 elsewhere) motion is
+     * scaled by that drag and sinks by 0.02 instead, as in moveEntityWithHeading's liquid branches.
+     * shortcut: ladders, flight and walls use the land and air rules; add them if a profile needs them.
      */
-    void step(final boolean onGround, final double gravity, final double blockFriction) {
+    void step(final boolean onGround, final double gravity, final double blockFriction, final double liquidDrag) {
         if (Math.abs(this.x) < MIN_MOTION) {
             this.x = 0.0;
         }
@@ -67,6 +72,12 @@ public final class MotionShadow {
         }
         if (onGround && this.y < 0.0) {
             this.y = 0.0; // moveEntity collides with the floor
+        }
+        if (liquidDrag > 0.0) {
+            this.x *= liquidDrag;
+            this.y = this.y * liquidDrag - LIQUID_GRAVITY;
+            this.z *= liquidDrag;
+            return;
         }
         this.y = (this.y - gravity) * DRAG;
         final double friction = onGround ? (float) blockFriction * 0.91F : AIR_FRICTION;
