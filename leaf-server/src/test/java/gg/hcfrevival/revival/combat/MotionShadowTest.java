@@ -25,7 +25,7 @@ class MotionShadowTest {
     void standingPlayerSettlesAtMinus00784() {
         final MotionShadow shadow = new MotionShadow();
         for (int tick = 0; tick < 5; tick++) {
-            shadow.step(true, GRAVITY, 0.6);
+            shadow.step(true, GRAVITY, 0.6, 0.0);
             assertEquals(-0.0784, shadow.motion().y, EPSILON);
         }
     }
@@ -36,7 +36,7 @@ class MotionShadowTest {
         final MotionShadow shadow = new MotionShadow();
         for (int ticks = 1; ticks <= 3; ticks++) {
             for (int tick = 0; tick < ticks; tick++) {
-                shadow.step(true, GRAVITY, 0.6);
+                shadow.step(true, GRAVITY, 0.6, 0.0);
             }
             final Vec3 knock = KnockbackEngine.knockback(shadow.motion(), 0.0, -1.0, 0.0F, 0.0, KnockbackProfile.LEGACY_1_7, 0.0, RandomSource.create(0L));
             assertEquals(0.3608, knock.y, 1.0E-4);
@@ -46,7 +46,7 @@ class MotionShadowTest {
     @Test
     void gravityAttributeChangesTheSteadyState() {
         final MotionShadow shadow = new MotionShadow();
-        shadow.step(true, 0.1, 0.6); // prod's Guardians
+        shadow.step(true, 0.1, 0.6, 0.0); // prod's Guardians
         assertEquals(-0.098, shadow.motion().y, EPSILON);
         assertEquals(new Vec3(0.0, -0.098, 0.0), MotionShadow.settled(Vec3.ZERO, 0.1));
     }
@@ -55,10 +55,10 @@ class MotionShadowTest {
     void airborneMotionDecays() {
         final MotionShadow shadow = new MotionShadow();
         shadow.set(new Vec3(0.4, 0.3608, 0.0));
-        shadow.step(false, GRAVITY, 0.6);
+        shadow.step(false, GRAVITY, 0.6, 0.0);
         assertEquals((0.3608 - 0.08) * 0.98, shadow.motion().y, EPSILON);
         assertEquals(0.4 * 0.91, shadow.motion().x, EPSILON);
-        shadow.step(true, GRAVITY, 0.6);
+        shadow.step(true, GRAVITY, 0.6, 0.0);
         assertEquals(0.4 * 0.91 * 0.6F * 0.91F, shadow.motion().x, 1.0E-7);
     }
 
@@ -68,16 +68,38 @@ class MotionShadowTest {
 
         final MotionShadow vanilla = new MotionShadow();
         vanilla.set(first);
-        vanilla.step(false, GRAVITY, 0.6);
+        vanilla.step(false, GRAVITY, 0.6, 0.0);
         final Vec3 compounded = KnockbackEngine.knockback(vanilla.motion(), 0.0, -1.0, 0.0F, 0.0, KnockbackProfile.LEGACY_1_7, 0.0, RandomSource.create(0L));
         assertEquals(first.z * 0.91 / 2.0 + 0.4, compounded.z, EPSILON);
+    }
+
+    @Test
+    void playerInWaterSinksSlowlySoAHitLiftsThem() {
+        // 1.7.10 moveEntityWithHeading, water: motion x 0.8, then motY -= 0.02, so a swimmer settles at -0.1, not air's -3.92
+        final MotionShadow shadow = new MotionShadow();
+        for (int tick = 0; tick < 100; tick++) {
+            shadow.step(false, GRAVITY, 0.6, MotionShadow.WATER_DRAG);
+        }
+        assertEquals(-0.1, shadow.motion().y, 1.0E-6);
+        final Vec3 knock = KnockbackEngine.knockback(shadow.motion(), 0.0, -1.0, 0.0F, 0.0, KnockbackProfile.LEGACY_1_7, 0.0, RandomSource.create(0L));
+        assertEquals(0.35, knock.y, 1.0E-6);
+    }
+
+    @Test
+    void lavaUsesHalfDrag() {
+        // 1.7.10 moveEntityWithHeading, lava: motion x 0.5, then motY -= 0.02
+        final MotionShadow shadow = new MotionShadow();
+        shadow.set(new Vec3(0.4, 0.3, 0.0));
+        shadow.step(false, GRAVITY, 0.6, MotionShadow.LAVA_DRAG);
+        assertEquals(0.2, shadow.motion().x, EPSILON);
+        assertEquals(0.3 * 0.5 - 0.02, shadow.motion().y, EPSILON);
     }
 
     @Test
     void tinyMotionSnapsToZero() {
         final MotionShadow shadow = new MotionShadow();
         shadow.set(new Vec3(0.004, 0.0, -0.004));
-        shadow.step(true, GRAVITY, 0.6);
+        shadow.step(true, GRAVITY, 0.6, 0.0);
         assertEquals(0.0, shadow.motion().x);
         assertEquals(0.0, shadow.motion().z);
     }
