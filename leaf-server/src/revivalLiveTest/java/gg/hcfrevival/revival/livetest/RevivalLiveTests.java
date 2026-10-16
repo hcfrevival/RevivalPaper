@@ -25,19 +25,24 @@ import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.server.network.CommonListenerCookie;
 import net.minecraft.world.InteractionHand;
+import net.minecraft.world.damagesource.DamageSource;
 import net.minecraft.world.entity.ai.attributes.Attributes;
+import net.minecraft.world.entity.monster.zombie.Zombie;
 import net.minecraft.world.entity.projectile.FishingHook;
+import net.minecraft.world.entity.projectile.arrow.Arrow;
 import net.minecraft.world.entity.projectile.throwableitemprojectile.Snowball;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.phys.Vec3;
+import java.io.File;
 import org.bukkit.Location;
 import org.bukkit.craftbukkit.CraftServer;
 import org.bukkit.craftbukkit.CraftWorld;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
+import org.bukkit.configuration.file.YamlConfiguration;
 import org.bukkit.event.entity.EntityDamageByEntityEvent;
 import org.bukkit.event.player.PlayerVelocityEvent;
 import org.bukkit.plugin.java.JavaPlugin;
@@ -156,6 +161,9 @@ public final class RevivalLiveTests extends JavaPlugin implements Listener {
         this.after(25, "snowball knocks away from the thrower", this::snowballHit);
         this.after(2, "snowball knocks away from the thrower (packet)", this::snowballPacket);
         this.after(25, "sword-block items, packets and damage", this::swordBlock);
+        this.after(25, "damage windows off: fire inside a sword window is dropped, as in 26.x", this::windowsOffFire);
+        this.after(1, "damage windows on", () -> this.damageWindows(true));
+        this.damageWindowScenarios();
         this.next();
     }
 
@@ -344,6 +352,99 @@ public final class RevivalLiveTests extends JavaPlugin implements Listener {
         this.victim.stopUsingItem();
     }
 
+    // Damage windows (legacy-combat.damage-windows), with an 18-tick window like core's ---------------------------
+
+    private void windowsOffFire() {
+        this.reset(Items.DIAMOND_SWORD, 18);
+        this.hit();
+        this.check(!this.hurt(this.level.damageSources().onFire(), 1.0F) && this.victim.getHealth() == 12.0F, "a fire tick inside the sword window is dropped (health " + this.victim.getHealth() + ")");
+    }
+
+    private void damageWindowScenarios() {
+        this.after(25, "windows on: ticking damage lands inside a sword window", () -> {
+            final DamageSource[] ticking = {this.level.damageSources().onFire(), this.level.damageSources().magic(), this.level.damageSources().drown()};
+            final float[] amounts = {1.0F, 1.0F, 2.0F};
+            for (int i = 0; i < ticking.length; i++) {
+                this.reset(Items.DIAMOND_SWORD, 18);
+                this.hit();
+                final boolean landed = this.hurt(ticking[i], amounts[i]);
+                this.check(landed && this.victim.getHealth() == 12.0F - amounts[i], ticking[i].getMsgId() + " " + amounts[i] + " lands after a sword hit (health " + this.victim.getHealth() + ")");
+            }
+        });
+        this.after(1, "windows on: an arrow lands with knockback inside a sword window", () -> {
+            this.reset(Items.DIAMOND_SWORD, 18);
+            this.hit();
+            this.check(this.arrow(3.0F) && this.victim.getHealth() == 9.0F, "the arrow deals its 3 (health " + this.victim.getHealth() + ")");
+            this.check(this.knockbacks == 2, "the arrow knocks too (knock events " + this.knockbacks + ")");
+        });
+        this.after(1, "windows on: a zombie hit lands inside a sword window", () -> {
+            this.reset(Items.DIAMOND_SWORD, 18);
+            this.hit();
+            final Zombie zombie = new Zombie(this.level);
+            this.check(this.hurt(this.level.damageSources().mobAttack(zombie), 3.0F) && this.victim.getHealth() < 12.0F, "the zombie hit lands (health " + this.victim.getHealth() + ")");
+        });
+        this.after(1, "windows on: fire doesn't eat the next sword hit", () -> {
+            this.reset(Items.DIAMOND_SWORD, 18);
+            this.check(this.hurt(this.level.damageSources().onFire(), 1.0F), "the fire tick lands");
+        });
+        this.after(1, "windows on: fire doesn't eat the next sword hit (sword)", () -> {
+            this.hit();
+            this.check(this.victim.getHealth() == 11.0F, "the sword deals its full 8 after the fire tick (health " + this.victim.getHealth() + ")");
+            this.check(this.knockbacks == 1, "and knocks (knock events " + this.knockbacks + ")");
+        });
+        this.after(1, "windows on: lava keeps 26.x's rate", () -> {
+            this.reset(Items.DIAMOND_SWORD, 18);
+            this.check(this.hurt(this.level.damageSources().lava(), 4.0F), "lava lands");
+        });
+        this.after(5, "windows on: lava keeps 26.x's rate (5 ticks)", () -> {
+            this.check(!this.hurt(this.level.damageSources().lava(), 4.0F), "lava 5 ticks later is dropped");
+            this.check(!this.hurt(this.level.damageSources().onFire(), 1.0F), "burning shares lava's window");
+            this.check(this.victim.getHealth() == 16.0F, "one lava hit so far (health " + this.victim.getHealth() + ")");
+        });
+        this.after(5, "windows on: lava keeps 26.x's rate (10 ticks)", () -> {
+            this.check(this.hurt(this.level.damageSources().lava(), 4.0F) && this.victim.getHealth() == 12.0F, "lava 10 ticks later lands (health " + this.victim.getHealth() + ")");
+        });
+        this.after(1, "windows on: two arrows within 9 ticks don't both land", () -> {
+            this.reset(Items.DIAMOND_SWORD, 18);
+            this.check(this.arrow(3.0F), "the first arrow lands");
+        });
+        this.after(5, "windows on: two arrows within 9 ticks don't both land (5 ticks)", () -> {
+            this.check(!this.arrow(3.0F) && this.victim.getHealth() == 17.0F, "a second arrow 5 ticks later is dropped (health " + this.victim.getHealth() + ")");
+        });
+        this.after(5, "windows on: arrows 10 ticks apart both land", () -> {
+            this.check(this.arrow(3.0F) && this.victim.getHealth() == 14.0F, "an arrow 10 ticks after the first lands (health " + this.victim.getHealth() + ")");
+            this.check(this.knockbacks == 2, "with knockback (knock events " + this.knockbacks + ")");
+        });
+        this.after(25, "windows on: rod then sword is unchanged", this::rodHit);
+        this.after(3, "windows on: rod then sword is unchanged (sword)", this::swordAfterRod);
+        this.after(1, "damage windows off", () -> this.damageWindows(false));
+    }
+
+    // Flips legacy-combat.damage-windows.enabled in revival.yml and reloads it, as an owner would
+    private void damageWindows(final boolean enabled) {
+        try {
+            final File file = new File("revival.yml");
+            final YamlConfiguration yaml = YamlConfiguration.loadConfiguration(file);
+            yaml.set("world-settings.default.legacy-combat.damage-windows.enabled", enabled);
+            yaml.save(file);
+        } catch (final java.io.IOException failure) {
+            throw new IllegalStateException(failure);
+        }
+        gg.hcfrevival.revival.config.RevivalConfig.reload();
+        this.check(gg.hcfrevival.revival.Revival.settings().legacyCombat(this.level.getWorld().getName()).damageWindows().enabled() == enabled, "damage-windows.enabled is " + enabled + " after /revival reload");
+    }
+
+    private boolean hurt(final DamageSource source, final float damage) {
+        return this.victim.hurtServer(this.level, source, damage);
+    }
+
+    // An arrow from the attacker, flying at the victim
+    private boolean arrow(final float damage) {
+        final Arrow arrow = new Arrow(this.level, this.attacker, new ItemStack(Items.ARROW), new ItemStack(Items.BOW));
+        arrow.setDeltaMovement(0.0, 0.0, 2.0);
+        return this.hurt(this.level.damageSources().arrow(arrow, this.attacker), damage);
+    }
+
     // Helpers ------------------------------------------------------------------------------------------------------
 
     private ServerPlayer fakePlayer(final String name, final RecordingConnection connection) {
@@ -365,6 +466,7 @@ public final class RevivalLiveTests extends JavaPlugin implements Listener {
         this.victim.invulnerableDuration = window;
         this.victim.damageCooldownTime = 0;
         this.victim.lastHurt = 0.0F;
+        this.victim.revivalDamageWindows = null;
         this.knockbacks = 0;
         this.velocityEvents = 0;
         this.revivalKnocks = 0;

@@ -115,6 +115,21 @@ start, and writes any missing key back on later starts.
 | `fishing-rod.reel-durability` | `3` | Rod durability used by reeling in a hooked entity. |
 | `fishing-rod.cast-speed`, `fishing-rod.gravity` | `1.5`, `0.04` | 1.7 cast speed and bobber gravity. |
 
+### `world-settings.<world>.legacy-combat.damage-windows`
+
+26.x gives an entity one damage window: for its first half, damage no bigger than the last hit is dropped, so a
+sword combo swallows fire, poison, drowning, arrows and mob hits. With this on, each kind of damage gets its own
+window under the same rule: **melee** (player melee hits, plus `melee-projectiles`), **projectile** (arrows,
+tridents, fireballs and other projectiles), **mob** (a mob's own hit) and **other** (fire, lava, poison, wither,
+drowning, fall, explosions, thorns, splash harming and everything else; these share one window, as in 26.x).
+Melee keeps the entity's real window, so the no-damage-ticks API and plugins that edit it work as before.
+
+| Key | Default | What it does |
+|---|---|---|
+| `enabled` | `false` | Split the damage window into the four channels above. `false` keeps 26.x's single window. |
+| `melee-projectiles` | `["minecraft:fishing_bobber", "minecraft:snowball", "minecraft:egg"]` | Projectiles, by entity id, that share the melee window, so 1.7 rod and snowball combos stay as they are. |
+| `projectile-ticks`, `mob-ticks`, `other-ticks` | `-1` | Each channel's window length in ticks; `-1` uses the entity's own (its maximum no-damage ticks). |
+
 ### `sword-blocking`
 
 | Key | Default | What it does |

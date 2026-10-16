@@ -55,3 +55,6 @@ leaf-server/src/minecraft/java/net/minecraft/world/entity/LivingEntity.java | //
 leaf-server/src/minecraft/java/net/minecraft/world/item/ItemStack.java | gg.hcfrevival.revival.combat.LegacySwordBlocking.fromClient(patchCodec.decode(input)); // Revival - Sword blocking
 leaf-server/src/minecraft/java/net/minecraft/world/item/ItemStack.java | gg.hcfrevival.revival.combat.LegacySwordBlocking.toClient(itemStack, itemStack.components.asPatch())); // Revival - Sword blocking
 leaf-server/src/minecraft/java/net/minecraft/network/HashedStack.java | gg.hcfrevival.revival.combat.LegacySwordBlocking.toClient(itemStack, itemStack.getComponentsPatch()), hasher); // Revival - Sword blocking
+leaf-server/src/minecraft/java/net/minecraft/world/entity/LivingEntity.java | revivalDamageWindows; // Revival - Damage windows
+leaf-server/src/minecraft/java/net/minecraft/world/entity/LivingEntity.java | if (gg.hcfrevival.revival.combat.DamageWindows.enabled(this)) return true; // Revival - Damage windows
+leaf-server/src/minecraft/java/net/minecraft/world/entity/LivingEntity.java | // Revival start - Damage windows
