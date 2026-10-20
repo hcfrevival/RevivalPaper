@@ -97,7 +97,6 @@ config explicitly anyway, so nobody turns one on by accident.
 | `performance.use-virtual-thread.bukkit-async-scheduler` / `folia-async-scheduler` / `download-pool` | `false` | Virtual threads for the Bukkit async scheduler and similar pools. | Medium if enabled (plugins that use `ThreadLocal` or expect named pool threads). | keep off |
 | `fixes.prevent-moving-into-weak-loaded-chunks.enabled` / `.projectiles` | `false` | Stops movement and projectiles at weakly loaded chunk edges. | Medium if enabled (pearls). | keep off |
 | `fixes.vanilla-bug-fix.mc-270656` / `mc-301114` / `mc-152094` | `false` | Optional vanilla bug fixes (`fixes/MCBugFix.java`). | Low. | keep off |
-| `misc.lag-compensation.enabled` | `false` | TT20 lag compensation (fluids). | Low. | keep off |
 | `misc.secure-seed.enabled` | `false` | Changes seed derivation for features. | None for arena, but it does change worldgen. | keep off |
 | `misc.region-format.format-name` | `MCA` | Region file format. Linear and other formats are not readable by Purpur. | High if changed (world files no longer portable). | keep `MCA` |
 | `misc.disable-world-data-saving.worlds` | `[]` | Stops saving the listed worlds. | n/a | keep (or list a throwaway duel world deliberately) |
