@@ -10,7 +10,7 @@ the 1.7 pull. The logic lives in gg.hcfrevival.revival.combat; this patch
 only calls into it.
 
 diff --git a/net/minecraft/world/entity/LivingEntity.java b/net/minecraft/world/entity/LivingEntity.java
-index af1d569368ee3fa33ec3cb05ef1f36fb5e4ff768..8ebfeae9c2d103cddba4b17353b381f52dbca0a7 100644
+index 021047f90a84adbd717fc7cf037eaf207fa9ddca..1a29a516434d94dca86c9ed3c077289405665df7 100644
 --- a/net/minecraft/world/entity/LivingEntity.java
 +++ b/net/minecraft/world/entity/LivingEntity.java
 @@ -1564,7 +1564,7 @@ public abstract class LivingEntity extends Entity implements Attackable, Waypoin
@@ -32,7 +32,7 @@ index af1d569368ee3fa33ec3cb05ef1f36fb5e4ff768..8ebfeae9c2d103cddba4b17353b381f5
              this.damageCooldownTime = this.invulnerableDuration; // CraftBukkit - restore use of maxNoDamageTicks
              // this.actuallyHurt(level, source, damage);
 diff --git a/net/minecraft/world/entity/projectile/FishingHook.java b/net/minecraft/world/entity/projectile/FishingHook.java
-index b0794a77b44e922bb6c71a28560054656acae922..435760b16e0453782408b1d16315558e291f0aeb 100644
+index adc1017a4f35e0457c780c100bba3326c17a7de9..b0c7fbbbd7c5662e44cb87a92eb1af626cb58802 100644
 --- a/net/minecraft/world/entity/projectile/FishingHook.java
 +++ b/net/minecraft/world/entity/projectile/FishingHook.java
 @@ -93,6 +93,7 @@ public class FishingHook extends Projectile {
@@ -78,14 +78,14 @@ index b0794a77b44e922bb6c71a28560054656acae922..435760b16e0453782408b1d16315558e
 @@ -593,7 +596,7 @@ public class FishingHook extends Projectile {
  
      @Override
-     protected double getDefaultGravity() {
+     public double getDefaultGravity() {
 -        return 0.03F;
 +        return this.revivalGravity >= 0.0 ? this.revivalGravity : 0.03F; // Revival - Projectiles
      }
  
      public void pullEntity(final Entity entity) {
 diff --git a/net/minecraft/world/entity/projectile/arrow/AbstractArrow.java b/net/minecraft/world/entity/projectile/arrow/AbstractArrow.java
-index 319fd20911d6f2eb7e46815b6661da5defd6921e..263c78f4579ccacf45e93722dd341c581923e836 100644
+index 3b2427084996fc1dda0780911acbafd3ba492e75..65f0ce95a9d3ae0726e029af4dbd17c2f9547f63 100644
 --- a/net/minecraft/world/entity/projectile/arrow/AbstractArrow.java
 +++ b/net/minecraft/world/entity/projectile/arrow/AbstractArrow.java
 @@ -551,6 +551,7 @@ public abstract class AbstractArrow extends Projectile {

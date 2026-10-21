@@ -7,6 +7,7 @@ Loads revival.yml at startup and registers /revival. The config and
 command live in gg.hcfrevival.revival; this patch only calls into them.
 
 diff --git a/net/minecraft/server/dedicated/DedicatedServer.java b/net/minecraft/server/dedicated/DedicatedServer.java
+index 20be4ace1c594565881c4829d10d940c3117841d..2ef0363956098ff1bd51f564052170661125dd37 100644
 --- a/net/minecraft/server/dedicated/DedicatedServer.java
 +++ b/net/minecraft/server/dedicated/DedicatedServer.java
 @@ -265,6 +265,15 @@ public class DedicatedServer extends MinecraftServer implements ServerInterface

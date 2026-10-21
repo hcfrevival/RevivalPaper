@@ -9,7 +9,7 @@ and a plugin setVelocity resets that motion. The logic lives in
 gg.hcfrevival.revival.combat; this patch only calls into it.
 
 diff --git a/net/minecraft/server/level/ServerPlayer.java b/net/minecraft/server/level/ServerPlayer.java
-index edd6c7e52b44e6f0546c7bef1218937a75d91f2e..788cafa0e2115b007c810382d5a490489fe5bb0e 100644
+index a9e39e90216a057fc2ea3f2650bb78f81f790a80..e3869b915d65552ff45e31ffdcf792ac934eab37 100644
 --- a/net/minecraft/server/level/ServerPlayer.java
 +++ b/net/minecraft/server/level/ServerPlayer.java
 @@ -213,6 +213,7 @@ import org.slf4j.Logger;

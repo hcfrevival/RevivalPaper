@@ -10,7 +10,7 @@ gets the extra knock. The logic lives in gg.hcfrevival.revival.combat;
 this patch only calls into it.
 
 diff --git a/net/minecraft/server/level/ServerPlayer.java b/net/minecraft/server/level/ServerPlayer.java
-index b3d4a9e1e7b645d19f5dab7ce6c4451051c9ff81..b40ae2621443ca490063dfca7a6f9e47ab270b5b 100644
+index 7ad7c01d065314db2ca0a3a151787487eef8fda5..a5343bcfdde5f5acc15ccbcd9599e9af301790d7 100644
 --- a/net/minecraft/server/level/ServerPlayer.java
 +++ b/net/minecraft/server/level/ServerPlayer.java
 @@ -215,6 +215,7 @@ public class ServerPlayer extends Player implements ca.spottedleaf.moonrise.patc
@@ -22,7 +22,7 @@ index b3d4a9e1e7b645d19f5dab7ce6c4451051c9ff81..b40ae2621443ca490063dfca7a6f9e47
      private static final int NEUTRAL_MOB_DEATH_NOTIFICATION_RADII_Y = 10;
      private static final int FLY_STAT_RECORDING_SPEED = 25;
 diff --git a/net/minecraft/world/entity/LivingEntity.java b/net/minecraft/world/entity/LivingEntity.java
-index 8471583e7a85c68dbf3bb23e1ed6166d3beb02c6..62c2b0a0dad0fa59d4e40fa9c88c4b3a4f60f2ba 100644
+index 7b41ee8e0c6134e108770daaad3535e3771236d9..b0cd649da98e35d2dcbcfd953cb10806ab0ead3e 100644
 --- a/net/minecraft/world/entity/LivingEntity.java
 +++ b/net/minecraft/world/entity/LivingEntity.java
 @@ -1566,7 +1566,7 @@ public abstract class LivingEntity extends Entity implements Attackable, Waypoin

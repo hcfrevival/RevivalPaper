@@ -8,7 +8,7 @@ knock, and SprintArmEvent on a sprint start. The logic lives in
 gg.hcfrevival.revival.combat; this patch only calls into it.
 
 diff --git a/net/minecraft/server/level/ServerPlayer.java b/net/minecraft/server/level/ServerPlayer.java
-index 66498fd726b537a9106064452b3b842b6e12a086..ad8ef3e58f125c7711c5385becf5f4846f37dd58 100644
+index 3c6224427fd9f0ab2ea20068a4e1fe7c8d58f038..497fcc55e31f94376fab76c1cd83534e45ee33b1 100644
 --- a/net/minecraft/server/level/ServerPlayer.java
 +++ b/net/minecraft/server/level/ServerPlayer.java
 @@ -217,6 +217,7 @@ public class ServerPlayer extends Player implements ca.spottedleaf.moonrise.patc
@@ -20,10 +20,10 @@ index 66498fd726b537a9106064452b3b842b6e12a086..ad8ef3e58f125c7711c5385becf5f484
      private static final int NEUTRAL_MOB_DEATH_NOTIFICATION_RADII_Y = 10;
      private static final int FLY_STAT_RECORDING_SPEED = 25;
 diff --git a/net/minecraft/server/network/ServerGamePacketListenerImpl.java b/net/minecraft/server/network/ServerGamePacketListenerImpl.java
-index dcb871334545e3022c5b399605fcd140cb8145c0..2c244c718649dbb8555a28b40d37fcc83e5f7d4f 100644
+index d9179263fd21f03d0708f5aa42ae129ebdb4b635..fe9f6ed0ce24680e2abc086173c22e581c3d8b9b 100644
 --- a/net/minecraft/server/network/ServerGamePacketListenerImpl.java
 +++ b/net/minecraft/server/network/ServerGamePacketListenerImpl.java
-@@ -2910,7 +2910,7 @@ public class ServerGamePacketListenerImpl
+@@ -2911,7 +2911,7 @@ public class ServerGamePacketListenerImpl
              switch (packet.getAction()) {
                  case START_SPRINTING:
                      this.player.setSprinting(true);
@@ -33,7 +33,7 @@ index dcb871334545e3022c5b399605fcd140cb8145c0..2c244c718649dbb8555a28b40d37fcc8
                  case STOP_SPRINTING:
                      this.player.setSprinting(false);
 diff --git a/net/minecraft/world/entity/LivingEntity.java b/net/minecraft/world/entity/LivingEntity.java
-index 62c2b0a0dad0fa59d4e40fa9c88c4b3a4f60f2ba..af1d569368ee3fa33ec3cb05ef1f36fb5e4ff768 100644
+index b0cd649da98e35d2dcbcfd953cb10806ab0ead3e..021047f90a84adbd717fc7cf037eaf207fa9ddca 100644
 --- a/net/minecraft/world/entity/LivingEntity.java
 +++ b/net/minecraft/world/entity/LivingEntity.java
 @@ -2190,6 +2190,7 @@ public abstract class LivingEntity extends Entity implements Attackable, Waypoin

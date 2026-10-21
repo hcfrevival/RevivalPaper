@@ -9,7 +9,7 @@ limits legacy attacks per tick. The logic lives in
 gg.hcfrevival.revival.combat; this patch only calls into it.
 
 diff --git a/net/minecraft/server/level/ServerPlayer.java b/net/minecraft/server/level/ServerPlayer.java
-index b40ae2621443ca490063dfca7a6f9e47ab270b5b..66498fd726b537a9106064452b3b842b6e12a086 100644
+index a5343bcfdde5f5acc15ccbcd9599e9af301790d7..3c6224427fd9f0ab2ea20068a4e1fe7c8d58f038 100644
 --- a/net/minecraft/server/level/ServerPlayer.java
 +++ b/net/minecraft/server/level/ServerPlayer.java
 @@ -216,6 +216,7 @@ public class ServerPlayer extends Player implements ca.spottedleaf.moonrise.patc

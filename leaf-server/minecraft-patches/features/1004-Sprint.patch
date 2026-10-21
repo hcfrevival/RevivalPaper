@@ -9,7 +9,7 @@ sprint flag. The logic lives in gg.hcfrevival.revival.combat; this patch
 only calls into it.
 
 diff --git a/net/minecraft/server/level/ServerPlayer.java b/net/minecraft/server/level/ServerPlayer.java
-index 788cafa0e2115b007c810382d5a490489fe5bb0e..b3d4a9e1e7b645d19f5dab7ce6c4451051c9ff81 100644
+index e3869b915d65552ff45e31ffdcf792ac934eab37..7ad7c01d065314db2ca0a3a151787487eef8fda5 100644
 --- a/net/minecraft/server/level/ServerPlayer.java
 +++ b/net/minecraft/server/level/ServerPlayer.java
 @@ -214,6 +214,7 @@ public class ServerPlayer extends Player implements ca.spottedleaf.moonrise.patc
@@ -21,10 +21,10 @@ index 788cafa0e2115b007c810382d5a490489fe5bb0e..b3d4a9e1e7b645d19f5dab7ce6c44510
      private static final int NEUTRAL_MOB_DEATH_NOTIFICATION_RADII_Y = 10;
      private static final int FLY_STAT_RECORDING_SPEED = 25;
 diff --git a/net/minecraft/server/network/ServerGamePacketListenerImpl.java b/net/minecraft/server/network/ServerGamePacketListenerImpl.java
-index 4347633dcf1322fc4ddd50694aae26f9829dfea7..dcb871334545e3022c5b399605fcd140cb8145c0 100644
+index dedcc939275146c294ceace37df472bbce05df08..d9179263fd21f03d0708f5aa42ae129ebdb4b635 100644
 --- a/net/minecraft/server/network/ServerGamePacketListenerImpl.java
 +++ b/net/minecraft/server/network/ServerGamePacketListenerImpl.java
-@@ -2910,9 +2910,11 @@ public class ServerGamePacketListenerImpl
+@@ -2911,9 +2911,11 @@ public class ServerGamePacketListenerImpl
              switch (packet.getAction()) {
                  case START_SPRINTING:
                      this.player.setSprinting(true);

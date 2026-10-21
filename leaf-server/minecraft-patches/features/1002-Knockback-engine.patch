@@ -8,7 +8,7 @@ profile, base and extra knock in one event. The math lives in
 gg.hcfrevival.revival.combat; this patch only calls into it.
 
 diff --git a/net/minecraft/world/entity/LivingEntity.java b/net/minecraft/world/entity/LivingEntity.java
-index 4eff554eafdfe46faf2af44a57e41432e44884fb..8471583e7a85c68dbf3bb23e1ed6166d3beb02c6 100644
+index 1fb657e90e7b27d0eb66f369f1711a298489fb1e..7b41ee8e0c6134e108770daaad3535e3771236d9 100644
 --- a/net/minecraft/world/entity/LivingEntity.java
 +++ b/net/minecraft/world/entity/LivingEntity.java
 @@ -2174,6 +2174,12 @@ public abstract class LivingEntity extends Entity implements Attackable, Waypoin
