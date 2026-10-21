@@ -6,15 +6,15 @@ Subject: [PATCH] Damage windows
 Melee, projectile, mob and other damage each get their own damage window
 when legacy-combat.damage-windows is on, so a sword combo no longer
 swallows fire, poison, arrows or mob hits. hurtServer swaps the channel's
-window into invulnerableTime/lastHurt around the vanilla body. The logic
+window into damageCooldownTime/lastHurt around the vanilla body. The logic
 lives in gg.hcfrevival.revival.combat.DamageWindows; this patch only calls
 into it.
 
 diff --git a/net/minecraft/world/entity/LivingEntity.java b/net/minecraft/world/entity/LivingEntity.java
-index afa30cd878eaf3fc0e5187f92f9b5d254ef6fc0f..a7ea0307b8a899e3c7033ba9957f43bc404d6972 100644
+index a0e2b3c9230f0609b78442b404830968c6ffa95a..2d3f1414df285a67036ed626adc9125e8caa9fc8 100644
 --- a/net/minecraft/world/entity/LivingEntity.java
 +++ b/net/minecraft/world/entity/LivingEntity.java
-@@ -261,6 +261,7 @@ public abstract class LivingEntity extends Entity implements Attackable, Waypoin
+@@ -262,6 +262,7 @@ public abstract class LivingEntity extends Entity implements Attackable, Waypoin
      protected boolean dead;
      public int noActionTime;
      public float lastHurt;
@@ -22,12 +22,12 @@ index afa30cd878eaf3fc0e5187f92f9b5d254ef6fc0f..a7ea0307b8a899e3c7033ba9957f43bc
      protected boolean jumping;
      public float xxa; public float getStrafeMot() { return xxa; } public void setStrafeMot(float strafe) { xxa = strafe; } // Purpur - OBFHELPER
      public float yya; public float getVerticalMot() { return yya; } public void setVerticalMot(float vertical) { yya = vertical; } // Purpur - OBFHELPER
-@@ -1490,12 +1491,24 @@ public abstract class LivingEntity extends Entity implements Attackable, Waypoin
+@@ -1485,12 +1486,24 @@ public abstract class LivingEntity extends Entity implements Attackable, Waypoin
  
      // Gale start - Pufferfish - reduce in wall checks
      private boolean couldPossiblyBeHurt(float amount) {
 +        if (gg.hcfrevival.revival.combat.DamageWindows.enabled(this)) return true; // Revival - Damage windows: the fields hold only the melee window
-         return !((float) this.invulnerableTime > (float) this.invulnerableDuration / 2.0F) || !(amount <= this.lastHurt);
+         return !((float) this.damageCooldownTime > (float) this.invulnerableDuration / 2.0F) || !(amount <= this.lastHurt);
      }
      // Gale end - Pufferfish - reduce in wall checks
  

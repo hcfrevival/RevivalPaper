@@ -15,7 +15,7 @@ import net.minecraft.world.entity.projectile.Projectile;
  * Separate damage windows for melee, projectile, mob and other damage (patch 1010), so a sword combo no longer
  * swallows fire ticks, poison, arrows or mob hits, and those don't swallow sword hits.
  * <p>
- * Melee keeps the entity's real {@code invulnerableTime}, {@code lastHurt} and {@code invulnerableDuration}, so the
+ * Melee keeps the entity's real {@code damageCooldownTime}, {@code lastHurt} and {@code invulnerableDuration}, so the
  * Bukkit no-damage-ticks API and plugins that edit it between hits keep working. Every other channel has its own
  * slot (lastHurt and the server tick its window ends), which {@link #enter} swaps into those fields for the length of
  * {@code LivingEntity.hurtServer} and {@link #exit} swaps back, so the vanilla window rule, Paper's invulnerability
@@ -105,10 +105,10 @@ public final class DamageWindows {
     void switchTo(final LivingEntity victim, final int to, final int duration, final long now) {
         final int from = this.active;
         this.lastHurt[from] = victim.lastHurt;
-        this.expiry[from] = now + victim.invulnerableTime;
+        this.expiry[from] = now + victim.damageCooldownTime;
         this.duration[from] = victim.invulnerableDuration;
         victim.lastHurt = this.lastHurt[to];
-        victim.invulnerableTime = (int) Math.max(0L, this.expiry[to] - now);
+        victim.damageCooldownTime = (int) Math.max(0L, this.expiry[to] - now);
         victim.invulnerableDuration = duration;
         this.active = to;
         this.now = now;

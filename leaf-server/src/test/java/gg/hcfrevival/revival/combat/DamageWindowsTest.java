@@ -92,35 +92,35 @@ class DamageWindowsTest {
         final DamageWindows windows = new DamageWindows();
         // A sword hit at tick 100 opened the real (melee) window
         victim.invulnerableDuration = 18;
-        victim.invulnerableTime = 18;
+        victim.damageCooldownTime = 18;
         victim.lastHurt = 7.0F;
 
         // A fire tick at 103 sees an empty window
         windows.switchTo(victim, DamageWindows.OTHER, 18, 103);
-        assertEquals(0, victim.invulnerableTime);
+        assertEquals(0, victim.damageCooldownTime);
         assertEquals(0.0F, victim.lastHurt);
-        victim.invulnerableTime = 18; // hurtServer opens the fire window
+        victim.damageCooldownTime = 18; // hurtServer opens the fire window
         victim.lastHurt = 1.0F;
         windows.switchTo(victim, DamageWindows.MELEE, 18, 103);
-        assertEquals(18, victim.invulnerableTime); // the sword window is untouched
+        assertEquals(18, victim.damageCooldownTime); // the sword window is untouched
         assertEquals(7.0F, victim.lastHurt);
 
         // An arrow at 104 with a 10-tick projectile window
         windows.switchTo(victim, DamageWindows.PROJECTILE, 10, 104);
         assertEquals(10, victim.invulnerableDuration);
-        assertEquals(0, victim.invulnerableTime);
-        victim.invulnerableTime = 10;
+        assertEquals(0, victim.damageCooldownTime);
+        victim.damageCooldownTime = 10;
         victim.lastHurt = 4.0F;
         windows.switchTo(victim, DamageWindows.MELEE, 18, 104);
         assertEquals(18, victim.invulnerableDuration);
 
         // Each slot runs down with server ticks, without a per-tick decrement
         windows.switchTo(victim, DamageWindows.OTHER, 18, 110);
-        assertEquals(11, victim.invulnerableTime);
+        assertEquals(11, victim.damageCooldownTime);
         assertEquals(1.0F, victim.lastHurt);
         windows.switchTo(victim, DamageWindows.MELEE, 18, 110);
         windows.switchTo(victim, DamageWindows.PROJECTILE, 10, 120);
-        assertEquals(0, victim.invulnerableTime); // ended at 114
+        assertEquals(0, victim.damageCooldownTime); // ended at 114
         assertEquals(4.0F, victim.lastHurt);
     }
 
@@ -129,19 +129,19 @@ class DamageWindowsTest {
         final LivingEntity victim = mock(LivingEntity.class);
         final DamageWindows windows = new DamageWindows();
         victim.invulnerableDuration = 18;
-        victim.invulnerableTime = 12;
+        victim.damageCooldownTime = 12;
         victim.lastHurt = 7.0F;
 
         windows.switchTo(victim, DamageWindows.OTHER, 18, 50); // fire
-        victim.invulnerableTime = 18;
+        victim.damageCooldownTime = 18;
         victim.lastHurt = 1.0F;
         windows.switchTo(victim, DamageWindows.PROJECTILE, 18, 50); // a plugin damages with an arrow inside the fire event
-        victim.invulnerableTime = 18;
+        victim.damageCooldownTime = 18;
         victim.lastHurt = 5.0F;
         windows.switchTo(victim, DamageWindows.OTHER, 18, 50);
         assertEquals(1.0F, victim.lastHurt);
         windows.switchTo(victim, DamageWindows.MELEE, 18, 50);
-        assertEquals(12, victim.invulnerableTime);
+        assertEquals(12, victim.damageCooldownTime);
         assertEquals(7.0F, victim.lastHurt);
     }
 }
