@@ -30,7 +30,7 @@ it decides **when** the client saw what, and feeds the simulation and the mirror
 | `auth.view.ClientView` | Client-owned state: attributes, effects, abilities, game mode (local and tab list), food, items, echoed flags/pose, tick rate, loaded/riding/dead/camera, teams, cooldowns, use prediction |
 | `auth.view.ClientAttributes` | Vanilla client `AttributeInstance` semantics (same map types and history) |
 | `auth.view.ClientItems` | Client-visible stacks (with `LegacySwordBlocking.toClient`) |
-| `auth.view.WorldView` | What this client was sent: persistent sent states, pinned pre-change states, predictions, chunk set. Implements `SimWorld` and `PickWorld` |
+| `auth.view.WorldView` | What this client was sent: persistent sent states, pinned pre-change states, predictions, chunk set. Implements `SimWorld` and `PickWorld`. Keeps the chunk of its last read (held or not, the server's `LevelChunk`) while its chunk record and the server's full-chunk map are unchanged |
 | `auth.view.SelfEcho` | Enforce-mode rewrite of self entity data and attributes (§3.3) |
 | `auth.reconcile.Reconciler` | Exact / budget / correct decision, correction ids (and the last 32 sent), in-flight Δ, rate limit |
 | `auth.reconcile.RebaseGuard` | With `rebase-epsilon` on: signed drift cap per axis per window of ticks |
@@ -131,7 +131,12 @@ it decides **when** the client saw what, and feeds the simulation and the mirror
   inexact, hits UNKNOWN). It falls through the long window, once a tenth of its samples are lower; a lone spike moves
   neither window. Both windows are kept sorted as they slide: exact on every ack, nothing allocated.
 - The per-tick bundle's list is reused once its ping is acked (the pong proves Netty's unbundler is done with it;
-  review PT-16). A forced ping reuses nothing.
+  review PT-16). A forced ping reuses nothing. A new bundle takes the spare that held the most and is grown once to what
+  recent bundles held (a max decaying 1/32 per bundle), not packet by packet.
+- Every packet to every player passes `Transactions.send`, so what the packet's class decides is worked out once per
+  class (`OutboundClassifier.ClassInfo`: the family, whether it is always bundleable, whether the tracked-entity sets look
+  at it). Only the self/remote families test the entity id, only a packet Paper may hold (`isReady`/`getExtraPackets`
+  overridden, the login) is asked per packet, and the trace recorder is asked once per packet.
 - Verified on the code: a ping inside a bundle encodes (the game protocol registers `CLIENTBOUND_PING`), the client's
   bundler only rejects terminal packets, `handleBundlePacket` handles sub-packets inline on the main thread, and
   `handlePing` answers from that drain (`PacketBundlePacker`, `ClientPacketListener.handleBundlePacket`,
@@ -150,8 +155,9 @@ it decides **when** the client saw what, and feeds the simulation and the mirror
 | 1011 | `SGPLI.handleAcceptTeleportPacket` | `onTeleportAccept` (our correction ids skip vanilla) |
 | 1011 | `SGPLI.internalTeleport` | `onTeleportSent` (server teleports are transactions) |
 | 1011 | `LevelChunk.setBlockState` | `Authority.onBlockChanged` (pin the pre-change state) |
+| 1011 | `ServerChunkCache.moonrise$setFullChunk` | `revivalFullChunks++`: `WorldView` keeps the chunk of its last read while the full-chunk map is unchanged |
 | 1011 | `ClientboundMoveEntityPacket`, `ClientboundEntityEventPacket` | `revivalEntityId()` accessors |
-| 1012 | `SGPLI.revivalApplyTruth` | the truth through `handlePlayerPositionChange`, with Paper's moved-too-quickly, moved-wrongly and clipped-into-block checks skipped for it (the simulation is the check) |
+| 1012 | `SGPLI.revivalApplyTruth` | the truth through `handlePlayerPositionChange`, with Paper's moved-too-quickly, moved-wrongly and clipped-into-block checks skipped for it (the simulation is the check). The truth path: `Entity.revivalMoveResolved` runs `move` with the truth's delta as the collided movement (no second collision pass), and the branch's interim positions (the move, the snap to the target, the snap back to the start for `PlayerMoveEvent`) skip the waypoint updates (`revivalQuietSnapTo`, `revivalQuietWaypoints` in `setPosRaw`); entity sections still follow every write, and the final snap runs everything. `revivalApplyTruth(..., false)` is the branch exactly as a claim takes it, the reference the live test `TruthPathCheck` compares against |
 | 1012 | `LivingEntity.aiStep` travel | skipped while `revivalAuth.skipsTravel()` |
 | 1011 | `SGPLI.handleContainerClose` (the client's one-argument overload) | main thread, then `intercept` (server-initiated closes stay immediate) |
 | 1012 | `SGPLI.revivalCompleteServerTeleport` | vanilla's accept bookkeeping at a server teleport's pong, without the accept's coordinates |
@@ -262,8 +268,16 @@ correction; a double-tap sprint sword hit and a charged axe hit deal the same da
 off, judged `VALID`); `vehicles: deny`; the input grammar (attacks while blocking dropped and reported, a container click
 while walking dropped and the container resent); death and respawn (no tick of the dying client judged; the new local
 player simulated from a standstill); visibility (a player behind a wall is removed from the viewer's client and spawned
-again when the wall goes). Then `AuthCheatScenarios` (the cheat suite, docs/revival/auth-cheat-suite.md). With Leaf's
-async tracker on (the second run) authority refuses.
+again when the wall goes). Then `TruthPathCheck`: the port walks a course (pressure plate, soul sand, cobweb, slab, a
+staircase to a 5-block drop, a pool, a ladder, a 3-block drop, a pit, turns on the spot) for 420 ticks, and two fresh
+players take those moves, one through the claim's branch (`revivalApplyTruth(..., false)`) and one through the truth path,
+each with the block effects and fluid state of the player's own tick in between: after every move the state (position,
+rotation, box, ground and collision flags, fall distance, motion, supporting block, steps, stuck multiplier, movement
+records, known movement, health, food, statistics, the handler's lastGood/lastPos/floating bookkeeping), the events (move,
+jump, game events, damage, statistics, exhaustion, block insides, plate presses, redstone) and the packets to the player
+and to a watcher (sounds field by field, pitch aside) must be the same; only waypoint packets may differ (166 → 56 on the
+course: the interim positions no longer send any). Then `AuthCheatScenarios` (the cheat suite, docs/revival/auth-cheat-suite.md). With Leaf's async tracker on (the
+second run) authority refuses.
 
 ## Gaps
 

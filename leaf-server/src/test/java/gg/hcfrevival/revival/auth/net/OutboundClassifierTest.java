@@ -60,6 +60,27 @@ class OutboundClassifierTest {
     }
 
     @Test
+    void classInfoIsWorkedOutOncePerClass() {
+        // auth-load §9: the class decides the family, whether the tracked sets look at it and whether it is always bundleable
+        final OutboundClassifier.ClassInfo motion = OutboundClassifier.info(new ClientboundSetEntityMotionPacket(7, Vec3.ZERO));
+        org.junit.jupiter.api.Assertions.assertSame(motion, OutboundClassifier.info(new ClientboundSetEntityMotionPacket(8, Vec3.Y_AXIS)), "one info per class");
+        org.junit.jupiter.api.Assertions.assertTrue(motion.plain && !motion.tracked);
+        org.junit.jupiter.api.Assertions.assertTrue(OutboundClassifier.info(new net.minecraft.network.protocol.game.ClientboundRemoveEntitiesPacket(40)).tracked);
+        org.junit.jupiter.api.Assertions.assertTrue(OutboundClassifier.info(new net.minecraft.network.protocol.game.ClientboundAddEntityPacket(40, new UUID(5L, 6L),
+            0.0, 64.0, 0.0, 0.0F, 0.0F, net.minecraft.world.entity.EntityTypes.PLAYER, 0, Vec3.ZERO, 0.0)).tracked);
+        // A class that overrides Paper's readiness (anti-xray chunks) or extra packets is asked per packet, never assumed bundleable
+        final net.minecraft.network.protocol.Packet<?> held = new net.minecraft.network.protocol.game.ClientboundBlockUpdatePacket(net.minecraft.core.BlockPos.ZERO,
+            net.minecraft.world.level.block.Blocks.STONE.defaultBlockState()) {
+            @Override
+            public boolean isReady() {
+                return false;
+            }
+        };
+        org.junit.jupiter.api.Assertions.assertFalse(OutboundClassifier.info(held).plain);
+        assertEquals(OutboundClassifier.BLOCK_UPDATE, OutboundClassifier.info(held).family, "the family is still the type's");
+    }
+
+    @Test
     void pistonsAndShulkerBoxesMoveThePlayer() {
         final IntOpenHashSet players = new IntOpenHashSet();
         final net.minecraft.core.BlockPos pos = new net.minecraft.core.BlockPos(1, 2, 3);

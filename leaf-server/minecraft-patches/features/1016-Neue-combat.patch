@@ -5,10 +5,10 @@ Subject: [PATCH] Neue combat
 
 
 diff --git a/net/minecraft/server/network/ServerGamePacketListenerImpl.java b/net/minecraft/server/network/ServerGamePacketListenerImpl.java
-index fe54d3799ff261bc13f69dc130e7f5fcc1bada54..af65b168ebdc2b09caf51e651c75191011645006 100644
+index f2f2157f83048c67ba8d96c448759fa914fe4063..71a011a6ba03031d0e4902e6178caac8125e36e8 100644
 --- a/net/minecraft/server/network/ServerGamePacketListenerImpl.java
 +++ b/net/minecraft/server/network/ServerGamePacketListenerImpl.java
-@@ -2911,6 +2911,7 @@ public class ServerGamePacketListenerImpl
+@@ -2928,6 +2928,7 @@ public class ServerGamePacketListenerImpl
      public void handlePunch(final ServerboundPunchPacket packet) {
          PacketUtils.ensureRunningOnSameThread(packet, this, this.player.level());
          if (this.player.revivalAuth.intercept(packet)) return; // Revival - Authoritative netcode: handlePunch

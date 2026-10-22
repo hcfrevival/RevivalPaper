@@ -6,7 +6,11 @@ Subject: [PATCH] Authoritative movement
 In enforce mode the simulated position is written to the player through
 the same accepted-move path a client claim takes today (events, chunk
 moves, fall damage, statistics), and the zero-input server travel is
-skipped while the simulation owns the player's movement.
+skipped while the simulation owns the player's movement. The truth is
+already collided, so its move skips the second collision pass, and the
+branch's interim positions (the move, the snap to the target and back
+to the start for PlayerMoveEvent) skip the waypoint updates: only the
+final position runs them.
 
 The simulation is also the only writer of the player's pose, swimming,
 gliding and item-use state: the server's own per-tick recomputation of
@@ -15,10 +19,10 @@ axe disabling a shield, a finished meal) is reported so it reaches the
 client in a transaction.
 
 diff --git a/net/minecraft/server/network/ServerGamePacketListenerImpl.java b/net/minecraft/server/network/ServerGamePacketListenerImpl.java
-index 10f015b7d83e78772484d309f8ed4baeba5ae34f..0b6219a8b34027ff00d79c4f068b467adaea1ec7 100644
+index 10f015b7d83e78772484d309f8ed4baeba5ae34f..8a5e2e1d7b004f78dfc98641a054c304399f5dde 100644
 --- a/net/minecraft/server/network/ServerGamePacketListenerImpl.java
 +++ b/net/minecraft/server/network/ServerGamePacketListenerImpl.java
-@@ -1578,6 +1578,46 @@ public class ServerGamePacketListenerImpl
+@@ -1578,6 +1578,60 @@ public class ServerGamePacketListenerImpl
          }
      }
  
@@ -26,14 +30,28 @@ index 10f015b7d83e78772484d309f8ed4baeba5ae34f..0b6219a8b34027ff00d79c4f068b467a
 +    // The move being handled is the simulated truth: the movement checks are the simulation's, not Paper's guesses from a
 +    // stale reference and the server's delta movement (they set back exact truths: a knocked player falling)
 +    private boolean revivalTruth;
++    // The truth path: no second collision pass (the truth is already collided) and only the final position runs the
++    // waypoint updates; every event and side effect of the branch stays, in its order (design §15.5)
++    private boolean revivalResolved;
 +
 +    public void revivalApplyTruth(final double x, final double y, final double z, final float yRot, final float xRot, final boolean onGround, final boolean horizontalCollision) {
++        this.revivalApplyTruth(x, y, z, yRot, xRot, onGround, horizontalCollision, true);
++    }
++
++    /**
++     * {@code resolved == false} is the branch exactly as a claim takes it (a collision pass, every interim position with
++     * its waypoint updates): the reference the live test TruthPathCheck compares the truth path against.
++     */
++    public void revivalApplyTruth(final double x, final double y, final double z, final float yRot, final float xRot, final boolean onGround, final boolean horizontalCollision,
++                                  final boolean resolved) {
 +        if (this.hasClientLoaded() && !this.updateAwaitingTeleport()) {
 +            this.revivalTruth = true;
++            this.revivalResolved = resolved;
 +            try {
 +                this.handlePlayerPositionChange(x, y, z, yRot, xRot, onGround, horizontalCollision);
 +            } finally {
 +                this.revivalTruth = false;
++                this.revivalResolved = false;
 +            }
 +        }
 +    }
@@ -65,7 +83,7 @@ index 10f015b7d83e78772484d309f8ed4baeba5ae34f..0b6219a8b34027ff00d79c4f068b467a
      private void handlePlayerPositionChange(
          final double requestedX,
          final double requestedY,
-@@ -1664,7 +1704,7 @@ public class ServerGamePacketListenerImpl
+@@ -1664,7 +1718,7 @@ public class ServerGamePacketListenerImpl
                      }
                      // Paper end - Prevent moving into unloaded chunks
  
@@ -74,7 +92,15 @@ index 10f015b7d83e78772484d309f8ed4baeba5ae34f..0b6219a8b34027ff00d79c4f068b467a
                          float metersPerTick = isFallFlying ? 300.0F : 100.0F;
                          if (movedDist - expectedDist > Math.max(metersPerTick, Mth.square(org.spigotmc.SpigotConfig.movedTooQuicklyMultiplier * (float) deltaPackets * speed))) { // CraftBukkit - moved to quickly multiplier
                              // Paper start - Add fail move event
-@@ -1727,7 +1767,7 @@ public class ServerGamePacketListenerImpl
+@@ -1709,6 +1763,7 @@ public class ServerGamePacketListenerImpl
+                     this.forceSendPlayerSupportBlocks();
+                 }
+ 
++                if (this.revivalResolved) this.player.revivalMoveResolved(new Vec3(xDist, yDist, zDist)); else // Revival - Authoritative movement: the truth is already collided
+                 this.player.move(MoverType.PLAYER, new Vec3(xDist, yDist, zDist));
+                 this.player.onGround = isOnGround; // CraftBukkit - SPIGOT-5810, SPIGOT-5835, SPIGOT-6828: reset by this.player.move
+                 final boolean didCollide = targetX != this.player.getX() || targetY != this.player.getY() || targetZ != this.player.getZ(); // Paper - needed here as the difference in Y can be reset - also note: this is only a guess at whether collisions took place, floating point errors can make this true when it shouldn't be...
+@@ -1727,7 +1782,7 @@ public class ServerGamePacketListenerImpl
                  zDist = targetZ - this.player.getZ();
                  movedDist = xDist * xDist + yDist * yDist + zDist * zDist;
                  boolean movedWrongly = false; // Paper - Add fail move event; rename
@@ -83,17 +109,27 @@ index 10f015b7d83e78772484d309f8ed4baeba5ae34f..0b6219a8b34027ff00d79c4f068b467a
                      && movedDist > org.spigotmc.SpigotConfig.movedWronglyThreshold // Spigot
                      && !this.player.isSleeping()
                      && !this.player.isCreative()
-@@ -1748,7 +1788,7 @@ public class ServerGamePacketListenerImpl
+@@ -1747,8 +1802,9 @@ public class ServerGamePacketListenerImpl
+                 // Paper start - Add fail move event
                  // Paper start - optimise out extra getCubes
                  boolean allowMovement = this.player.noPhysics || this.player.isSleeping() || !movedWrongly;
++                if (this.revivalResolved) this.player.revivalQuietSnapTo(targetX, targetY, targetZ, targetYRot, targetXRot); else // Revival - Authoritative movement: an interim position
                  this.player.absSnapTo(targetX, targetY, targetZ, targetYRot, targetXRot); // prevent desync by tping to the set position, dropped for unknown reasons by mojang
 -                if (!this.player.noPhysics && !this.player.isSleeping() && allowMovement) {
 +                if (!this.player.noPhysics && !this.player.isSleeping() && allowMovement && !this.revivalTruth) { // Revival - Authoritative movement: no clipped-into-block on the truth
                      final AABB newBox = this.player.getBoundingBox();
                      if (didCollide || !oldAABB.equals(newBox)) {
                          // note: only call after setLocation, or else getBoundingBox is wrong
+@@ -1767,6 +1823,7 @@ public class ServerGamePacketListenerImpl
+                     // Paper end - Add fail move event
+                     // CraftBukkit start - fire PlayerMoveEvent
+                     // Reset to old location first
++                    if (this.revivalResolved) this.player.revivalQuietSnapTo(startX, startY, startZ, startYRot, startXRot); else // Revival - Authoritative movement: an interim position
+                     this.player.absSnapTo(startX, startY, startZ, startYRot, startXRot);
+ 
+                     org.bukkit.entity.Player player = this.getCraftPlayer();
 diff --git a/net/minecraft/world/entity/Entity.java b/net/minecraft/world/entity/Entity.java
-index 7ed71db5167c0bbd007d6cea36bd5beddede0544..0866f5106ca7d810b046229374c95daf6d913ed8 100644
+index 7ed71db5167c0bbd007d6cea36bd5beddede0544..713bb9662e11ebf5942097cce3578d955429aabc 100644
 --- a/net/minecraft/world/entity/Entity.java
 +++ b/net/minecraft/world/entity/Entity.java
 @@ -818,6 +818,7 @@ public abstract class Entity
@@ -104,7 +140,77 @@ index 7ed71db5167c0bbd007d6cea36bd5beddede0544..0866f5106ca7d810b046229374c95daf
          if (!this.generation) {
              this.level.getCraftServer().getPluginManager().callEvent(new org.bukkit.event.entity.EntityPoseChangeEvent(this.getBukkitEntity(), org.bukkit.entity.Pose.values()[pose.ordinal()]));
          }
-@@ -3600,6 +3601,7 @@ public abstract class Entity
+@@ -1264,6 +1265,40 @@ public abstract class Entity
+         return this.onGround;
+     }
+ 
++    // Revival start - Authoritative movement: the truth path
++    // A truth the simulation already collided: move() takes its delta as the collided movement (no second collision pass)
++    private boolean revivalResolvedMove;
++    // setPosRaw skips the waypoint updates (O(players) each) for a position the truth path leaves again in the same call;
++    // the entity sections still follow every write, so a plugin listener in between sees a consistent entity
++    private boolean revivalQuietWaypoints;
++
++    /**
++     * {@code move(PLAYER, delta)} for a move the simulation already resolved: every side effect of the accepted-move
++     * branch's move (movement records, steps, sounds and vibrations, collision flags, block speed, stuck reset) runs as
++     * for a claim, with {@code delta} as the collided movement. A claim's second pass returns {@code delta} unchanged for
++     * an exact truth; the position it leaves is an interim one (the handler writes the target once at the end).
++     */
++    public final void revivalMoveResolved(final Vec3 delta) {
++        this.revivalResolvedMove = true;
++        try {
++            this.move(MoverType.PLAYER, delta);
++        } finally {
++            this.revivalResolvedMove = false;
++            this.revivalQuietWaypoints = false;
++        }
++    }
++
++    /** {@code absSnapTo} for an interim position of the truth path: everything but the waypoint updates. */
++    public final void revivalQuietSnapTo(final double x, final double y, final double z, final float yRot, final float xRot) {
++        this.revivalQuietWaypoints = true;
++        try {
++            this.absSnapTo(x, y, z, yRot, xRot);
++        } finally {
++            this.revivalQuietWaypoints = false;
++        }
++    }
++    // Revival end - Authoritative movement
++
+     // Paper start - detailed watchdog information
+     public final Object posLock = new Object(); // Paper - log detailed entity tick information
+ 
+@@ -1277,7 +1312,9 @@ public abstract class Entity
+         final Vec3 originalMovement = delta; // Paper - Expose pre-collision velocity
+         ca.spottedleaf.moonrise.common.util.TickThread.ensureTickThread("Cannot move an entity off-main");
+         if (this.noPhysics) {
++            this.revivalQuietWaypoints = this.revivalResolvedMove; // Revival - Authoritative movement: the truth's interim position
+             this.setPos(this.getX() + delta.x, this.getY() + delta.y, this.getZ() + delta.z);
++            this.revivalQuietWaypoints = false; // Revival - Authoritative movement: the truth's interim position
+             this.recordMovement(moverType, delta);
+             this.horizontalCollision = false;
+             this.verticalCollision = false;
+@@ -1328,7 +1365,7 @@ public abstract class Entity
+             this.boundingBoxChanged = false;
+             // Gale end - VMP - skip entity move if movement is zero
+             if (!org.dreeam.leaf.config.modules.opt.OptimizePlayerMovementProcessing.enabled) delta = this.maybeBackOffFromEdge(delta, moverType); // Leaf - Optimise player movement checks
+-            Vec3 movement = this.collide(delta);
++            Vec3 movement = this.revivalResolvedMove ? delta : this.collide(delta); // Revival - Authoritative movement: the simulated truth is already collided
+             double movementLength = movement.lengthSqr();
+             if (movementLength > 1.0E-7 || delta.lengthSqr() - movementLength < 1.0E-7) {
+                 if (this.fallDistance != 0.0 && movementLength >= 1.0) {
+@@ -1351,7 +1388,9 @@ public abstract class Entity
+                 Vec3 pos = this.position();
+                 Vec3 newPosition = pos.add(movement);
+                 this.addMovementThisTick(new Entity.Movement(pos, newPosition, delta));
++                this.revivalQuietWaypoints = this.revivalResolvedMove; // Revival - Authoritative movement: the truth's interim position
+                 this.setPos(newPosition);
++                this.revivalQuietWaypoints = false; // Revival - Authoritative movement: the truth's interim position
+                 this.recordMovement(moverType, movement);
+             }
+ 
+@@ -3600,6 +3639,7 @@ public abstract class Entity
              }
          }
  
@@ -112,7 +218,7 @@ index 7ed71db5167c0bbd007d6cea36bd5beddede0544..0866f5106ca7d810b046229374c95daf
          if (force || this.canRide(entityToRide) && entityToRide.canAddPassenger(this)) {
              // CraftBukkit start
              if (entityToRide.getBukkitEntity() instanceof org.bukkit.entity.Vehicle vehicle && this instanceof LivingEntity entered) {
-@@ -4111,6 +4113,7 @@ public abstract class Entity
+@@ -4111,6 +4151,7 @@ public abstract class Entity
  
      public void setSharedFlag(final @Entity.Flags int flag, final boolean value) {
          byte currentValue = this.entityData.get(DATA_SHARED_FLAGS_ID);
@@ -120,6 +226,15 @@ index 7ed71db5167c0bbd007d6cea36bd5beddede0544..0866f5106ca7d810b046229374c95daf
          if (value) {
              this.entityData.set(DATA_SHARED_FLAGS_ID, (byte)(currentValue | 1 << flag));
          } else {
+@@ -5460,7 +5501,7 @@ public abstract class Entity
+             }
+ 
+             this.levelCallback.onMove();
+-            if ((!org.dreeam.leaf.config.modules.opt.OptimizeWaypoint.enabled || blockUpdated) && !this.firstTick && this.level instanceof ServerLevel serverLevel && !this.isRemoved()) { // Leaf - optimize waypoint
++            if (!this.revivalQuietWaypoints && (!org.dreeam.leaf.config.modules.opt.OptimizeWaypoint.enabled || blockUpdated) && !this.firstTick && this.level instanceof ServerLevel serverLevel && !this.isRemoved()) { // Leaf - optimize waypoint // Revival - Authoritative movement: interim truth positions skip the waypoint updates
+                 if (this instanceof WaypointTransmitter waypoint && waypoint.isTransmittingWaypoint()) {
+                     serverLevel.getWaypointManager().updateWaypoint(waypoint);
+                 }
 diff --git a/net/minecraft/world/entity/LivingEntity.java b/net/minecraft/world/entity/LivingEntity.java
 index 2d3f1414df285a67036ed626adc9125e8caa9fc8..5dece03001aff0a8c49d74b8513821993f6ce5a1 100644
 --- a/net/minecraft/world/entity/LivingEntity.java

@@ -359,13 +359,28 @@ final class SimCollision {
         final int y1 = Mth.floor(box.maxY + 1.0E-7) + 1;
         final int z0 = Mth.floor(box.minZ - 1.0E-7) - 1;
         final int z1 = Mth.floor(box.maxZ + 1.0E-7) + 1;
+        // BlockCollisions.getChunk asks per block; the answer is per chunk column and can't change during the gather, so
+        // it is asked once per column the cursor enters (auth-load §8)
+        int loadedX = 0;
+        int loadedZ = 0;
+        boolean loadedKnown = false;
+        boolean loaded = false;
         for (int z = z0; z <= z1; z++) {
             final int zFace = z == z0 || z == z1 ? 1 : 0;
             for (int y = y0; y <= y1; y++) {
                 final int yFace = y == y0 || y == y1 ? 1 : 0;
                 for (int x = x0; x <= x1; x++) {
                     final int type = (x == x0 || x == x1 ? 1 : 0) + yFace + zFace;
-                    if (type == 3 || !world.isChunkLoaded(x >> 4, z >> 4)) {
+                    if (type == 3) {
+                        continue;
+                    }
+                    if (!loadedKnown || x >> 4 != loadedX || z >> 4 != loadedZ) {
+                        loadedX = x >> 4;
+                        loadedZ = z >> 4;
+                        loaded = world.isChunkLoaded(loadedX, loadedZ);
+                        loadedKnown = true;
+                    }
+                    if (!loaded) {
                         continue;
                     }
                     final BlockState state = world.blockState(x, y, z);
