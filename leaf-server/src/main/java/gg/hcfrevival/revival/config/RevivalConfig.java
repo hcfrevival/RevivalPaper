@@ -24,7 +24,7 @@ import org.jspecify.annotations.Nullable;
  */
 public final class RevivalConfig {
 
-    public static final int CURRENT_VERSION = 4;
+    public static final int CURRENT_VERSION = 5;
 
     static final List<String> HEADER = List.of(
         "This is the main configuration file for RevivalPaper.",
@@ -196,6 +196,10 @@ public final class RevivalConfig {
             if (version < 4) {
                 // 4: lag compensation reads one tick of box history and the rewind cap tops out at 12 (review PT-16)
                 migrateDefault(reader, "authoritative.mirror-history-ticks", AuthoritativeSettings.MIRROR_HISTORY_TICKS, 64);
+            }
+            if (version < 5) {
+                // 5: the tick clock drains a backlog now (torture F4), so a window that waited past 400 ms is refused
+                migrateDefault(reader, "authoritative.timer-queue-cap-ms", AuthoritativeSettings.TIMER_QUEUE_CAP_MS, 1000);
             }
             reader.set("config-version", CURRENT_VERSION);
         }

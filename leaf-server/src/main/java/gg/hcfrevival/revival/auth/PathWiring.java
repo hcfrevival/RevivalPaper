@@ -101,7 +101,7 @@ public final class PathWiring implements PathSink {
     @Override
     public void onTick(final AuthPlayer target, final int tick, final double x, final double y, final double z, final float yRot, final float xRot,
                        final boolean onGround) {
-        targetOrNew(target, Revival.settings().authoritative()).feed.append(x, y, z, yRot, xRot, onGround, System.currentTimeMillis());
+        targetOrNew(target, Revival.settings().authoritative()).feed.append(x, y, z, yRot, xRot, onGround, Authority.clockMillis());
     }
 
     // Tracker hooks --------------------------------------------------------------------------------------------------
@@ -134,8 +134,8 @@ public final class PathWiring implements PathSink {
         }
         for (final Packet<?> packet : pairing) {
             if (packet instanceof final ClientboundAddEntityPacket add && add.getId() == player.getId()) {
-                final Fed fed = new Fed(target.feed.viewer(), viewer);
-                fed.viewer.spawned(add.getX(), add.getY(), add.getZ(), add.getYRot(), add.getXRot(), player.onGround(), System.currentTimeMillis());
+                final Fed fed = new Fed(target.feed.viewer(viewer.revivalAuth.pathStepTicks(settings)), viewer);
+                fed.viewer.spawned(add.getX(), add.getY(), add.getZ(), add.getYRot(), add.getXRot(), player.onGround(), Authority.clockMillis());
                 target.viewers.put(viewer, fed);
                 return;
             }
@@ -201,7 +201,7 @@ public final class PathWiring implements PathSink {
                 fed = new Fed(target.feed.viewer(), viewer);
                 final Vec3 base = serverEntity.getPositionBase();
                 fed.viewer.spawned(base.x, base.y, base.z, serverEntity.getLastSentYRot(), serverEntity.getLastSentXRot(), player.onGround(),
-                    System.currentTimeMillis());
+                    Authority.clockMillis());
                 target.viewers.put(viewer, fed);
             } else if (distance > leave) {
                 target.viewers.remove(viewer);
@@ -251,7 +251,7 @@ public final class PathWiring implements PathSink {
     private static void toVanilla(final ServerEntity serverEntity, final Fed fed) {
         fed.viewer.despawned();
         final Vec3 base = serverEntity.getPositionBase();
-        final PositionPath path = PositionPath.stepped(List.of(new PositionStep(base, Revival.settings().authoritative().pathStepTicks())));
+        final PositionPath path = PositionPath.stepped(List.of(new PositionStep(base, fed.viewer.stepTicks())));
         fed.player.connection.send(new ClientboundEntityPositionSyncPacket(serverEntity.entity.getId(), path, serverEntity.getLastSentYRot(),
             serverEntity.getLastSentXRot(), serverEntity.entity.onGround()));
     }

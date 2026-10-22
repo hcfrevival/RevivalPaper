@@ -70,4 +70,29 @@ class OutboundClassifierTest {
         assertEquals(OutboundClassifier.NONE, OutboundClassifier.classify(new net.minecraft.network.protocol.game.ClientboundBlockEventPacket(pos,
             net.minecraft.world.level.block.Blocks.NOTE_BLOCK, 0, 0), 7, SELF, players));
     }
+    @Test
+    void solidEntitiesAreFollowed() {
+        final IntOpenHashSet players = new IntOpenHashSet();
+        final IntOpenHashSet rockets = new IntOpenHashSet();
+        final IntOpenHashSet solids = new IntOpenHashSet();
+        final net.minecraft.network.protocol.game.ClientboundAddEntityPacket boat = new net.minecraft.network.protocol.game.ClientboundAddEntityPacket(50,
+            new UUID(5L, 7L), 0.0, 64.0, 0.0, 0.0F, 0.0F, net.minecraft.world.entity.EntityTypes.OAK_BOAT, 0, Vec3.ZERO, 0.0);
+        assertEquals(OutboundClassifier.SOLID_ENTITY, OutboundClassifier.classify(boat, 7, SELF, players, rockets, solids));
+        final net.minecraft.network.protocol.game.ClientboundAddEntityPacket cart = new net.minecraft.network.protocol.game.ClientboundAddEntityPacket(51,
+            new UUID(5L, 8L), 0.0, 64.0, 0.0, 0.0F, 0.0F, net.minecraft.world.entity.EntityTypes.MINECART, 0, Vec3.ZERO, 0.0);
+        assertEquals(OutboundClassifier.NONE, OutboundClassifier.classify(cart, 7, SELF, players, rockets, solids), "a minecart is no collider");
+        final ClientboundTeleportEntityPacket teleport = new ClientboundTeleportEntityPacket(50, new PositionMoveRotation(Vec3.ZERO, Vec3.ZERO, 0.0F, 0.0F),
+            java.util.Set.of(), false);
+        assertEquals(OutboundClassifier.NONE, OutboundClassifier.classify(teleport, 7, SELF, players, rockets, solids), "not one this client was sent");
+        solids.add(50);
+        assertEquals(OutboundClassifier.SOLID_ENTITY, OutboundClassifier.classify(teleport, 7, SELF, players, rockets, solids));
+        assertEquals(OutboundClassifier.SOLID_ENTITY, OutboundClassifier.classify(new net.minecraft.network.protocol.game.ClientboundMoveEntityPacket.Pos(50,
+            new net.minecraft.network.protocol.game.VecDelta.Linear((short) 1, (short) 0, (short) 0), true), 7, SELF, players, rockets, solids));
+        assertEquals(OutboundClassifier.SOLID_ENTITY, OutboundClassifier.classify(gg.hcfrevival.revival.auth.combat.SolidStreams.passengers(60, 50), 7, SELF, players, rockets, solids), "riding something: its vehicle places it");
+        assertEquals(OutboundClassifier.SOLID_ENTITY, OutboundClassifier.classify(new net.minecraft.network.protocol.game.ClientboundRemoveEntitiesPacket(50), 7, SELF, players, rockets, solids));
+        rockets.add(40);
+        assertEquals(OutboundClassifier.ROCKET, OutboundClassifier.classify(new net.minecraft.network.protocol.game.ClientboundRemoveEntitiesPacket(50, 40), 7, SELF, players, rockets, solids),
+            "a removal of a rocket and a boat goes to the rockets, which hand it on");
+        assertEquals(OutboundClassifier.SELF_PASSENGERS, OutboundClassifier.classify(gg.hcfrevival.revival.auth.combat.SolidStreams.passengers(50, 7), 7, SELF, players, rockets, solids), "driving the boat: the player's own vehicle");
+    }
 }

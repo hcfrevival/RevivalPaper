@@ -97,6 +97,9 @@ public final class ClientStream {
         int moves;
         int pongs;
         long timerAckNanos;
+        long arrivalNanos;
+        boolean paced;
+        int pacedTick;
 
         /** The window's number: {@code T} of {@code TickEnd(T)}. */
         public int tick() {
@@ -105,6 +108,25 @@ public final class ClientStream {
 
         public long closedNanos() {
             return this.closedNanos;
+        }
+
+        /** When its {@code TickEnd} came off the wire (the connection's read, or {@link #closedNanos} when not known). */
+        public long arrivalNanos() {
+            return this.arrivalNanos;
+        }
+
+        /**
+         * Whether the client sent it at its own pace, not as part of a catch-up burst (torture F3): it came at least
+         * {@code catch-up-gap-ms} after the window before it, or its drain answered a ping, or the burst already held a
+         * frame's worth of catch-up ticks ({@code max-banked-ticks}, vanilla's 10).
+         */
+        public boolean paced() {
+            return this.paced;
+        }
+
+        /** Paced windows so far, this one included if it is paced: the clock ack deadlines count in. */
+        public int pacedTick() {
+            return this.pacedTick;
         }
 
         public int items() {
@@ -170,6 +192,9 @@ public final class ClientStream {
             this.moves = 0;
             this.pongs = 0;
             this.timerAckNanos = 0L;
+            this.arrivalNanos = 0L;
+            this.paced = false;
+            this.pacedTick = 0;
         }
     }
 
@@ -435,11 +460,43 @@ public final class ClientStream {
 
     /** {@code TickEnd}: closes the window being filled and queues it. Returns it. */
     public Window close(final Packet<?> tickEnd, final long nowNanos) {
+        return this.close(tickEnd, nowNanos, nowNanos);
+    }
+
+    // Pacing (torture F3): a catch-up burst doesn't count towards ack deadlines
+    private long catchUpGapNanos = 15_000_000L;
+    private int maxCatchUp = 10;
+    private int pacedCount;
+    private int catchUpRun;
+    private long lastArrivalNanos;
+
+    /** Pacing: windows closer than {@code gapNanos} with no pong are catch-up ticks, at most {@code maxRun} in a row. */
+    public void setPacing(final long gapNanos, final int maxRun) {
+        this.catchUpGapNanos = gapNanos;
+        this.maxCatchUp = maxRun;
+    }
+
+    /** Paced windows closed so far. */
+    public int pacedTicks() {
+        return this.pacedCount;
+    }
+
+    /** {@code TickEnd} that came off the wire at {@code arrivalNanos}: closes the window being filled and queues it. */
+    public Window close(final Packet<?> tickEnd, final long nowNanos, final long arrivalNanos) {
         final Window window = this.current;
         this.clearAdjacency();
         window.add(PACKET, tickEnd, TICK_END, 0);
         window.tick = ++this.closed;
         window.closedNanos = nowNanos;
+        window.arrivalNanos = arrivalNanos;
+        final boolean burst = this.closed > 1 && arrivalNanos - this.lastArrivalNanos < this.catchUpGapNanos;
+        window.paced = window.pongs > 0 || !burst || this.catchUpRun >= this.maxCatchUp;
+        this.catchUpRun = window.paced ? 0 : this.catchUpRun + 1;
+        if (window.paced) {
+            this.pacedCount++;
+        }
+        window.pacedTick = this.pacedCount;
+        this.lastArrivalNanos = arrivalNanos;
         if (window.pongs > 0) {
             // A new frame's drain: the previous drains bind now, and so do pongs long before this TickEnd
             window.timerAckNanos = Math.max(this.ackBeforeFrame, this.ackClockAt(nowNanos - this.ackSettleNanos));
@@ -513,6 +570,12 @@ public final class ClientStream {
 
     public Input input() {
         return this.input;
+    }
+
+    /** Authority starts: the keys the client last sent before it, which it won't send again until they change. */
+    public void seedInput(final Input keys) {
+        this.input = keys;
+        this.previousInput = keys;
     }
 
     /** The previous tick's keys (double-tap sprint and crouch read them, report 02 H14). */

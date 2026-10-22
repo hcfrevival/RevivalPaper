@@ -210,6 +210,7 @@ final class AuthCheatScenarios {
         this.withholdPongs();
         this.stall(90, true);
         this.stall(240, false);
+        this.stallTeleport(20);
         this.delayedPongs(3, true);
         this.delayedPongs(9, false);
         this.batchedKnocks();
@@ -796,6 +797,39 @@ final class AuthCheatScenarios {
         this.finish(id);
     }
 
+    // Torture F2/F3/F4: a server teleport sent into a 1 s stall (nothing in or out, under max-unacked-ms). The burst of
+    // windows the client sends after it isn't counted against the teleport's deadline, the teleport's late accept is
+    // never a violation, the client lands where the truth does, and the burst drains at once
+    private void stallTeleport(final int ticks) {
+        final String id = "stall: " + (ticks / 20.0) + " s with a server teleport sent into it";
+        this.begin(id, () -> {
+        });
+        this.arm(id, () -> {
+            this.label = "HONEST";
+            this.c.keys = NONE;
+            this.c.stall = true;
+            this.c.blink = true;
+        });
+        this.step(ticks / 2, id + ": the server teleports it", () -> this.c.player.connection.teleport(this.ox + 0.5, this.gy, this.oz + 1.5, 0.0F, 0.0F));
+        this.step(ticks - ticks / 2, id + ": the network comes back", () -> {
+            this.c.releaseHeld();
+            this.c.flush();
+        });
+        this.judge(40, id, () -> {
+            final Snap d = this.delta(this.c);
+            this.honestExpect(!this.c.kicked, "not kicked (" + this.kicks.getOrDefault(this.c.player.getUUID(), "") + ")");
+            this.honestExpect(d.violations() == 0 && d.txViolations() == 0, "no violation (" + d.violations() + ", pongs " + d.txViolations() + ")");
+            this.honestExpect(d.corrections() <= 1, "recovered with " + d.corrections() + " correction(s), forced " + d.forced());
+            this.honestExpect(this.c.auth.stream().queued() <= 1, "the burst drained (" + this.c.auth.stream().queued() + " windows queued)");
+            final double z = this.c.auth.simulation().z();
+            this.honestExpect(Math.abs(z - (this.oz + 1.5)) < 1.0E-6 && Math.abs(this.c.model.z() - z) < 1.0E-9,
+                "at the teleport's destination, client and truth (truth z " + f(z) + ", client z " + f(this.c.model.z()) + ")");
+            this.honestExpect(!this.c.auth.teleportPending(), "the teleport is done");
+        });
+        this.honestAfter(id, NONE, 0);
+        this.finish(id);
+    }
+
     private void delayedPongs(final int delay, final boolean withinDeadline) {
         final String id = "anti-knockback: delay pongs " + delay + " ticks to choose when the knock lands";
         this.begin(id, () -> {
@@ -964,7 +998,10 @@ final class AuthCheatScenarios {
             final AuthoritativeSettings settings = Revival.settings().authoritative();
             final long ms = d.nanos() / 1_000_000L;
             final long budget = ms / 50L + settings.maxBankedTicks() + 1;
-            this.expect(d.windows() <= budget, "windows run " + d.windows() + " of " + d.closed() + " sent in " + ms + " ms (real-time budget " + budget + ")");
+            // Refused windows are run (their actions update the client model) but move nothing: only the moving ones count
+            final long moving = d.windows() - d.exemptRefused();
+            this.expect(moving <= budget, "windows that moved " + moving + " of " + d.closed() + " sent in " + ms + " ms (real-time budget " + budget
+                + ", refused " + d.exemptRefused() + ")");
             this.expect(d.closed() > d.windows(), "the extra ticks waited or were refused: queued " + this.c.auth.stream().queued() + ", refused " + d.refused());
             if (tps >= 30) {
                 this.expect(d.refused() > 0, "past timer-queue-cap-ms windows are refused: " + d.refused());
@@ -998,7 +1035,9 @@ final class AuthCheatScenarios {
             this.track.maxPerTick = 0;
             this.track.lastWindows = this.c.auth.stats().windows();
             final int bank = Revival.settings().authoritative().maxBankedTicks();
-            this.expect(burst[0] <= bank + 1, "the burst ran " + burst[0] + " of 24 windows at once (bank " + bank + ")");
+            // Torture F4: the bank, then the bank's worth of time it forfeited, owed to the catch-up ticks right behind it
+            // (an honest stall's burst must drain); never more: a longer blink is refused past timer-queue-cap-ms
+            this.expect(burst[0] <= 2 * bank + 1, "the burst ran " + burst[0] + " of 24 windows at once (bank " + bank + ", owed at most " + bank + ")");
         });
         this.judge(20, id, () -> {
             final Snap d = this.delta(this.c);

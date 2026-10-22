@@ -168,6 +168,8 @@ final class AuthCommand {
         lines.add(String.format(Locale.ROOT, "corrections %d (accepted %d, reconciler violations %d; avoided by hotbar branch %d, attack-strength branch %d; rebases refused %d), server teleports %d (accepts off %d), reverts %d, external movers %d, mounts refused %d",
             stats.corrections(), stats.correctionsAccepted(), auth.reconciler().violations(), stats.hotbarBranches(), stats.attackStrengthBranches(), stats.rebasesRefused(),
             stats.serverTeleports(), stats.teleportAcceptMismatches(), stats.reverts(), stats.externalMovers(), stats.mountsRefused()));
+        lines.add(String.format(Locale.ROOT, "solid entities held %d (any untrusted %b), re-paired %d",
+            auth.world().solids.size(), auth.world().solids.anyUntrusted(), stats.solidRepairs()));
         lines.add(String.format(Locale.ROOT, "attacks %d: accepted %d, rejected %d, over cap %d, over cps %d; one-click streak %d (longest %d); double clicks %.1f%%, yaw gcd %.4f / %.4f (%d turns, %d misses, %d smoothed skipped)",
             stats.attacksQueued(), stats.attacksAccepted(), stats.attacksRejected(), stats.attacksOverCap(), stats.attacksOverCps(),
             auth.cadence().streak(), auth.cadence().longest(), input.doubleClickRatio() * 100.0,

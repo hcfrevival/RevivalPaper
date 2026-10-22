@@ -202,6 +202,55 @@ does not change).
 `MirrorBook` 66 ns per target per viewer tick, events included (1.3 µs for 20 targets); `HitValidator` 0.6 µs per
 attack among 20 mirrored players.
 
+### 3.5 Solid entities against the real client (`SolidVerify`)
+
+`auth.combat.SolidMirrors` is each viewer's copy of the boats (every `AbstractBoat`: boats, chest boats, rafts),
+shulkers and happy ghasts its client holds, the colliders of that client's own player (auth-sim-requests §2,
+`WorldView.collectEntityColliders`). It is fed by the same transaction-acked outbound log as the player mirrors
+(`OutboundClassifier.SOLID_ENTITY`, `Transactions.trackedSolids`) and ticked where the client ticks its entities:
+after its player, except entities still there from before a same-level respawn, which tick before it.
+
+- Boats: a port of `LinearInterpolationHandler` (3 steps) and `AbstractInterpolationHandler` (restart unless the same
+  target is active, the target shifted by a snap during an interpolation, rotation deltas), `Entity.snapTo`/`setPos`/
+  `setRot`, the type's `EntityDimensions.makeBoundingBox`. A vehicle this client drives ignores the server's moves.
+- Shulkers: no interpolation, `Shulker.setPos` snapping (and zeroing the peek on a block change), the box from
+  `Shulker.getProgressAabb` with the live scale (at most 3), the attach face (rebuilt when it arrives) and the client's
+  own peek stepped 0.05 a tick; a lid opening into the player's box is reported as an external mover.
+- Happy ghasts: `RemoteMirror` with the type's update interval (3), dimensions refreshed as `LivingEntity` does (scale
+  at most 1 after `refreshDirtyAttributes`, at once for a baby or pose change, `BABY_DIMENSIONS`, sleeping); rule
+  `ENTITY_SOLID` while `STAYS_STILL`, else `ENTITY_SOLID_FROM_ABOVE`; never a baby or a dead one.
+- Order: section x, then the section key's z and y bits unsigned, then when each entered its section (an entity moved
+  into another section goes last there, a raw `snapTo` position counting).
+- A copy is exact until the client does something the log can't see (a target shifted only where its world has room,
+  a lid shoving a boat, a vehicle it drove, a passenger); `takeRepairs` hands those to `AuthPlayer`, which re-pairs the
+  entity through its tracker so a logged spawn replaces the copy. Until then (and for placeholders after activation or a
+  lost log) a tick touching it is the port's external-mover exemption.
+
+The rig (`ClientSolids`) builds real entities with `EntityType.create` on the client-side Mockito level, applies the
+`ClientPacketListener` handler bodies (copied verbatim), ticks them with the real `commonTick`,
+`refreshDirtyAttributes`, `Shulker.updatePeekAmount`/`onPeekAmountChange`, and keeps them in a real
+`EntitySectionStorage` through a copy of `TransientEntitySectionManager.Callback`. Streams (`SolidStreams`, test sources):
+1-4 entities of mixed types, some packed at section corners (one where section z and y change sign), moves (linear and
+stepped deltas, rotation only), syncs and teleports near and past 64 blocks, attach faces, peeks, health, still timeout,
+baby, pose, scale, despawns and respawns, relative tick speeds 1 / 1.25 / 2 / 3.7. Before and after every client tick
+it compares each exact copy's box, position, rotation, a boat's target and steps, a shulker's peek, as raw bits, and
+checks that the order the mirror hands the port contains `EntitySectionStorage.getEntities`' collidable entities over a
+box around one of them in the same order.
+
+```
+~/Developer/tools/auth-rig/combat/build.sh SolidVerify 6000 200 1
+OK: 1,200,000 ticks, 9,600,000 entity-state comparisons (2,681,947 exact, 379,141 skipped inexact), 900,140 order checks (747,549 ordered pairs), 0 mismatches, 156.5 s
+fingerprint seed=3 trials=300 ticks=200: 0x7D4E6C44C7C5A3ADL
+```
+
+Mutation check (500 trials each): lerp rounding (`t·a + x·(1 − a)`), `Math.sin` for `Mth.sin` in the peek, no peek
+reset on a block change, always restarting the boat interpolation, a ghast scale cap of 3, z and y compared as signed
+ints, entry order ignored, re-entry on every move: all caught. Two equivalent mutants survive: a signed compare of the
+whole key (same x, so the same order) and dropping the raw position's section in `snapTo` (a snap is over 64 blocks, so
+it always lands in another section). `SolidMirrorsTest` pins the fingerprint and covers the three-step lerp, a far
+snap and a shifted target, the peek and lid push, the attach face, the ghast rules, the section order, passengers and
+driven vehicles, and placeholders.
+
 ## 4. Findings that differ from the reports
 
 - **Scale reaches the box one tick late.** `UpdateAttributes` only dirties the attribute; the dimensions follow in the

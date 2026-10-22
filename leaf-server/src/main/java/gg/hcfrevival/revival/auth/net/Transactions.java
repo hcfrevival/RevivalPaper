@@ -73,8 +73,20 @@ public final class Transactions {
 
         java.util.UUID selfUuid();
 
-        /** The window the client is in (the last {@code TickEnd} seen, plus one): stamped on pings for deadlines. */
+        /**
+         * The window the client is in now, by real time (the last {@code TickEnd} seen, plus one, plus the client ticks
+         * elapsed since it arrived): stamped on pings for deadlines (torture F3: a ping sent during an upstream stall
+         * is not stamped with the stale window the stall left).
+         */
         int windowTick();
+
+        /**
+         * As {@link #windowTick}, counting only paced windows ({@code ClientStream}: a catch-up burst after a stall or a
+         * hitch doesn't count), extrapolated the same way.
+         */
+        default int pacedTick() {
+            return this.windowTick();
+        }
 
         /** {@code MinecraftServer.currentTick}. */
         int serverTick();
@@ -107,6 +119,10 @@ public final class Transactions {
     private long[] pingSentNanos = new long[64];
     private int[] pingServerTicks = new int[64];
     private int[] pingWindows = new int[64];
+    private int[] pingPaced = new int[64];
+    // Stamps never go down (an extrapolated stamp can be ahead of the next window's own), so the FIFO stays in due order
+    private int lastWindowStamp = Integer.MIN_VALUE;
+    private int lastPacedStamp = Integer.MIN_VALUE;
     private int pingHead;
     private int pingCount;
 
@@ -119,6 +135,16 @@ public final class Transactions {
     private int entryHead;
     private int entryCount;
     private long releasedSeq;
+    // Torture F2/F5: entries force-applied at their deadline that change where the client is (teleports, corrections,
+    // knocks) are kept until their ping's real pong, the drain that applies them on the client, and handed back then
+    // (kind | LANDED); the newest seq forced and the newest acked by a real pong
+    private Packet<?>[] retainedPackets = new Packet<?>[16];
+    private byte[] retainedKinds = new byte[16];
+    private long[] retainedSeqs = new long[16];
+    private long[] retainedMillis = new long[16];
+    private int retainedCount;
+    private long forcedSeq;
+    private long ackedSeq;
 
     // The open per-tick bundle, and the seq of its ping
     private @Nullable ArrayList<Packet<? super ClientGamePacketListener>> open;
@@ -142,6 +168,7 @@ public final class Transactions {
     // Other players this client has been sent, for REMOTE_PLAYER classification (guarded by the lock)
     private final IntOpenHashSet trackedPlayers = new IntOpenHashSet();
     private final IntOpenHashSet trackedRockets = new IntOpenHashSet();
+    private final IntOpenHashSet trackedSolids = new IntOpenHashSet();
     // §15.6 inventory snapshots by entry packet (guarded by the lock), and the bypass audit's expectations
     private final java.util.IdentityHashMap<Packet<?>, Object> snapshots = new java.util.IdentityHashMap<>();
     private final java.util.concurrent.ConcurrentLinkedQueue<Packet<?>> auditExpected = new java.util.concurrent.ConcurrentLinkedQueue<>();
@@ -235,7 +262,7 @@ public final class Transactions {
                 this.sendBundle(connection, bundle, listener, flush, context, coalesce);
                 return;
             }
-            final int kind = OutboundClassifier.classify(packet, context.selfId(), context.selfUuid(), this.trackedPlayers, this.trackedRockets);
+            final int kind = OutboundClassifier.classify(packet, context.selfId(), context.selfUuid(), this.trackedPlayers, this.trackedRockets, this.trackedSolids);
             this.track(packet);
             final boolean bundleable = bundleable(packet);
             if (this.open != null) {
@@ -283,7 +310,7 @@ public final class Transactions {
         boolean matters = false;
         int i = 0;
         for (final Packet<? super ClientGamePacketListener> sub : bundle.subPackets()) {
-            final int kind = OutboundClassifier.mayMatter(sub) ? OutboundClassifier.classify(sub, context.selfId(), context.selfUuid(), this.trackedPlayers, this.trackedRockets) : OutboundClassifier.NONE;
+            final int kind = OutboundClassifier.mayMatter(sub) ? OutboundClassifier.classify(sub, context.selfId(), context.selfUuid(), this.trackedPlayers, this.trackedRockets, this.trackedSolids) : OutboundClassifier.NONE;
             kinds[i++] = kind;
             matters |= kind != OutboundClassifier.NONE;
             this.track(sub);
@@ -459,17 +486,23 @@ public final class Transactions {
                 this.trackedPlayers.add(add.getId());
             } else if (add.getType() == net.minecraft.world.entity.EntityTypes.FIREWORK_ROCKET) {
                 this.trackedRockets.add(add.getId());
+            } else if (gg.hcfrevival.revival.auth.combat.SolidMirrors.kindOf(add.getType()) != 0) {
+                this.trackedSolids.add(add.getId());
             }
         } else if (packet instanceof final ClientboundRemoveEntitiesPacket remove) {
-            if (!this.trackedPlayers.isEmpty() || !this.trackedRockets.isEmpty()) {
+            if (!this.trackedPlayers.isEmpty() || !this.trackedRockets.isEmpty() || !this.trackedSolids.isEmpty()) {
                 for (int i = 0, n = remove.entityIds().size(); i < n; i++) {
                     this.trackedPlayers.remove(remove.entityIds().getInt(i));
                     this.trackedRockets.remove(remove.entityIds().getInt(i));
+                    this.trackedSolids.remove(remove.entityIds().getInt(i));
                 }
             }
         } else if (packet instanceof ClientboundRespawnPacket || packet instanceof ClientboundLoginPacket) {
-            this.trackedPlayers.clear(); // the client drops every entity with its level
+            // The client drops every entity with its level (Paper's respawn removes every pairing first anyway; the
+            // model re-pairs any that a same-level respawn left behind)
+            this.trackedPlayers.clear();
             this.trackedRockets.clear();
+            this.trackedSolids.clear();
         }
     }
 
@@ -488,7 +521,10 @@ public final class Transactions {
         this.pingSeqs[slot] = this.nextSeq++;
         this.pingSentNanos[slot] = System.nanoTime();
         this.pingServerTicks[slot] = context.serverTick();
-        this.pingWindows[slot] = context.windowTick();
+        this.lastWindowStamp = Math.max(this.lastWindowStamp, context.windowTick());
+        this.lastPacedStamp = Math.max(this.lastPacedStamp, context.pacedTick());
+        this.pingWindows[slot] = this.lastWindowStamp;
+        this.pingPaced[slot] = this.lastPacedStamp;
         this.pingCount++;
         this.pingedThisTick = true;
         this.sent++;
@@ -510,7 +546,7 @@ public final class Transactions {
         this.entrySeqs[slot] = this.nextSeq - 1;
         this.entryUpper[slot] = upper;
         final long stamp = context.stampMillis();
-        this.entryMillis[slot] = stamp != 0L ? stamp : System.currentTimeMillis();
+        this.entryMillis[slot] = stamp != 0L ? stamp : gg.hcfrevival.revival.auth.Authority.clockMillis(); // the lag-compensation clock
         this.entryCount++;
         if (kind == OutboundClassifier.INVENTORY) {
             // §15.6: the client's copy of the stacks as they are encoded now, not as they would convert at the ack
@@ -596,6 +632,7 @@ public final class Transactions {
 
     private void overflow() {
         this.dropOutstanding();
+        this.clearRetained();
         this.snapshots.clear();
         this.auditExpected.clear();
         Arrays.fill(this.entryPackets, null);
@@ -636,6 +673,7 @@ public final class Transactions {
         this.pingSentNanos = unwrap(this.pingSentNanos, this.pingHead, this.pingCount, grown);
         this.pingServerTicks = unwrap(this.pingServerTicks, this.pingHead, this.pingCount, grown);
         this.pingWindows = unwrap(this.pingWindows, this.pingHead, this.pingCount, grown);
+        this.pingPaced = unwrap(this.pingPaced, this.pingHead, this.pingCount, grown);
         this.pingHead = 0;
     }
 
@@ -735,7 +773,9 @@ public final class Transactions {
             }
             this.pingHead = (this.pingHead + found + 1) & mask;
             this.pingCount -= found + 1;
-            this.release(seq, out);
+            this.release(seq, out, false);
+            this.ackedSeq = Math.max(this.ackedSeq, seq);
+            this.land(seq, out);
             this.reuseSent(seq);
             this.acked++;
             final long now = System.nanoTime();
@@ -761,13 +801,22 @@ public final class Transactions {
      * unacked: the owner force-applies them at this tick (§15.1). Returns how many pings were forced.
      */
     public int forceDue(final int window, final int deadlineWindows, final Acked out) {
+        return this.forceDue(window, window, deadlineWindows, deadlineWindows, out);
+    }
+
+    /**
+     * As above, with the deadline counted in paced windows (torture F3: the catch-up burst a client sends after a stall,
+     * all ticked before it could have had the packet, doesn't count) and, as a bound on what a client pacing its own
+     * windows can stretch, {@code windowDeadline} windows of any kind.
+     */
+    public int forceDue(final int window, final int pacedWindow, final int deadlineWindows, final int windowDeadline, final Acked out) {
         synchronized (this) {
             final int mask = this.pingIds.length - 1;
             long seq = -1;
             int forced = 0;
             for (int i = 0; i < this.pingCount; i++) {
                 final int slot = (this.pingHead + i) & mask;
-                if (window - this.pingWindows[slot] < deadlineWindows) {
+                if (pacedWindow - this.pingPaced[slot] < deadlineWindows && window - this.pingWindows[slot] < windowDeadline) {
                     break;
                 }
                 if (this.pingSeqs[slot] > this.releasedSeq) {
@@ -776,26 +825,106 @@ public final class Transactions {
                 }
             }
             if (seq > 0) {
-                this.release(seq, out);
+                this.release(seq, out, true);
+                this.forcedSeq = Math.max(this.forcedSeq, seq);
                 this.forcedPings += forced;
             }
             return forced;
         }
     }
 
-    private void release(final long seq, final Acked out) {
+    private void release(final long seq, final Acked out, final boolean forced) {
         final int entryMask = this.entryPackets.length - 1;
         while (this.entryCount > 0) {
             final int head = this.entryHead;
             if (this.entrySeqs[head] > seq) {
                 break;
             }
-            out.add(this.entryPackets[head], this.entryKinds[head], this.entryUpper[head], this.entryMillis[head]);
+            final int kind = this.entryKinds[head];
+            out.add(this.entryPackets[head], kind, this.entryUpper[head], this.entryMillis[head]);
+            if (forced && retained(kind)) {
+                this.retain(this.entryPackets[head], kind, this.entrySeqs[head], this.entryMillis[head]);
+            }
             this.entryPackets[head] = null;
             this.entryHead = (head + 1) & entryMask;
             this.entryCount--;
         }
         this.releasedSeq = Math.max(this.releasedSeq, seq);
+    }
+
+    /** Kinds of forced entries handed back when their real pong comes: they move the client when it applies them. */
+    static boolean retained(final int kind) {
+        return kind == OutboundClassifier.SELF_POSITION || kind == OutboundClassifier.SELF_MOTION || kind == OutboundClassifier.EXPLODE;
+    }
+
+    private void retain(final Packet<?> packet, final int kind, final long seq, final long millis) {
+        if (this.retainedCount == this.retainedPackets.length) {
+            final int grown = this.retainedCount * 2;
+            this.retainedPackets = Arrays.copyOf(this.retainedPackets, grown);
+            this.retainedKinds = Arrays.copyOf(this.retainedKinds, grown);
+            this.retainedSeqs = Arrays.copyOf(this.retainedSeqs, grown);
+            this.retainedMillis = Arrays.copyOf(this.retainedMillis, grown);
+        }
+        this.retainedPackets[this.retainedCount] = packet;
+        this.retainedKinds[this.retainedCount] = (byte) kind;
+        this.retainedSeqs[this.retainedCount] = seq;
+        this.retainedMillis[this.retainedCount] = millis;
+        this.retainedCount++;
+    }
+
+    // A real pong for seq: the forced entries up to it have now reached the client, in this drain
+    private void land(final long seq, final Acked out) {
+        int kept = 0;
+        for (int i = 0; i < this.retainedCount; i++) {
+            if (this.retainedSeqs[i] <= seq) {
+                out.add(this.retainedPackets[i], this.retainedKinds[i] | OutboundClassifier.LANDED, false, this.retainedMillis[i]);
+            } else {
+                this.retainedPackets[kept] = this.retainedPackets[i];
+                this.retainedKinds[kept] = this.retainedKinds[i];
+                this.retainedSeqs[kept] = this.retainedSeqs[i];
+                this.retainedMillis[kept] = this.retainedMillis[i];
+                kept++;
+            }
+        }
+        Arrays.fill(this.retainedPackets, kept, this.retainedCount, null);
+        this.retainedCount = kept;
+    }
+
+    private void clearRetained() {
+        Arrays.fill(this.retainedPackets, 0, this.retainedCount, null);
+        this.retainedCount = 0;
+        this.forcedSeq = 0L;
+        this.ackedSeq = 0L;
+    }
+
+    /** Whether entries were force-applied that the client hasn't applied yet (their pings are still unanswered). */
+    public synchronized boolean forcedOutstanding() {
+        return this.forcedSeq > this.ackedSeq;
+    }
+
+    /**
+     * The knocks sent to this client that it hasn't applied yet, oldest first, into {@code out}: force-applied ones
+     * ({@code upperBound} true: the truth has them already) and logged ones whose ping is unanswered (the truth takes
+     * them at that pong). A correction sent now reaches the client after all of them (torture F5). Returns the count.
+     */
+    public int inFlightKnocks(final Acked out) {
+        synchronized (this) {
+            for (int i = 0; i < this.retainedCount; i++) {
+                final int kind = this.retainedKinds[i];
+                if (kind == OutboundClassifier.SELF_MOTION || kind == OutboundClassifier.EXPLODE) {
+                    out.add(this.retainedPackets[i], kind, true, this.retainedMillis[i]);
+                }
+            }
+            final int mask = this.entryPackets.length - 1;
+            for (int i = 0; i < this.entryCount; i++) {
+                final int slot = (this.entryHead + i) & mask;
+                final int kind = this.entryKinds[slot];
+                if (kind == OutboundClassifier.SELF_MOTION || kind == OutboundClassifier.EXPLODE) {
+                    out.add(this.entryPackets[slot], kind, false, this.entryMillis[slot]);
+                }
+            }
+            return out.size();
+        }
     }
 
     /** The p90 of the last 256 ack round trips (at least {@link #rttBaseNanos}): with the base, the player's own jitter. */
@@ -821,6 +950,9 @@ public final class Transactions {
     public void reset() {
         synchronized (this) {
             this.dropOutstanding();
+            this.clearRetained();
+            this.lastWindowStamp = Integer.MIN_VALUE;
+            this.lastPacedStamp = Integer.MIN_VALUE;
             this.snapshots.clear();
             this.auditExpected.clear();
             Arrays.fill(this.entryPackets, null);
@@ -838,6 +970,7 @@ public final class Transactions {
             this.sentBundleCount = 0;
             this.trackedPlayers.clear();
             this.trackedRockets.clear();
+            this.trackedSolids.clear();
         }
     }
 

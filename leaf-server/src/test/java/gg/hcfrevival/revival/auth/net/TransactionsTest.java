@@ -251,10 +251,65 @@ class TransactionsTest {
         assertEquals(1, this.transactions.forceDue(14, 4, forced));
         assertEquals(1, forced.size());
         assertSame(a, forced.packet(0));
+        assertTrue(this.transactions.forcedOutstanding(), "the client hasn't applied it yet");
         final Transactions.Acked out = new Transactions.Acked();
         assertEquals(Transactions.ACKED, this.transactions.ack(id, 0, out), "the ping stays in the FIFO");
-        assertEquals(0, out.size());
+        // Torture F2/F5: its real pong hands the knock back once, marked: the drain the client applies it in
+        assertEquals(1, out.size());
+        assertSame(a, out.packet(0));
+        assertEquals(OutboundClassifier.SELF_MOTION | OutboundClassifier.LANDED, out.kind(0));
         assertEquals(1, this.transactions.forcedCount());
+        assertFalse(this.transactions.forcedOutstanding());
+    }
+
+    @Test
+    void deadlinesCountPacedWindowsUpToACap() {
+        // Torture F3: a catch-up burst after a stall doesn't count, but no more than the cap of windows in all
+        this.context.window = 10;
+        this.context.paced = 10;
+        this.send(this.selfMotion(0.1));
+        final Transactions.Acked forced = new Transactions.Acked();
+        assertEquals(0, this.transactions.forceDue(20, 11, 4, 14, forced), "10 windows on, but only 1 paced");
+        assertEquals(1, this.transactions.forceDue(20, 14, 4, 14, forced), "4 paced windows on");
+        this.context.window = 30;
+        this.context.paced = 12;
+        this.send(this.selfMotion(0.2));
+        assertEquals(1, this.transactions.forceDue(44, 13, 4, 14, forced), "14 windows on, paced or not");
+    }
+
+    @Test
+    void stampsNeverGoBack() {
+        // An extrapolated stamp (an upstream stall) can be ahead of the next window's own: the FIFO stays in due order
+        this.context.window = 15;
+        this.send(this.selfMotion(0.1));
+        this.context.window = 12;
+        this.send(this.selfMotion(0.2));
+        final Transactions.Acked forced = new Transactions.Acked();
+        assertEquals(0, this.transactions.forceDue(18, 4, forced), "the second ping took the first's stamp, 15");
+        assertEquals(2, this.transactions.forceDue(19, 4, forced));
+    }
+
+    @Test
+    void knocksInFlightAreTheUnackedAndTheForcedOnes() {
+        // Torture F5: a correction sent now reaches the client after these
+        this.context.window = 10;
+        final Packet<?> a = this.selfMotion(0.1);
+        this.send(a);
+        final int first = pingId(contents(this.connection.sent.getLast()).get(0));
+        final Packet<?> b = this.selfMotion(0.2);
+        this.send(b);
+        final Transactions.Acked knocks = new Transactions.Acked();
+        assertEquals(2, this.transactions.inFlightKnocks(knocks));
+        assertFalse(knocks.upperBound(0) || knocks.upperBound(1), "logged, not forced: the truth takes them at their pongs");
+        final Transactions.Acked forced = new Transactions.Acked();
+        assertEquals(2, this.transactions.forceDue(14, 4, forced));
+        knocks.clear();
+        assertEquals(2, this.transactions.inFlightKnocks(knocks));
+        assertTrue(knocks.upperBound(0) && knocks.upperBound(1), "forced: the truth has them already");
+        assertEquals(Transactions.ACKED, this.transactions.ack(first, 0, new Transactions.Acked()));
+        knocks.clear();
+        assertEquals(1, this.transactions.inFlightKnocks(knocks), "the first landed");
+        assertSame(b, knocks.packet(0));
     }
 
     private Iterable<?> tickBundle(final double y) {

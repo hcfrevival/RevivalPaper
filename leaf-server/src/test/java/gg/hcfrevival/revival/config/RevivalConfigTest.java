@@ -105,6 +105,26 @@ class RevivalConfigTest {
     }
 
     @Test
+    void version4TimerQueueCapMovesTo400() throws Exception {
+        // Version 5 (torture F4): the tick clock drains a backlog now, so 1000 ms of queue was the old default
+        Files.writeString(this.file.toPath(), """
+            config-version: 4
+            authoritative:
+              timer-queue-cap-ms: 1000
+            """);
+        RevivalConfig.init(this.file);
+        assertEquals(AuthoritativeSettings.TIMER_QUEUE_CAP_MS, RevivalConfig.settings().authoritative().timerQueueCapMs());
+        assertEquals(400, AuthoritativeSettings.TIMER_QUEUE_CAP_MS);
+        Files.writeString(this.file.toPath(), """
+            config-version: 4
+            authoritative:
+              timer-queue-cap-ms: 700
+            """);
+        RevivalConfig.init(this.file);
+        assertEquals(700, RevivalConfig.settings().authoritative().timerQueueCapMs(), "an owner's own value stays");
+    }
+
+    @Test
     void malformedFileStopsStartupAndIsNotOverwritten() throws Exception {
         Files.writeString(this.file.toPath(), BROKEN);
 

@@ -390,6 +390,12 @@ public final class PortSimulation implements Simulation {
     @Override
     public boolean correction(final int ticksAhead, final Input keys, final float yRot, final float xRot, final ClientView view, final WorldView world,
                               final double[] out) {
+        return this.correction(ticksAhead, keys, yRot, xRot, view, world, out, null);
+    }
+
+    @Override
+    public boolean correction(final int ticksAhead, final Input keys, final float yRot, final float xRot, final ClientView view, final WorldView world,
+                              final double[] out, final gg.hcfrevival.revival.auth.net.Transactions.@Nullable Acked knocks) {
         if (!this.beliefValid) {
             return false;
         }
@@ -397,6 +403,14 @@ public final class PortSimulation implements Simulation {
         truth.copyFrom(this.player);
         final SimPlayer client = this.forecastClient;
         client.copyFrom(this.belief);
+        if (knocks != null) {
+            for (int i = 0; i < knocks.size(); i++) {
+                this.knock(client, knocks.packet(i));
+                if (!knocks.upperBound(i)) {
+                    this.knock(truth, knocks.packet(i)); // not forced: the truth takes it at its pong, before the correction's
+                }
+            }
+        }
         this.input.set(keys, yRot, xRot);
         for (int i = 0; i < ticksAhead; i++) {
             this.sync(truth, view);
@@ -420,6 +434,21 @@ public final class PortSimulation implements Simulation {
             out[12] = truth.vz;
         }
         return true;
+    }
+
+    private final double[] knockDecoded = new double[3];
+
+    // A knock as the client applies it: SetEntityMotion replaces the velocity (LpVec3-decoded), Explode adds
+    private void knock(final SimPlayer p, final net.minecraft.network.protocol.Packet<?> packet) {
+        if (packet instanceof final net.minecraft.network.protocol.game.ClientboundSetEntityMotionPacket motion) {
+            gg.hcfrevival.revival.auth.net.Wire.lpVec3(motion.movement().x, motion.movement().y, motion.movement().z, this.knockDecoded);
+            this.sim.setVelocity(p, this.knockDecoded[0], this.knockDecoded[1], this.knockDecoded[2]);
+        } else if (packet instanceof final net.minecraft.network.protocol.game.ClientboundExplodePacket explode && explode.playerKnockback().isPresent()) {
+            final net.minecraft.world.phys.Vec3 k = explode.playerKnockback().get();
+            if (Double.isFinite(k.x) && Double.isFinite(k.y) && Double.isFinite(k.z)) {
+                this.sim.addVelocity(p, k.x, k.y, k.z);
+            }
+        }
     }
 
     /** Whether the client's box would be inside a block's collision shape, where its own collision no longer stops it. */

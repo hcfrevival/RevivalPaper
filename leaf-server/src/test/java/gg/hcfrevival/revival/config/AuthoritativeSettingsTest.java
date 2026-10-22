@@ -23,7 +23,7 @@ class AuthoritativeSettingsTest {
         assertEquals(1.0E-3, settings.correctionThreshold());
         assertEquals(10, settings.maxBankedTicks());
         assertEquals(120, settings.timerDriftMs());
-        assertEquals(1000, settings.timerQueueCapMs());
+        assertEquals(400, settings.timerQueueCapMs());
         assertEquals(1500, settings.maxUnackedMs());
         assertEquals(1, settings.maxAttacksPerClientTick());
         assertEquals("deny", settings.vehicles());

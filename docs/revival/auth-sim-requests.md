@@ -74,9 +74,11 @@ What the netcode must supply, per call, for this player's client:
    it on the client (its `AddEntity`, or the client moving it there). The port keeps the order it is given. Only ties at
    `Shapes.collide`'s 1e-7 cut and auto-jump's first obstacle can tell; the server's own order is a fine approximation.
 
-**Mirroring:** exactness needs the client's interpolated positions above (the viewer mirror the combat side is building
-for non-players). Until then the server's boxes are exact for anything standing still (a parked boat, a closed shulker, a
-ghast on its still timeout) and lag a moving one by its interpolation (up to 3 ticks of a boat's travel).
+**Mirroring (netcode side done 2026-10-22):** `auth.combat.SolidMirrors`, one per viewer in its `WorldView`, holds the
+boxes above as the client does, fed by the transaction-acked log and ticked around the player's tick in the client's
+order; `SolidVerify` proves it bit-exact against real 26.3 client entities and their `EntitySectionStorage` order
+(auth-combat §3.5). `ExternalMovers` no longer exempts boats, shulkers or happy ghasts whose copy is exact; a shulker lid
+opening into the player is a push.
 
 **Still external movers** (keep flagging these ticks `externalMover`, auth-sim.md §6):
 

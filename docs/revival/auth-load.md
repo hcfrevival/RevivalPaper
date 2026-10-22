@@ -177,6 +177,12 @@ be measured on its own.
 
 ### 1. Correction loops that never converge (netcode, P0)
 
+**Status (netcode, 2026-10-22 05:36 tree):** activation seeds a grounded player with the resting vy
+`(0 - gravity) * 0.98F`; corrections forecast the client with every knock still in flight to it and hold an absolute
+velocity while one is (so no correction overwrites a knock the client applies first); a forced knock that lands, and
+the moment every forced entry has landed, make the next correction one absolute resync. Not yet re-measured at N=50/100
+by this harness (NOTES.md asks for it); the torture rig's stall runs are in auth-torture.md (Fix status).
+
 **What happens:** a player who diverges once while being hit is corrected about once per tick (20/s) for the rest of
 the session. All of their hits are rejected (`NOT_PRESENT`) while it lasts. 1 of 50 bots at N=50, 4 of 50 at ≈125 ms
 RTT, 77 of 100 at N=100.
@@ -209,6 +215,11 @@ one tick behind forever". They do not fix this, because the fallback is absolute
   velocity) and stop forecasting until a claim matches.
 
 ### 2. N=100: the stuck loops cascade and every hit is rejected (netcode + combat, P0)
+
+**Status (netcode, 2026-10-22):** deadlines count paced windows (a catch-up burst doesn't force entries); after forced
+entries, one absolute resync per affected client and the viewer's mirrors re-paired once its acks are current;
+periodic mirror and solid-entity re-pairs wait while any forced entry is outstanding (a re-pair that is itself forced
+loops). Awaiting an N=100 re-run.
 
 The cascade starts during warm-up, about 8 s after the last of 100 joins, while chunk sends and pairing for 100
 players load both sides. The sequence:
@@ -244,6 +255,8 @@ rewind in the attacker's client ticks (the ack clock), not in server wall time, 
 against the client.
 
 ### 4. Input held through activation is lost (netcode, P1)
+
+**Status:** fixed 2026-10-22: activation seeds the sticky keys from `ServerPlayer.getLastClientInput()`.
 
 A `PlayerInput` sent before the first `TickEnd` (activation) never reaches the window state, and the client only sends
 input when it changes. A player holding W through a join therefore runs on empty keys on the server and is corrected

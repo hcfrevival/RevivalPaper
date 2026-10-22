@@ -165,6 +165,10 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
     private double deferredY;
     private double deferredZ;
     private volatile int windowTick = 1;
+    // For ping stamps on any thread: the paced window count (+1, as windowTick), the last TickEnd's arrival, the period
+    private volatile int pacedTick = 1;
+    private volatile long windowArrivalNanos;
+    private volatile long windowPeriodNanos = 50_000_000L;
     private boolean replaying;
     private boolean warm;
     private int teleportsPending;
@@ -197,6 +201,8 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
     private static final int EXEMPT_EXTERNAL_MOVER = AuthStats.EXEMPT_SIMULATION_BASE + gg.hcfrevival.revival.auth.sim.ExemptReason.EXTERNAL_MOVER.ordinal();
     /** The next seed is a new local player's (login, respawn): standing still where the server put it. */
     private boolean seedStill;
+    // The next seed is authority starting on a client already in the world (not a new local player)
+    private boolean activationSeed;
 
     public AuthPlayer(final ServerPlayer player) {
         this.player = player;
@@ -343,7 +349,22 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
 
     @Override
     public int windowTick() {
-        return this.windowTick;
+        return this.windowTick + this.ticksSinceArrival();
+    }
+
+    @Override
+    public int pacedTick() {
+        return this.pacedTick + this.ticksSinceArrival();
+    }
+
+    // Torture F3: a ping sent while no TickEnd arrives (an upstream stall) is stamped with the window the client is in
+    // by now, not the one the stall left: the client ticks on. One window of grace for ordinary jitter
+    private int ticksSinceArrival() {
+        final long arrival = this.windowArrivalNanos;
+        if (arrival == 0L) {
+            return 0;
+        }
+        return (int) Math.max(0L, (System.nanoTime() - arrival) / this.windowPeriodNanos - 1L);
     }
 
     @Override
@@ -595,7 +616,13 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
     private @Nullable BypassAuditor auditor;
     private boolean bypassWarned;
 
+    private final gg.hcfrevival.revival.auth.net.ArrivalStamps arrivals = new gg.hcfrevival.revival.auth.net.ArrivalStamps();
+
     private void installAuditor() {
+        final io.netty.channel.Channel stamped = this.player.connection.connection.channel;
+        if (stamped != null) {
+            this.arrivals.install(stamped); // TickEnd arrivals for the tick clock (torture F4)
+        }
         if (!this.settings().bypassAudit()) {
             return;
         }
@@ -609,6 +636,7 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
     }
 
     private void uninstallAuditor() {
+        this.arrivals.uninstall();
         this.transactions.setAuditing(false);
         final BypassAuditor audit = this.auditor;
         this.auditor = null;
@@ -673,6 +701,9 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
             this.world.setLevel(this.player.level(), false); // unknown: read the server's loaded chunks
         }
         this.stream.forgetClient();
+        // Load P1: a key held through the join was sent before authority started, and the client sends keys only on change
+        this.stream.seedInput(this.player.getLastClientInput());
+        this.activationSeed = true;
         this.transactions.reset();
         this.clock.start(System.nanoTime(), this.view.tickPeriodNanos(), this.settings().maxBankedTicks());
         this.warm = false;
@@ -685,6 +716,8 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
         Authority.activated(this);
         Authority.mirrors().onReset(this);
         this.repairMirrors(true, this.settings()); // review mirrors-empty-after-activation
+        this.world.solids.clear();
+        this.pairSolidsAgain();
     }
 
     /**
@@ -747,6 +780,7 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
         this.speedSyncsPending = 0;
         this.speedSyncSprint = false;
         Authority.mirrors().onReset(this);
+        this.world.solids.clear();
     }
 
     // Outbound (hook 9) ----------------------------------------------------------------------------------------------
@@ -956,7 +990,14 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
         if (recorder != null) {
             recorder.tickEnd();
         }
-        this.stream.close(packet, System.nanoTime());
+        final long now = System.nanoTime();
+        final long arrival = this.arrivals.take(now);
+        final AuthoritativeSettings settings = this.settings();
+        this.stream.setPacing(settings.catchUpGapMs() * 1_000_000L, settings.maxBankedTicks());
+        this.stream.close(packet, now, arrival);
+        this.windowPeriodNanos = this.view.tickPeriodNanos();
+        this.windowArrivalNanos = arrival;
+        this.pacedTick = this.stream.pacedTicks() + 1;
         this.windowTick = this.stream.currentTick();
         this.runReady();
         return true;
@@ -1125,6 +1166,7 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
         }
         this.drainBypasses();
         final long now = System.nanoTime();
+        Authority.noteServerTick(MinecraftServer.currentTick, now, this.player.level().tickRateManager().nanosecondsPerTick());
         // Unanswered pings, or a client tick that never ends: frozen (pvp-issues NW-2). A stall is not a kick: in HCF a
         // kick is a combat-logger death. The frozen player stays where the truth is, hittable, its knocks force-applied
         // at their deadline; vanilla's keep-alive timeout disconnects a connection that is really gone. Only protocol
@@ -1136,11 +1178,64 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
             && this.transactions.rttBaseNanos() / 1_000_000L - this.player.connection.latency() > settings.pongLagMs()) {
             this.stats.pongsBehindKeepAlive++; // review E5: the keep-alive RTT is the client's real one
         }
-        if (MinecraftServer.currentTick % settings.repairIntervalTicks() == this.player.getId() % settings.repairIntervalTicks()) {
-            this.repairMirrors(false, settings); // spread over the interval, one pass per player
+        if (MinecraftServer.currentTick % 20 == this.player.getId() % 20) {
+            this.updatePathStep(settings);
+        }
+        if (MinecraftServer.currentTick % settings.repairIntervalTicks() == this.player.getId() % settings.repairIntervalTicks()
+            && !this.transactions.forcedOutstanding()) {
+            this.repairMirrors(false, settings); // spread over the interval, one pass per player; never while acks lag
         }
         this.runReady();
         DebugHud.tick(this, this.settings());
+    }
+
+    // Torture K1: this viewer's K, from its own ack jitter (p90 - p10 RTT); 0 until it has enough acks to tell. A switch
+    // needs its side of the hysteresis for replication.step-switch-seconds of once-a-second checks in a row: a join's
+    // chunk burst or a teleport delays acks for a moment, and every switch re-pairs (torture: flapping K2/K1 2 s apart)
+    private int pathStep;
+    private int pathStepWanting;
+
+    /** The K the players fed to this viewer are sent with: the low-jitter K once its acks show it steady, else the default. */
+    public int pathStepTicks(final AuthoritativeSettings settings) {
+        return this.pathStep == 0 ? settings.pathStepTicks() : this.pathStep;
+    }
+
+    // Hysteresis between low-jitter-ms and high-jitter-ms; a switch re-pairs every player fed to this viewer, whose feed
+    // then starts over at the new K (a feed's steps can't change K mid-stream)
+    private void updatePathStep(final AuthoritativeSettings settings) {
+        if (settings.lowJitterStepTicks() >= settings.pathStepTicks() || this.transactions.ackedCount() < 64 || !this.netActive
+            || this.transactions.forcedOutstanding()) {
+            return;
+        }
+        final long jitterMs = (this.transactions.rttHighNanos() - this.transactions.rttBaseNanos()) / 1_000_000L;
+        final int current = this.pathStepTicks(settings);
+        // K1 only on a full jitter window (256 acks, ~12 s): early in a session p90 - p10 of a few dozen acks under-reads
+        // a jittery link (torture: K1 at RTT 150 jitter 30 on a 22 ms reading, hits judged past a cap sized from it)
+        final int wanted = jitterMs < settings.lowJitterMs() && this.transactions.ackedCount() >= 256 ? settings.lowJitterStepTicks()
+            : jitterMs > settings.highJitterMs() ? settings.pathStepTicks() : current;
+        if (wanted == current) {
+            this.pathStep = current;
+            this.pathStepWanting = 0;
+            return;
+        }
+        if (++this.pathStepWanting < settings.stepSwitchSeconds()) {
+            return;
+        }
+        this.pathStepWanting = 0;
+        this.pathStep = wanted;
+        this.stats.pathStepSwitches++;
+        if (settings.debugLog()) {
+            DebugHud.pathStep(this, current, wanted, jitterMs);
+        }
+        for (final ServerPlayer other : ((ServerLevel) this.player.level()).players()) {
+            if (other != this.player && PathWiring.feeds(other.revivalAuth, this.player)) {
+                final net.minecraft.server.level.ChunkMap.TrackedEntity tracked = other.moonrise$getTrackedEntity();
+                if (tracked != null && tracked.seenBy.contains(this.player.connection)) {
+                    tracked.serverEntity.removePairing(this.player);
+                    tracked.serverEntity.addPairing(this.player);
+                }
+            }
+        }
     }
 
     /**
@@ -1193,7 +1288,7 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
 
     private void markMeant(final int field) {
         this.meant |= field;
-        final long now = System.currentTimeMillis();
+        final long now = Authority.clockMillis(); // the clock entry stamps are on
         for (int i = 0; i < this.meantMillis.length; i++) {
             if ((field & 1 << i) != 0) {
                 this.meantMillis[i] = now;
@@ -1278,7 +1373,7 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
             if (this.frozen && this.mode == AuthMode.ENFORCE) {
                 refused = true;
                 this.clock.refuse();
-            } else if (this.clock.tryRun(now, window.timerAckNanos(), period, drift, settings.maxBankedTicks())) {
+            } else if (this.clock.tryRun(now, window.arrivalNanos(), window.timerAckNanos(), period, drift, settings.maxBankedTicks())) {
                 refused = false;
             } else if (now - window.closedNanos() > cap) {
                 refused = this.mode == AuthMode.ENFORCE; // observe never refuses: it only measures
@@ -1315,16 +1410,24 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
         // Deadlines: entries still unacked past ceil(rttBase / 50) + jitter windows are applied now (§15.1)
         final int deadline = (int) Math.ceil(this.slackRttNanos() / 50_000_000.0) + settings.ackJitterTicks();
         this.forced.clear();
-        if (this.transactions.forceDue(tick, deadline, this.forced) > 0) {
-            for (int i = 0; i < this.forced.size(); i++) {
-                this.applyGuarded(this.forced.packet(i), this.forced.kind(i), tick, false, this.forced.sentMillis(i));
-                this.stats.forcedEntries++;
+        // Torture F3: counted in paced windows (a catch-up burst was ticked before the client could have the packet), and
+        // at most max-banked-ticks catch-up windows more in all
+        if (this.transactions.forceDue(tick, window.pacedTick(), deadline, deadline + settings.maxBankedTicks(), this.forced) > 0) {
+            this.applyingForced = true;
+            try {
+                for (int i = 0; i < this.forced.size(); i++) {
+                    this.applyGuarded(this.forced.packet(i), this.forced.kind(i), tick, false, this.forced.sentMillis(i));
+                    this.stats.forcedEntries++;
+                }
+            } finally {
+                this.applyingForced = false;
             }
             this.forced.clear();
+            this.forcedSinceCatchUp = true;
         }
         this.world.expire(tick - deadline, this);
         this.checkAwaitingAccepts(tick, deadline);
-        this.expireMeant(System.currentTimeMillis(), deadline * 50L + 1000L);
+        this.expireMeant(Authority.clockMillis(), deadline * 50L + 1000L);
         if (this.deferredCorrection) {
             try {
                 this.resolveCorrection(window);
@@ -1477,6 +1580,15 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
         this.dugThisTick = false;
         this.keybindsUsing = false;
         this.reconciler.afterWindow();
+        if (this.forcedSinceCatchUp && !this.transactions.forcedOutstanding()) {
+            // Load P0 (the N=100 cascade): the client has every forced entry now. A divergence they left is fixed by one
+            // absolute resync (the next correction), never a relative chain, and the mirrors re-paired once, now that
+            // this viewer's acks are current (a re-pair while they lag is forced too, and loops)
+            this.forcedSinceCatchUp = false;
+            this.beliefStale = true;
+            this.repairMirrors(false, settings);
+        }
+        this.repairSolids();
         this.mirrorTick(tick);
         this.inputStats.onTick(tick, this.attacksThisTick, claim != null && claim.hasRotation(), this.tickYRot);
         if (settings.anomalyAlerts()) {
@@ -1720,6 +1832,11 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
 
     private int speedSyncsPending;
     private boolean speedSyncSprint;
+    // Torture F2/F5: forced entries are being applied; entries were forced since the client last caught up with its acks
+    private boolean applyingForced;
+    private boolean forcedSinceCatchUp;
+    // The knocks in flight to the client when a correction is decided (torture F5)
+    private final Transactions.Acked inFlight = new Transactions.Acked();
     // Neue (neue-combat §4.3, §12.2): the click cap and the locked-cadence detector, per client tick
     private final gg.hcfrevival.revival.auth.input.ClickBucket clicks = new gg.hcfrevival.revival.auth.input.ClickBucket();
     private final gg.hcfrevival.revival.auth.input.CadenceWatch cadence = new gg.hcfrevival.revival.auth.input.CadenceWatch();
@@ -1776,12 +1893,103 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
 
     private void simulate(final @Nullable Input sentInput, final int sprint, final int flying, final boolean fallFlying,
                           final @Nullable ServerboundMovePlayerPacket claim, final boolean refused, final AuthoritativeSettings settings) {
+        // ClientLevel.tickEntities: the player's tick sits among its level's entity ticks in join order
+        this.tickSolids(true);
         try {
             this.simulateUnguarded(sentInput, sprint, flying, fallFlying, claim, refused, settings);
         } catch (final RuntimeException e) {
             this.simulationError(e);
             this.stats.countExempt(AuthStats.EXEMPT_SIMULATION_ERROR);
         }
+        this.tickSolids(false);
+    }
+
+    /**
+     * The client's ticks of the boats, shulkers and happy ghasts it holds ({@code SolidMirrors}): {@code beforePlayer}
+     * those that tick before its player (still there from before a same-level respawn), else the rest, after it. A
+     * shulker lid opening into the player's box moves it on the client: the tick it affects may be pushed.
+     */
+    private void tickSolids(final boolean beforePlayer) {
+        final gg.hcfrevival.revival.auth.combat.SolidMirrors solids = this.world.solids;
+        if (solids.size() == 0 || this.view.frozen()) {
+            return; // TickRateManager.isEntityFrozen: a frozen client ticks only players
+        }
+        final net.minecraft.world.phys.AABB box = this.simulation.seeded() ? this.simulation.box() : this.player.getBoundingBox();
+        final float rate = this.view.tickRate();
+        if (solids.tick(beforePlayer, rate > 20.0F ? rate / 20.0F : 1.0F, box.minX, box.minY, box.minZ, box.maxX, box.maxY, box.maxZ)) {
+            this.stats.externalMovers++;
+            this.movers.lidPush(beforePlayer ? this.runningTick : this.runningTick + 1);
+        }
+    }
+
+    private final it.unimi.dsi.fastutil.ints.IntArrayList solidRepairs = new it.unimi.dsi.fastutil.ints.IntArrayList();
+    private final java.util.ArrayList<net.minecraft.world.entity.Entity> solidsFound = new java.util.ArrayList<>();
+
+    /**
+     * Re-pairs, through their trackers, the solid entities whose client copy went inexact for a reason a spawn fixes, so
+     * a logged {@code AddEntity} makes them exact colliders again. A vehicle or passenger of this player is left alone:
+     * the client places those itself.
+     */
+    private void repairSolids() {
+        if (this.transactions.forcedOutstanding()) {
+            return; // the re-pair would be forced too: once the acks are current
+        }
+        this.world.solids.takeRepairs(this.solidRepairs);
+        if (this.solidRepairs.isEmpty()) {
+            return;
+        }
+        if (this.player.connection != null && this.netActive) {
+            final ServerLevel level = (ServerLevel) this.player.level();
+            for (int i = 0, n = this.solidRepairs.size(); i < n; i++) {
+                final net.minecraft.world.entity.Entity entity = level.getEntity(this.solidRepairs.getInt(i));
+                if (entity != null) {
+                    this.repairPairing(entity);
+                }
+            }
+        }
+        this.solidRepairs.clear();
+    }
+
+    /**
+     * Authority starting, or a lost log: every solid entity this client may hold becomes an untrusted placeholder (the
+     * ticks touching one are the external-mover exemption) and is re-paired, so its logged spawn replaces it.
+     */
+    private void pairSolidsAgain() {
+        final gg.hcfrevival.revival.auth.combat.SolidMirrors solids = this.world.solids;
+        solids.setSelf(this.player.getId());
+        solids.distrustAll();
+        if (this.player.connection == null || !this.netActive) {
+            return;
+        }
+        final ServerLevel level = (ServerLevel) this.player.level();
+        // ChunkMap.TrackedEntity.updatePlayer pairs by horizontal distance, at most the view distance
+        final double radius = 16.0 * (this.player.getBukkitEntity().getViewDistance() + 1);
+        final net.minecraft.world.phys.AABB area = new net.minecraft.world.phys.AABB(this.player.getX() - radius, level.getMinY(), this.player.getZ() - radius,
+            this.player.getX() + radius, level.getMaxY() + 1, this.player.getZ() + radius);
+        level.getEntities(net.minecraft.world.level.entity.EntityTypeTest.forClass(net.minecraft.world.entity.Entity.class), area,
+            entity -> gg.hcfrevival.revival.auth.combat.SolidMirrors.kindOf(entity.getType()) != 0, this.solidsFound, Integer.MAX_VALUE);
+        for (int i = 0, n = this.solidsFound.size(); i < n; i++) {
+            final net.minecraft.world.entity.Entity entity = this.solidsFound.get(i);
+            final net.minecraft.server.level.ChunkMap.TrackedEntity tracked = entity.moonrise$getTrackedEntity();
+            if (tracked != null && tracked.seenBy.contains(this.player.connection)) {
+                solids.markUnknown(entity.getId());
+                this.repairPairing(entity);
+            }
+        }
+        this.solidsFound.clear();
+    }
+
+    private void repairPairing(final net.minecraft.world.entity.Entity entity) {
+        if (entity.isRemoved() || entity.hasIndirectPassenger(this.player) || this.player.hasIndirectPassenger(entity)) {
+            return;
+        }
+        final net.minecraft.server.level.ChunkMap.TrackedEntity tracked = entity.moonrise$getTrackedEntity();
+        if (tracked == null || !tracked.seenBy.contains(this.player.connection)) {
+            return; // not paired: the client holds no copy (its RemoveEntities was logged)
+        }
+        tracked.serverEntity.removePairing(this.player);
+        tracked.serverEntity.addPairing(this.player);
+        this.stats.solidRepairs++;
     }
 
     private void simulateUnguarded(final @Nullable Input sentInput, final int sprint, final int flying, final boolean fallFlying,
@@ -1942,7 +2150,12 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
         final double bound = this.settings().seedMaxMove();
         final ServerPlayer p = this.player;
         final Simulation sim = this.simulation;
-        if (this.seedStill) {
+        if (this.activationSeed && p.onGround() && !this.seedStill) {
+            // Load P0: authority starting on a client that has been ticking on the ground holds the resting velocity,
+            // LivingEntity.travelInAir's (0 - gravity) * 0.98F after the floor zeroed it, not 0
+            final double gravity = this.view.attributes.value(net.minecraft.world.entity.ai.attributes.Attributes.GRAVITY);
+            sim.seed(p.getX(), p.getY(), p.getZ(), 0.0, (0.0 - gravity) * 0.98F, 0.0, this.tickYRot, this.tickXRot, true, this.view, this.world);
+        } else if (this.seedStill) {
             sim.seed(p.getX(), p.getY(), p.getZ(), 0.0, 0.0, 0.0, this.tickYRot, this.tickXRot, p.onGround(), this.view, this.world);
         } else if (this.hasPrevClaim && this.lastClaimTick == this.prevClaimTick + 1
             && p.getX() == this.lastClaimX && p.getY() == this.lastClaimY && p.getZ() == this.lastClaimZ
@@ -1960,6 +2173,7 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
             this.stats.inexactSeeds++;
         }
         this.seedStill = false;
+        this.activationSeed = false;
         this.reseedFromServer = false;
     }
 
@@ -2123,7 +2337,25 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
             this.applyTruth();
             return;
         }
-        final boolean forecast = sim.correction(this.correctionAhead(), this.stream.input(), this.tickYRot, this.tickXRot, this.view, this.world, this.delta);
+        if (this.transactions.forcedOutstanding()) {
+            // Torture F5: entries forced at their deadline haven't reached the client (its link is stalled), so when this
+            // correction would land, and what it lands on, is unknown: none until they land, then one absolute resync
+            this.stats.correctionsHeld++;
+            return;
+        }
+        // Torture F5: knocks already sent reach the client before this correction does; the forecast includes them
+        this.inFlight.clear();
+        this.transactions.inFlightKnocks(this.inFlight);
+        final boolean forecast = sim.correction(this.correctionAhead(), this.stream.input(), this.tickYRot, this.tickXRot, this.view, this.world, this.delta,
+            this.inFlight);
+        if (this.inFlight.size() > 0 && (this.beliefStale || !forecast || this.delta[6] != 0.0)) {
+            // An absolute velocity would overwrite a knock the client applies before it: held until the knocks are acked
+            // (load P0); the next claim still off the truth decides again
+            this.stats.correctionsHeld++;
+            this.inFlight.clear();
+            return;
+        }
+        this.inFlight.clear();
         if (this.beliefStale) {
             // After refused ticks (a stall, a timer refusal) the client's velocity is unknown: land it absolutely,
             // position and velocity, where the truth will be (pvp-issues NW-2: recover with one correction)
@@ -2273,6 +2505,15 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
         this.writingTruth = true;
         try {
             this.player.connection.revivalApplyTruth(sim.x(), sim.y(), sim.z(), this.tickYRot, this.tickXRot, sim.onGround(), sim.horizontalCollision());
+            if (this.teleportsPending == 0 && !this.player.isPassenger()
+                && (this.player.getX() != sim.x() || this.player.getY() != sim.y() || this.player.getZ() != sim.z())) {
+                // CraftBukkit's justTeleported: after a teleport, the first PlayerMoveEvent whose from lags the player
+                // returns before the move is written, leaving the ServerPlayer at the move's start for a tick. A plugin's
+                // own teleport or cancel would be pending now; this is that early return. Once more completes the write,
+                // with no second event (its from is the target now)
+                this.stats.truthRewrites++;
+                this.player.connection.revivalApplyTruth(sim.x(), sim.y(), sim.z(), this.tickYRot, this.tickXRot, sim.onGround(), sim.horizontalCollision());
+            }
             this.writeClientState();
             // §15.5: the server's motion is the client's (what getVelocity, knockback and the move checks read), except
             // while a server velocity waits for the tracker to send it
@@ -2409,6 +2650,10 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
     // Applying acked entries (the client's drain) ----------------------------------------------------------------
 
     private void apply(final Packet<?> packet, final int kind, final int tick, final boolean exact, final long sentMillis) {
+        if ((kind & OutboundClassifier.LANDED) != 0) {
+            this.applyLanded(packet, kind & ~OutboundClassifier.LANDED, tick);
+            return;
+        }
         gg.hcfrevival.revival.combat.NeueCombat.applied(this.player, packet, tick); // T_s: the stagger's recoil reached the client
         final Simulation sim = this.simulation;
         switch (kind) {
@@ -2429,26 +2674,17 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
                         this.stream.setRotation(sim.yRot(), sim.xRot());
                         this.reseedFromServer = !sim.seeded(); // the teleport is the server-owned state to start from
                     }
-                    this.teleportsLogged.rem(position.id());
-                    if (this.mode == AuthMode.ENFORCE) {
-                        // Complete at its pong (§15.3): the server player writes the truth again; the accept is only a claim
-                        this.player.connection.revivalCompleteServerTeleport(position.id());
-                        final int early = this.earlyAccepts.indexOf(position.id());
-                        if (early >= 0) {
-                            this.earlyAccepts.removeInt(early);
-                            this.earlySince.removeInt(early);
-                        } else if (exact) {
-                            // Forced or upper-bound (a bypass): its accept may have come already, or may never be timed
-                            this.awaitingAccepts.add(position.id());
-                            this.awaitingSince.add(tick);
+                    if (this.applyingForced) {
+                        // Torture F2: forced at its deadline, so the client doesn't have it yet. The server player is done
+                        // with it (as at a pong), but for the client it stays pending, claims uncorrected, until its real
+                        // pong lands it (applyLanded): a late accept is then matched, never a violation
+                        if (this.mode == AuthMode.ENFORCE) {
+                            this.player.connection.revivalCompleteServerTeleport(position.id());
                         }
+                        this.reconciler.reset();
+                    } else {
+                        this.teleportApplied(position.id(), exact, tick);
                     }
-                    this.teleportsPending = Math.max(0, this.teleportsPending - 1);
-                    if (this.teleportsPending == 0) {
-                        this.earlyAccepts.clear();
-                        this.earlySince.clear();
-                    }
-                    this.reconciler.reset();
                 }
             }
             case OutboundClassifier.SELF_ROTATION -> {
@@ -2503,17 +2739,31 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
             }
             case OutboundClassifier.RESPAWN -> {
                 final ClientboundRespawnPacket respawn = (ClientboundRespawnPacket) packet;
+                // handleRespawn: a new ClientLevel only for another dimension; in the same one the new player joins last
+                if (this.world.level() != null && this.world.level().dimension() == respawn.commonPlayerSpawnInfo().dimension()) {
+                    this.world.solids.playerRejoined();
+                } else {
+                    this.world.solids.clear();
+                }
                 this.respawn(respawn.dataToKeep());
                 this.localGameMode(respawn.commonPlayerSpawnInfo().gameType()); // handleRespawn → setLocalMode
             }
             case OutboundClassifier.LOGIN -> {
+                this.world.solids.clear();
                 this.respawn((byte) 0);
                 this.localGameMode(((net.minecraft.network.protocol.game.ClientboundLoginPacket) packet).commonPlayerSpawnInfo().gameType());
             }
-            case OutboundClassifier.ROCKET -> this.applyRocket(packet);
+            case OutboundClassifier.ROCKET -> {
+                this.applyRocket(packet);
+                if (packet instanceof net.minecraft.network.protocol.game.ClientboundRemoveEntitiesPacket) {
+                    this.world.solids.apply(packet); // the same removal may hold solid entities
+                }
+            }
+            case OutboundClassifier.SOLID_ENTITY -> this.world.solids.apply(packet);
             case OutboundClassifier.SELF_PASSENGERS -> {
                 final ClientboundSetPassengersPacket passengers = (ClientboundSetPassengersPacket) packet;
                 this.view.passengers(passengers.getVehicle(), passengers.getPassengers(), this.player.getId());
+                this.world.solids.apply(packet); // a boat or ghast this client drives, a shulker riding it
             }
             case OutboundClassifier.INVENTORY -> this.applyInventory(packet, tick);
             case OutboundClassifier.HELD_SLOT -> this.view.items.select(((ClientboundSetHeldSlotPacket) packet).slot());
@@ -2550,10 +2800,65 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
                 Authority.mirrors().onApplied(this, packet, tick, exact, sentMillis);
                 if (packet instanceof final net.minecraft.network.protocol.game.ClientboundRemoveEntitiesPacket remove) {
                     this.removeRockets(remove);
+                    this.world.solids.apply(packet);
+                } else if (packet instanceof ClientboundSetPassengersPacket) {
+                    this.world.solids.apply(packet); // a shulker riding a player
                 }
             }
             default -> {
             }
+        }
+    }
+
+    // A server teleport the client applied in this tick's drain: its accept is awaited, pending ends
+    private void teleportApplied(final int id, final boolean exact, final int tick) {
+        this.teleportsLogged.rem(id);
+        if (this.mode == AuthMode.ENFORCE) {
+            // Complete at its pong (§15.3): the server player writes the truth again; the accept is only a claim
+            this.player.connection.revivalCompleteServerTeleport(id);
+            final int early = this.earlyAccepts.indexOf(id);
+            if (early >= 0) {
+                this.earlyAccepts.removeInt(early);
+                this.earlySince.removeInt(early);
+            } else if (exact) {
+                // Upper-bound (a bypass): its accept may have come already, or may never be timed
+                this.awaitingAccepts.add(id);
+                this.awaitingSince.add(tick);
+            }
+        }
+        this.teleportsPending = Math.max(0, this.teleportsPending - 1);
+        if (this.teleportsPending == 0) {
+            this.earlyAccepts.clear();
+            this.earlySince.clear();
+        }
+        this.reconciler.reset();
+    }
+
+    /**
+     * A force-applied entry's real pong (torture F2, F5): the client applies it in this drain. A server teleport lands now:
+     * the truth takes it again from here (the client's ticks since the deadline happened before it, where the truth had
+     * moved on from the destination), and its accept is awaited. A knock reached the client later than the truth: what
+     * the client holds now is known only from its claims, so the next correction is one absolute resync.
+     */
+    private void applyLanded(final Packet<?> packet, final int kind, final int tick) {
+        this.stats.forcedLanded++;
+        if (kind == OutboundClassifier.SELF_POSITION) {
+            final ClientboundPlayerPositionPacket position = (ClientboundPlayerPositionPacket) packet;
+            if (Reconciler.ours(position.id())) {
+                return; // a correction: the reconciler follows it by its accept
+            }
+            this.world.onTeleport();
+            final Simulation sim = this.simulation;
+            if (!this.view.passenger()) {
+                sim.position(position.change(), position.relatives());
+                this.stream.setRotation(sim.yRot(), sim.xRot());
+                this.reseedFromServer = !sim.seeded();
+            }
+            this.hasLastClaim = false; // claims from before it are no seed's pair (review E1)
+            this.hasPrevClaim = false;
+            this.teleportApplied(position.id(), true, tick);
+        } else {
+            this.beliefStale = true;
         }
     }
 
@@ -2705,6 +3010,7 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
         this.clearTeleportBookkeeping();
         this.repairMirrors(true, this.settings()); // the book was emptied: every tracked player spawns again, logged
         Authority.mirrors().onReset(this);
+        this.pairSolidsAgain(); // the log of their packets is gone too
     }
 
     // ClientView.EchoSink --------------------------------------------------------------------------------------------

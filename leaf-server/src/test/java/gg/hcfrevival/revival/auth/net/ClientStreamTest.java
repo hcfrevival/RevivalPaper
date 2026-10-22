@@ -273,4 +273,31 @@ class ClientStreamTest {
         assertEquals(ClientStream.RECORDED, stream.recordChecked(new ServerboundPlayerInputPacket(Input.EMPTY)));
         assertEquals(ClientStream.EXTRA_INPUT, stream.recordChecked(new ServerboundPlayerInputPacket(FORWARD)));
     }
+    @Test
+    void aCatchUpBurstIsNotPaced() {
+        // Torture F3: windows of a burst after a stall come together with no pong; ack deadlines don't count them
+        final long ms = 1_000_000L;
+        final ClientStream stream = new ClientStream();
+        stream.setPacing(15 * ms, 10);
+        long t = 1_000_000 * ms;
+        for (int i = 0; i < 5; i++) {
+            t += 50 * ms;
+            assertTrue(stream.close(ServerboundClientTickEndPacket.INSTANCE, t, t).paced(), "on time");
+        }
+        assertEquals(5, stream.pacedTicks());
+        t += 1000 * ms; // a 1 s stall: 20 windows arrive within a few ms
+        int paced = 0;
+        for (int i = 0; i < 20; i++) {
+            if (stream.close(ServerboundClientTickEndPacket.INSTANCE, t + i * ms / 2, t + i * ms / 2).paced()) {
+                paced++;
+            }
+        }
+        assertEquals(2, paced, "the burst's first window, and one more after the vanilla frame's 10 catch-up ticks");
+        // A window whose drain answered a ping is the client's own pace, burst or not
+        stream.notePong(t, t - 80 * ms);
+        assertTrue(stream.close(ServerboundClientTickEndPacket.INSTANCE, t + 11 * ms, t + 11 * ms).paced());
+        final ClientStream.Window next = stream.close(ServerboundClientTickEndPacket.INSTANCE, t + 60 * ms, t + 60 * ms);
+        assertTrue(next.paced());
+        assertEquals(stream.pacedTicks(), next.pacedTick(), "a paced window carries the count it made");
+    }
 }

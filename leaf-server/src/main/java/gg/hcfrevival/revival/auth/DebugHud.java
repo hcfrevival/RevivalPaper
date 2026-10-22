@@ -73,6 +73,10 @@ public final class DebugHud {
             packet.getClass().getSimpleName(), dropped ? " (dropped)" : ""));
     }
 
+    static void pathStep(final AuthPlayer auth, final int from, final int to, final long jitterMs) {
+        LOGGER.info(String.format(Locale.ROOT, "[auth] path step %s K%d -> K%d (own jitter %d ms)", auth.player().getScoreboardName(), from, to, jitterMs));
+    }
+
     static void rejectedHit(final AuthPlayer auth, final int tick, final String target, final String reason, final long rewindMillis, final double distance) {
         LOGGER.info(String.format(Locale.ROOT, "[auth] hit rejected %s -> %s tick %d %s rewind %dms distance %.4f",
             auth.player().getScoreboardName(), target, tick, reason, rewindMillis, distance));

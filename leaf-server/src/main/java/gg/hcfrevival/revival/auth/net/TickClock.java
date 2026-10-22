@@ -23,6 +23,9 @@ public final class TickClock {
 
     private long balance;
     private boolean started;
+    private long owed;
+    private long owedUntilNanos;
+    private long repaid;
 
     private long ticks;
     private long refused;
@@ -33,6 +36,7 @@ public final class TickClock {
         this.balance = nowNanos - maxBanked * periodNanos;
         this.started = true;
         this.refusedInARow = 0;
+        this.owed = 0L;
     }
 
     /**
@@ -44,17 +48,39 @@ public final class TickClock {
      * @return whether the window may run now (false: it waits)
      */
     public boolean tryRun(final long nowNanos, final long ackClockNanos, final long periodNanos, final long driftNanos, final int maxBanked) {
+        return this.tryRun(nowNanos, nowNanos, ackClockNanos, periodNanos, driftNanos, maxBanked);
+    }
+
+    /**
+     * As above, for a window whose {@code TickEnd} came off the wire at {@code arrivalNanos} (torture F4). The bank caps
+     * the client's idle time before the window arrived, not time it then waited in the server (a hitch). Time the bank
+     * takes away is owed back to the windows right behind it, at most one bank's worth and for one bank's time: they
+     * are the catch-up ticks the client ran during that idle time (a stall), so the queue drains instead of staying a
+     * bank behind for good. Time before the ack clock is never owed: a client visibly alive can't bank.
+     */
+    public boolean tryRun(final long nowNanos, final long arrivalNanos, final long ackClockNanos, final long periodNanos, final long driftNanos,
+                          final int maxBanked) {
         if (!this.started) {
             this.start(nowNanos, periodNanos, maxBanked);
         }
-        long floor = nowNanos - maxBanked * periodNanos;
-        if (ackClockNanos != 0L) {
-            floor = Math.max(floor, ackClockNanos - driftNanos);
+        final long bank = maxBanked * periodNanos;
+        if (ackClockNanos != 0L && this.balance < ackClockNanos - driftNanos) {
+            this.balance = ackClockNanos - driftNanos;
         }
-        if (this.balance < floor) {
-            this.balance = floor;
+        final long bankFloor = Math.min(arrivalNanos, nowNanos) - bank;
+        if (this.balance < bankFloor) {
+            this.owed = Math.min(bankFloor - this.balance, bank);
+            this.owedUntilNanos = nowNanos + bank;
+            this.balance = bankFloor;
         }
-        final long next = this.balance + periodNanos;
+        long next = this.balance + periodNanos;
+        if (next > nowNanos && this.owed > 0L && nowNanos <= this.owedUntilNanos) {
+            final long back = Math.min(this.owed, next - nowNanos);
+            this.balance -= back;
+            this.owed -= back;
+            next -= back;
+            this.repaid += back;
+        }
         if (next > nowNanos) {
             return false;
         }
@@ -82,6 +108,11 @@ public final class TickClock {
 
     public long refused() {
         return this.refused;
+    }
+
+    /** Nanoseconds of bank-forfeited time given back to catch-up windows (torture F4). */
+    public long repaidNanos() {
+        return this.repaid;
     }
 
     public int refusedInARow() {

@@ -344,6 +344,52 @@ public final class Authority {
         return ineligibleJoins;
     }
 
+    // Torture F6: the lag-compensation clock, server time. Rewind ages are measured on wall time less how far the server
+    // has fallen behind its own tick schedule, so a hitch is never the attacker's: an attack the hitch held is judged in
+    // the first tick after it, a tick after the box it was aimed at. The ticks that catch up shrink the lag again, so
+    // the clock never drifts from wall time on an ordinary server (per-tick jitter cancels); ticks Paper skips stay off it
+    private static volatile long lagNanos;
+    // When the next measurement is due on schedule: a tick still running past it (a hitch in progress, or the packets
+    // handled right after one, before the next tick's measurement) is late by that much already
+    private static volatile long nextDueNanos = Long.MAX_VALUE;
+    private static int clockBaseTick = Integer.MIN_VALUE;
+    private static long clockBaseNanos;
+    private static long clockPeriodNanos;
+    private static int clockLastTick = Integer.MIN_VALUE;
+
+    /** Main thread, from every player's connection tick: where the server stands against its tick schedule. */
+    static void noteServerTick(final int tick, final long nowNanos, final long periodNanos) {
+        if (tick == clockLastTick) {
+            return;
+        }
+        clockLastTick = tick;
+        if (clockBaseTick == Integer.MIN_VALUE || periodNanos != clockPeriodNanos || tick < clockBaseTick) {
+            // Start (or a new tick rate): the schedule starts here, keeping the lag measured so far
+            clockBaseTick = tick;
+            clockBaseNanos = nowNanos - lagNanos;
+            clockPeriodNanos = periodNanos;
+        } else {
+            final long lag = nowNanos - (clockBaseNanos + (tick - clockBaseTick) * periodNanos);
+            if (lag < 0L) {
+                clockBaseNanos += lag; // ahead of the schedule (it was taken late): the schedule moves to now
+                lagNanos = 0L;
+            } else {
+                lagNanos = lag;
+            }
+        }
+        nextDueNanos = clockBaseNanos + (tick + 1 - clockBaseTick) * periodNanos;
+    }
+
+    /** {@code System.currentTimeMillis()} less how far the server is behind its tick schedule, now: any thread. */
+    public static long clockMillis() {
+        return System.currentTimeMillis() - lagMillisAt(System.nanoTime());
+    }
+
+    /** How far the server is behind its tick schedule at {@code nowNanos}, in milliseconds. */
+    static long lagMillisAt(final long nowNanos) {
+        return Math.max(lagNanos, nowNanos - nextDueNanos) / 1_000_000L;
+    }
+
     static void activated(final AuthPlayer player) {
         if (!ACTIVE.contains(player)) {
             ACTIVE.add(player);

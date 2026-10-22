@@ -42,7 +42,7 @@ final class NeueReach {
             return Double.NaN;
         }
         final long cap = CombatWiring.sharedRewindCap(auth, target.getId(), auth.tick()); // the judge's own cap (HR-2), shared
-        final long now = System.currentTimeMillis();
+        final long now = gg.hcfrevival.revival.auth.Authority.clockMillis();
         if (now - sample.stamp > cap) {
             final double[] truth = new double[3];
             if (TruthPaths.INSTANCE.positionSince(target.getId(), now - cap, truth) == Long.MIN_VALUE) {

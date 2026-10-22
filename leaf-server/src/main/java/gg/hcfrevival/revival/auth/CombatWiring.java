@@ -136,7 +136,7 @@ public final class CombatWiring implements ViewerMirrors, AttackJudge, Projectil
             return false;
         }
         final MirrorBook book = book(auth);
-        return gg.hcfrevival.revival.combat.ProjectileRewind.viewBox(book, targetId, System.currentTimeMillis(),
+        return gg.hcfrevival.revival.combat.ProjectileRewind.viewBox(book, targetId, Authority.clockMillis(),
             sharedRewindCap(auth, targetId, book.lastTick()), out);
     }
 
@@ -189,7 +189,7 @@ public final class CombatWiring implements ViewerMirrors, AttackJudge, Projectil
         final AttackerSnapshot snapshot = snapshot(attacker);
         final long cap = rewindCap(attacker, target.getId(), tick, settings);
         final HitCheck check = this.validator.validate(snapshot, target.getId(), book(attacker), tick, List.of(), attacker.world(),
-            System.currentTimeMillis(), cap);
+            Authority.clockMillis(), cap);
         attacker.recordHit(check.verdict() == HitCheck.Verdict.VALID ? "VALID" : check.verdict().name() + " " + check.reason().name(),
             check.rewindMillis(), check.distance());
         return switch (check.verdict()) {

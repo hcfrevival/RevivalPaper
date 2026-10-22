@@ -100,6 +100,11 @@ public final class AuthStats {
     long freezes;
     long pushesAdopted;
     long mirrorRepairs;
+    long solidRepairs;
+    long forcedLanded;
+    long correctionsHeld;
+    long pathStepSwitches;
+    long truthRewrites;
     long attacksOverCps;
     long pongsBehindKeepAlive;
     long teleportsHeld;
@@ -326,6 +331,34 @@ public final class AuthStats {
     /** Re-pairs of a tracked player whose mirror was missing or inexact outside the path feed's own repair. */
     public long mirrorRepairs() {
         return this.mirrorRepairs;
+    }
+
+    /**
+     * Re-pairs of a boat, shulker or happy ghast whose client copy was unknown (authority starting, a lost log) or went
+     * inexact, so a logged spawn makes it the port's exact collider again.
+     */
+    public long solidRepairs() {
+        return this.solidRepairs;
+    }
+
+    /** Force-applied teleports and knocks whose real pong came later: the drain the client applied them in (torture F2, F5). */
+    public long forcedLanded() {
+        return this.forcedLanded;
+    }
+
+    /** Times this viewer's replication K changed with its jitter (torture K1), each re-pairing the players fed to it. */
+    public long pathStepSwitches() {
+        return this.pathStepSwitches;
+    }
+
+    /** Truth writes CraftBukkit's post-teleport {@code justTeleported} return skipped, written again at once. */
+    public long truthRewrites() {
+        return this.truthRewrites;
+    }
+
+    /** Absolute corrections held back while a knock was on its way to the client (torture F5, load P0). */
+    public long correctionsHeld() {
+        return this.correctionsHeld;
     }
 
     /** Claims adopted within the push band in a tick a piston or shulker box may push (review E2). */

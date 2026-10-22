@@ -57,6 +57,14 @@ Re-run at 02:31 (run `d5d4fdfb`, netcode round: `rttBase` fast window, tick-bund
 16): 82 of 82 again. #71 now switches its 300 ms on 2.5 s before the target moves (16 s before): `rttBase` is 346 ms by
 then (the long window alone was still at the old ping), and no entry is forced after that; its row below is from this run.
 
+Re-run at 06:06 (run `9ccd8340`, stall robustness batch: paced ack deadlines, forced entries kept until they land, the
+tick clock repaying a stall's burst, `timer-queue-cap-ms` 400, solid-entity colliders): 83 of 83. New: "stall: 1.0 s with
+a server teleport sent into it" (honest: no kick, no violation, 0 corrections, 22 forced, the burst drained, client and
+truth at the destination). Changed on purpose: "timer: blink" may run the bank and then the bank's worth the bank
+forfeited (20 of 24 at once, was 10: an honest stall's burst must drain, torture F4); "timer: 30 tps" counts the windows
+that moved (83, within the budget of 91; refused windows run but move nothing, and 25 were refused past the 400 ms cap).
+"anti-knockback: delay pongs 9 ticks" lands at +5 with 0 corrections now (none is sent while the forced knock is out).
+
 | # | Cheat | Outcome | Evidence |
 |---|---|---|---|
 | 1 | honest: 5 players join 2 ticks apart on a floor, then walk | honest | Crowd1 not kicked; Crowd1 corrections 0; Crowd1 exact 28/28; Crowd1 walked (z +4.3134); Crowd1 stands on the floor (y -60.0000); Crowd2 not kicked; Crowd2 corrections 0; Crowd2 exact 28/28; Crowd2 walked (z +4.3134); Crowd2 stands on the floor (y -60.0000);... |

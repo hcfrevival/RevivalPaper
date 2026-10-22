@@ -76,6 +76,13 @@ public final class WorldView implements gg.hcfrevival.revival.auth.sim.SimWorld,
     static final int MAX_SEQUENCE_JUMP = 1 << 16;
     private final BlockPos.MutableBlockPos cursor = new BlockPos.MutableBlockPos();
 
+    /** The client's copies of the entities its player collides with, fed by whoever models this client's packets. */
+    public final gg.hcfrevival.revival.auth.combat.SolidMirrors solids = new gg.hcfrevival.revival.auth.combat.SolidMirrors();
+    private gg.hcfrevival.revival.auth.sim.@Nullable SimBoxList colliderOut;
+    // One adapter for the life of the view: collectEntityColliders runs per tick and allocates nothing
+    private final gg.hcfrevival.revival.auth.combat.SolidMirrors.Sink colliderSink = (minX, minY, minZ, maxX, maxY, maxZ, x, y, z, rule) ->
+        this.colliderOut.add(minX, minY, minZ, maxX, maxY, maxZ, x, y, z, rule);
+
     private long pins;
     private long reverts;
     // Overlay entries (sent, pinned) whose state holds a fluid: 0 almost always, so the fluid probe skips the overlay
@@ -330,9 +337,18 @@ public final class WorldView implements gg.hcfrevival.revival.auth.sim.SimWorld,
         return this.border().getMaxZ();
     }
 
-    /** v1: boats, shulkers and happy ghasts are not mirrored for the player's own collision; none are added. */
+    /**
+     * The boats, shulkers and happy ghasts this client holds, at the boxes it holds them ({@link #solids}), in its own
+     * order (auth-sim-requests §2).
+     */
     @Override
     public void collectEntityColliders(final gg.hcfrevival.revival.auth.sim.SimBox area, final gg.hcfrevival.revival.auth.sim.SimBoxList out) {
+        if (this.solids.size() == 0) {
+            return;
+        }
+        this.colliderOut = out;
+        this.solids.collect(area.minX, area.minY, area.minZ, area.maxX, area.maxY, area.maxZ, this.colliderSink);
+        this.colliderOut = null;
     }
 
     @Override

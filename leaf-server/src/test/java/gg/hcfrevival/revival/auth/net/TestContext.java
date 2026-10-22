@@ -10,6 +10,7 @@ final class TestContext implements Transactions.Context {
     int self = 7;
     UUID uuid = new UUID(1L, 2L);
     int window = 1;
+    int paced = Integer.MIN_VALUE; // MIN_VALUE: the same as window
     int serverTick;
     boolean coalesce;
     long stamp;
@@ -32,6 +33,11 @@ final class TestContext implements Transactions.Context {
     @Override
     public int windowTick() {
         return this.window;
+    }
+
+    @Override
+    public int pacedTick() {
+        return this.paced == Integer.MIN_VALUE ? this.window : this.paced;
     }
 
     @Override

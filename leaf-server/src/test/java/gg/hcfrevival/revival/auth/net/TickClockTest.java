@@ -43,7 +43,7 @@ class TickClockTest {
     }
 
     @Test
-    void aStalledClientBurstsAtMostTheBank() {
+    void aStalledClientBurstsAtMostTheBankTwice() {
         final TickClock clock = new TickClock();
         final long start = 1_000_000 * MS;
         clock.start(start, PERIOD, 10);
@@ -52,7 +52,53 @@ class TickClockTest {
         while (clock.tryRun(now, start, PERIOD, DRIFT, 10)) {
             ran++;
         }
-        assertEquals(10, ran);
+        // The bank, then the bank's worth of the time it forfeited, owed to the catch-up ticks right behind (torture F4)
+        assertEquals(20, ran);
+    }
+
+    @Test
+    void aOneSecondStallDrainsInsteadOfStayingBehind() {
+        // Torture F4 (marathon r80stall1000w): 20 windows ticked during a 1 s stall arrive at once, then one a period
+        final TickClock clock = new TickClock();
+        final long start = 1_000_000 * MS;
+        clock.start(start, PERIOD, 10);
+        long now = start;
+        for (int i = 1; i <= 100; i++) {
+            now = start + i * PERIOD;
+            assertTrue(clock.tryRun(now, now, now - 40 * MS, PERIOD, DRIFT, 10));
+        }
+        final long ack = now - 40 * MS;
+        now += 1000 * MS;
+        int queued = 20;
+        while (queued > 0 && clock.tryRun(now, now, ack, PERIOD, DRIFT, 10)) {
+            queued--;
+        }
+        assertEquals(0, queued, "the burst runs at once");
+        for (int i = 1; i <= 40; i++) {
+            final long t = now + i * PERIOD;
+            assertTrue(clock.tryRun(t, t, t - 40 * MS, PERIOD, DRIFT, 10), "and the client is on time again, tick " + i);
+        }
+        assertTrue(clock.repaidNanos() > 0L);
+    }
+
+    @Test
+    void aServerHitchIsCreditedFromEachWindowsArrival() {
+        // Torture F4 (t_hitch_server): windows came on time during a 1.2 s server hitch and waited in the server's queue
+        final TickClock clock = new TickClock();
+        final long start = 1_000_000 * MS;
+        clock.start(start, PERIOD, 10);
+        long now = start;
+        for (int i = 1; i <= 100; i++) {
+            now = start + i * PERIOD;
+            assertTrue(clock.tryRun(now, now, now - 40 * MS, PERIOD, DRIFT, 10));
+        }
+        final long hitchStart = now;
+        now += 1200 * MS;
+        for (int i = 1; i <= 24; i++) {
+            final long arrival = hitchStart + i * PERIOD;
+            assertTrue(clock.tryRun(now, arrival, hitchStart - 40 * MS, PERIOD, DRIFT, 10), "window " + i + " of the hitch");
+        }
+        assertEquals(0L, clock.repaidNanos(), "nothing forfeited, so nothing owed");
     }
 
     @Test

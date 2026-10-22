@@ -17,12 +17,16 @@ import net.minecraft.world.phys.AABB;
  * Movers outside the player's own tick in the client's level (design §15.6, auth-sim §6):
  * <ul>
  *   <li>{@link #PUSH}: a piston's moving blocks or a shulker box's lid, from the {@code BlockEvent} the client applied,
- *       for {@code external-movers.block-window-ticks} within {@code external-movers.block-range} of it. The truth is
- *       still simulated; a claim within {@code external-movers.band} of it is adopted, up to
- *       {@code external-movers.drift-cap} per drift window (review E2: an exemption handed the tick to vanilla);</li>
- *   <li>{@link #SOLID}: solid entities the port has no collider for (boats, shulkers, adult happy ghasts) touching the
- *       player's box, and a potent sulfur geyser under a player in water: the port's {@code EXTERNAL_MOVER} exemption,
- *       vanilla taking the claim only within {@code external-movers.max-move} of where the server holds the player.</li>
+ *       for {@code external-movers.block-window-ticks} within {@code external-movers.block-range} of it; and a shulker's
+ *       lid opening into the player's box ({@code Shulker.onPeekAmountChange} moves it with {@code Entity.move(SHULKER)}
+ *       in the shulker's client tick, which the client's copy of it reports, {@link #lidPush}). The truth is still
+ *       simulated; a claim within {@code external-movers.band} of it is adopted, up to {@code external-movers.drift-cap}
+ *       per drift window (review E2: an exemption handed the tick to vanilla);</li>
+ *   <li>{@link #SOLID}: a boat, shulker or happy ghast touching the player's box whose client copy the port does not
+ *       collide with exactly (a placeholder until a logged spawn, a copy that went inexact, a vehicle this client drove,
+ *       a passenger), and a potent sulfur geyser under a player in water: the port's {@code EXTERNAL_MOVER} exemption,
+ *       vanilla taking the claim only within {@code external-movers.max-move} of where the server holds the player.
+ *       Exact copies are the port's own colliders ({@code WorldView.collectEntityColliders}), no exemption.</li>
  * </ul>
  * A fishing rod pull is no mover: the client adds {@code (owner - hook) * 0.1} to its own velocity in the drain
  * ({@code FishingHook.pullEntity}), which the truth does too.
@@ -39,6 +43,7 @@ final class ExternalMovers {
     private final ArrayList<Entity> found = new ArrayList<>(1);
     private final BlockPos.MutableBlockPos cursor = new BlockPos.MutableBlockPos();
     private int blockTick = Integer.MIN_VALUE / 2;
+    private int lidTick = Integer.MIN_VALUE / 2;
     private double blockX;
     private double blockY;
     private double blockZ;
@@ -56,8 +61,14 @@ final class ExternalMovers {
         this.blockZ = pos.getZ() + 0.5;
     }
 
+    /** A shulker's lid opened into the player's box in the client's entity ticks of tick {@code tick}. */
+    void lidPush(final int tick) {
+        this.lidTick = tick;
+    }
+
     void reset() {
         this.blockTick = Integer.MIN_VALUE / 2;
+        this.lidTick = Integer.MIN_VALUE / 2;
     }
 
     /**
@@ -66,16 +77,27 @@ final class ExternalMovers {
      */
     int near(final ServerPlayer player, final int tick, final double x, final double y, final double z, final AABB box, final WorldView world,
              final AuthoritativeSettings settings) {
-        final double entityRange = settings.externalMoverEntityRange();
-        if (entityRange > 0.0) {
-            player.level().getEntities(ANY, box.inflate(entityRange), SOLID_ENTITY, this.found, 1);
-            if (!this.found.isEmpty()) {
-                this.found.clear();
+        final double reach = settings.externalMoverEntityRange();
+        if (reach > 0.0 && world.solids.anyUntrusted()) {
+            if (world.solids.untrustedWithin(box.minX - reach, box.minY - reach, box.minZ - reach, box.maxX + reach, box.maxY + reach, box.maxZ + reach)) {
                 return SOLID;
             }
+            // A placeholder's box is unknown: the server's is the best guess
+            player.level().getEntities(ANY, box.inflate(reach), SOLID_ENTITY, this.found, 8);
+            for (int i = 0, n = this.found.size(); i < n; i++) {
+                final int id = this.found.get(i).getId();
+                if (!world.solids.trusted(id) && !world.solids.ridesSelf(id)) {
+                    this.found.clear();
+                    return SOLID;
+                }
+            }
+            this.found.clear();
         }
         if (this.geyserBelow(box, world, settings.externalMoverGeyserDepth())) {
             return SOLID;
+        }
+        if (tick - this.lidTick >= 0 && tick - this.lidTick <= settings.externalMoverBlockWindowTicks()) {
+            return PUSH;
         }
         if (tick - this.blockTick <= settings.externalMoverBlockWindowTicks()) {
             final double dx = x - this.blockX;

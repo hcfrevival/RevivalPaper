@@ -139,6 +139,9 @@ final class AuthLiveScenarios {
         this.tests.after(1, "auth: a second client watches the walker", this::viewerJoins);
         this.tests.after(30, "auth: the walker is on the viewer's path feed", this::viewerFed);
         this.tests.after(60, "auth: the viewer's mirror of a walking player never freezes and trails it by the K2 delay", this::mirrorChecked);
+        this.tests.after(1, "auth: K per viewer: a viewer with steady acks moves to K1", this::k1Enabled);
+        this.tests.after(320, "auth: K per viewer: the viewer is on K1 (torture K1), walking back", this::k1Walk);
+        this.tests.after(60, "auth: K per viewer: one-tick steps, the mirror exact and a tick less behind", this::k1Checked);
         this.hitRun(true);
         this.hitRun(false);
         this.tests.after(1, "auth: a double-tap sprint sword hit and an axe hit deal the same damage and knock with authority on and off", this::hitCompare);
@@ -164,6 +167,23 @@ final class AuthLiveScenarios {
         this.tests.after(80, "auth: a 220-block teleport: the chunk arrives before the teleport, the player stands, no correction", this::farTeleportChecked);
         this.tests.after(5, "auth: a 1000-block teleport, into chunks nobody has loaded", () -> this.farTeleport(1000));
         this.tests.after(100, "auth: a 1000-block teleport: the chunk arrives before the teleport, the player stands, no correction", this::farTeleportChecked);
+        this.tests.after(5, "auth: solid entities: a stationary boat ahead of the walker", this::boatAhead);
+        this.tests.after(10, "auth: solid entities: walk up onto the boat", this::boatWalkUp);
+        this.tests.after(50, "auth: solid entities: standing on a stationary boat, exact, no correction", this::boatStandChecked);
+        this.tests.after(1, "auth: solid entities: sneak forward on the boat", this::boatSneak);
+        this.tests.after(50, "auth: solid entities: sneaking stops at the boat's edge, exact, no correction", this::boatSneakChecked);
+        this.tests.after(1, "auth: solid entities: a boat pushed under a falling player", this::boatUnderFall);
+        this.tests.after(50, "auth: solid entities: the falling player lands on the boat, exact, no correction", this::boatUnderFallChecked);
+        this.tests.after(1, "auth: solid entities: a moving boat slides under a standing player", this::boatSlide);
+        this.tests.after(50, "auth: solid entities: a boat sliding under a standing player, exact, no correction", this::boatSlideChecked);
+        this.tests.after(1, "auth: solid entities: two shulkers ahead of the walker", this::shulkersAhead);
+        this.tests.after(10, "auth: solid entities: walk into the shulkers with auto-jump on", this::shulkerAutoJump);
+        this.tests.after(50, "auth: solid entities: auto-jump onto a shulker, exact, no correction", this::shulkerAutoJumpChecked);
+        this.tests.after(20, "auth: solid entities: a client that phases through a boat", this::boatPhase);
+        this.tests.after(50, "auth: solid entities: a client that phases through a boat is corrected, no exemption", this::boatPhaseChecked);
+        this.tests.after(5, "auth: a teleport just above the floor, then a walk", this::justTeleported);
+        this.tests.after(20, "auth: a teleport just above the floor: walking", this::justTeleportedWalk);
+        this.tests.after(20, "auth: the first moves after a teleport write the truth (CraftBukkit's justTeleported)", this::justTeleportedChecked);
         this.tests.after(2, "auth: cleanup", this::cleanup);
     }
 
@@ -212,6 +232,7 @@ final class AuthLiveScenarios {
             this.clientWorld.setLevel(this.level, true);
             this.clientWorld.seedChunks(this.client.player.moonrise$getChunkLoader().getSentChunksRaw());
             this.clientWorld.endProvisional(); // the client knows exactly what it holds: no server-loaded fallback for its model
+            this.clientWorld.solids.setSelf(this.client.player.getId());
             final Vec3 at = this.client.clientPosition();
             this.clientModel.seed(at.x, at.y, at.z, 0.0, 0.0, 0.0, this.yaw, 0.0F, this.client.player.onGround(), this.clientView, this.clientWorld);
         }
@@ -234,6 +255,9 @@ final class AuthLiveScenarios {
                 this.clientWorld.onForgetChunk(forget.pos().x(), forget.pos().z());
             } else if (packet instanceof final net.minecraft.network.protocol.game.ClientboundSetHealthPacket health) {
                 this.clientView.health(health);
+            } else if (solidPacket(packet)) {
+                // The boats, shulkers and happy ghasts it holds (its own player collides with them)
+                this.clientWorld.solids.apply(packet);
             } else if (packet instanceof final net.minecraft.network.protocol.game.ClientboundRespawnPacket respawn) {
                 // A new LocalPlayer: standing still where the server puts it, PlayerLoaded again
                 final boolean keepData = (respawn.dataToKeep() & net.minecraft.network.protocol.game.ClientboundRespawnPacket.KEEP_ENTITY_DATA) != 0;
@@ -245,10 +269,18 @@ final class AuthLiveScenarios {
         }
         this.preTick.accept(this.client.ticks); // this tick's keybinds, before it moves
         final boolean wasFlying = this.clientView.flying();
+        if (this.honestAutoJump && this.clientModel.state().autoJumpTime > 0) {
+            // LocalPlayer.aiStep: the auto-jump the last move found makes this tick's input jump, and that input is sent
+            this.keys = new Input(this.keys.forward(), this.keys.backward(), this.keys.left(), this.keys.right(), true, this.keys.shift(), this.keys.sprint());
+            this.autoJumps++;
+        }
         if (this.client.loaded()) {
             // LocalPlayer.tick does nothing until the client has loaded (its loading screen waits for its chunk)
             this.clientModel.tick(this.keys, this.previousKeys, this.yaw, this.pitch, 0, -1, false, this.clientView, this.clientWorld);
         }
+        // ClientLevel.tickEntities: the entities that joined after the local player tick after it
+        final net.minecraft.world.phys.AABB box = this.clientModel.box();
+        this.clientWorld.solids.tick(false, 1.0F, box.minX, box.minY, box.minZ, box.maxX, box.maxY, box.maxZ);
         this.previousKeys = this.keys;
         if (this.clientView.flying() != wasFlying) {
             // LocalPlayer.aiStep toggled flight (double jump) and sent it at once, before the tick's input and move
@@ -734,6 +766,7 @@ final class AuthLiveScenarios {
     private final List<double[]> mirrorTrace = new ArrayList<>();
 
     private void viewerJoins() {
+        setAuth("authoritative.replication.low-jitter-step-ticks", 2); // K2 for every viewer until k1Enabled
         this.viewer = new FakeClient(this.server, this.level, "AuthViewer");
         this.viewer.player.revivalAuth.setOverride(AuthMode.OBSERVE);
         // Six blocks beside the walker, well inside replication.exact-radius
@@ -757,20 +790,61 @@ final class AuthLiveScenarios {
         };
     }
 
+    private int viewerMark;
+    private double k2Lag;
+
     private void mirrorChecked() {
+        this.k2Lag = this.mirrorLag(2, 1.0, 3.5);
+    }
+
+    private void k1Enabled() {
+        setAuth("authoritative.replication.low-jitter-step-ticks", 1);
+        this.switchesBefore = this.viewer.player.revivalAuth.stats().pathStepSwitches();
+    }
+
+    private long switchesBefore;
+
+    private void k1Walk() {
+        final AuthPlayer viewerAuth = this.viewer.player.revivalAuth;
+        final long switches = viewerAuth.stats().pathStepSwitches() - this.switchesBefore;
+        this.tests.check(viewerAuth.pathStepTicks(gg.hcfrevival.revival.Revival.settings().authoritative()) == 1 && switches == 1,
+            "the viewer's own jitter is low (localhost): K1, one switch (" + switches + ")");
+        this.tests.check(gg.hcfrevival.revival.auth.PathWiring.feeds(this.auth, this.viewer.player), "re-paired onto the feed at K1");
+        this.viewerMark = this.viewer.received.size();
+        this.walked = 0;
+        this.yaw = 180.0F; // north, back towards where it started
+        this.keys = FORWARD;
+        this.mirrorTrace.clear();
+        this.script = tick -> {
+            if (this.keys == FORWARD && ++this.walked >= 50) {
+                this.keys = Input.EMPTY;
+            }
+        };
+    }
+
+    private void k1Checked() {
+        final double k1Lag = this.mirrorLag(1, 0.25, 3.0);
+        this.tests.check(k1Lag <= this.k2Lag - 0.4, "K1 shows the walker sooner (half a tick here: localhost has no jitter to wait out): " + k1Lag + " ticks behind against " + this.k2Lag + " at K2");
+        this.yaw = 0.0F;
+    }
+
+    // Moves of the walker since viewerMark are one-step K-tick paths; the mirror's lag behind the truth over the walk's
+    // steady part stays within [minLag, maxLag] ticks of movement, steady, never frozen, exact. Returns its mean
+    private double mirrorLag(final int stepTicks, final double minAllowed, final double maxAllowed) {
         int moves = 0;
         int stepped = 0;
-        for (final FakeClient.Received received : this.viewer.received) {
+        for (int r = this.viewerMark; r < this.viewer.received.size(); r++) {
+            final FakeClient.Received received = this.viewer.received.get(r);
             if (received.packet() instanceof final net.minecraft.network.protocol.game.ClientboundMoveEntityPacket move
                 && move.revivalEntityId() == this.client.player.getId() && move.hasPosition()) {
                 moves++;
                 if (move.getPositionDelta() instanceof final net.minecraft.network.protocol.game.VecDelta.Stepped path
-                    && path.steps().size() == 1 && path.steps().getFirst().ticks() == 2) {
+                    && path.steps().size() == 1 && path.steps().getFirst().ticks() == stepTicks) {
                     stepped++;
                 }
             }
         }
-        this.tests.check(moves > 40 && stepped == moves, "every move of the walker is a one-step 2-tick path (" + stepped + "/" + moves + ")");
+        this.tests.check(moves > 40 && stepped == moves, "every move of the walker is a one-step " + stepTicks + "-tick path (" + stepped + "/" + moves + ")");
         // Steady state: from the 12th walking tick to the 45th
         double minLag = Double.MAX_VALUE;
         double maxLag = -Double.MAX_VALUE;
@@ -779,8 +853,8 @@ final class AuthLiveScenarios {
         for (int i = 12; i < 45 && i < this.mirrorTrace.size(); i++) {
             final double[] now = this.mirrorTrace.get(i);
             final double[] before = this.mirrorTrace.get(i - 1);
-            if (!(now[1] > before[1])) {
-                frozen++;
+            if (!(now[1] != before[1])) {
+                frozen++; // the display didn't move (either way along z: the second walk goes back north)
             }
             final double speed = now[0] - before[0];
             final double lag = (now[0] - now[1]) / speed;
@@ -797,9 +871,10 @@ final class AuthLiveScenarios {
         this.tests.getLogger().info(trace.toString());
         this.tests.check(this.mirrorTrace.size() >= 45, "the walk was traced (" + this.mirrorTrace.size() + " ticks)");
         this.tests.check(frozen == 0, "the viewer's display moved every tick (" + frozen + " frozen ticks)");
-        this.tests.check(minLag >= 1.0 && maxLag <= 3.5, "it trails the truth by a steady " + minLag + " to " + maxLag + " ticks of movement");
+        this.tests.check(minLag >= minAllowed && maxLag <= maxAllowed, "it trails the truth by a steady " + minLag + " to " + maxLag + " ticks of movement");
         this.tests.check(maxLag - minLag < 0.5, "the delay holds (spread " + (maxLag - minLag) + ")");
         this.tests.check(inexact == 0, "the mirror stayed exact (" + inexact + " inexact samples)");
+        return (minLag + maxLag) / 2.0;
     }
 
     // §15.5: hits with authority on and off ---------------------------------------------------------------------------
@@ -1189,10 +1264,15 @@ final class AuthLiveScenarios {
     private int wallZ;
 
     private static void visibility(final boolean enabled) {
+        setAuth("authoritative.visibility.enabled", enabled);
+    }
+
+    // Edits revival.yml and reloads it, as an owner would
+    private static void setAuth(final String key, final Object value) {
         try {
             final java.io.File file = new java.io.File("revival.yml");
             final org.bukkit.configuration.file.YamlConfiguration yaml = org.bukkit.configuration.file.YamlConfiguration.loadConfiguration(file);
-            yaml.set("authoritative.visibility.enabled", enabled);
+            yaml.set(key, value);
             yaml.save(file);
         } catch (final java.io.IOException failure) {
             throw new IllegalStateException(failure);
@@ -1252,6 +1332,309 @@ final class AuthLiveScenarios {
         }
         this.tests.check(added, "the walker was spawned again on the viewer's client");
         visibility(false);
+    }
+
+    // Exact entity collision (auth-sim-requests §2): boats, shulkers and happy ghasts are the port's colliders, at the
+    // boxes the client holds; no external-mover exemption ---------------------------------------------------------------
+
+    private static final Input FORWARD_SNEAK = new Input(true, false, false, false, false, true, false);
+    private boolean honestAutoJump;
+    private int autoJumps;
+    private net.minecraft.world.entity.@org.jspecify.annotations.Nullable Entity solid;
+    private net.minecraft.world.entity.@org.jspecify.annotations.Nullable Entity solid2;
+    private double solidFloorY;
+    private double solidX;
+    private double solidZ;
+    private long solidCompared;
+    private long solidExact;
+    private long solidMovers;
+    private long solidMismatchTicks;
+    private int solidSteps;
+
+    private static final int EXEMPT_EXTERNAL_MOVER = AuthStats.EXEMPT_SIMULATION_BASE + gg.hcfrevival.revival.auth.sim.ExemptReason.EXTERNAL_MOVER.ordinal();
+
+    // The counters a solid-entity scenario is judged by, and a per-tick comparison of client and truth
+    private static boolean solidPacket(final Packet<?> packet) {
+        return packet instanceof net.minecraft.network.protocol.game.ClientboundAddEntityPacket
+            || packet instanceof net.minecraft.network.protocol.game.ClientboundRemoveEntitiesPacket
+            || packet instanceof net.minecraft.network.protocol.game.ClientboundMoveEntityPacket
+            || packet instanceof net.minecraft.network.protocol.game.ClientboundEntityPositionSyncPacket
+            || packet instanceof net.minecraft.network.protocol.game.ClientboundTeleportEntityPacket
+            || packet instanceof ClientboundSetEntityDataPacket
+            || packet instanceof net.minecraft.network.protocol.game.ClientboundUpdateAttributesPacket
+            || packet instanceof net.minecraft.network.protocol.game.ClientboundSetPassengersPacket;
+    }
+
+    private void solidStart() {
+        final AuthStats stats = this.auth.stats();
+        this.correctionsBefore = stats.corrections();
+        this.solidCompared = stats.compared();
+        this.solidExact = stats.exact();
+        this.solidMovers = stats.exempt(EXEMPT_EXTERNAL_MOVER);
+        this.solidMismatchTicks = 0;
+        this.solidSteps = 0;
+    }
+
+    private void solidJudged(final String what, final boolean honest) {
+        final AuthStats stats = this.auth.stats();
+        final long compared = stats.compared() - this.solidCompared;
+        this.tests.check(compared >= 5, what + ": the claims were compared (" + compared + ")"); // a client standing still sends none
+        this.tests.check(stats.exempt(EXEMPT_EXTERNAL_MOVER) == this.solidMovers, what + ": no external-mover exemption ("
+            + (stats.exempt(EXEMPT_EXTERNAL_MOVER) - this.solidMovers) + "; solid repairs " + stats.solidRepairs() + ")");
+        if (honest) {
+            this.tests.check(stats.exact() - this.solidExact == compared, what + ": every claim exact (" + (stats.exact() - this.solidExact) + " of " + compared
+                + "; over threshold " + stats.overThreshold() + ")");
+            this.tests.check(stats.corrections() == this.correctionsBefore, what + ": no correction (" + (stats.corrections() - this.correctionsBefore) + ")");
+            final Simulation sim = this.auth.simulation();
+            this.tests.check(this.clientModel.x() == sim.x() && this.clientModel.y() == sim.y() && this.clientModel.z() == sim.z(),
+                what + ": client and truth agree bit for bit: " + new Vec3(this.clientModel.x(), this.clientModel.y(), this.clientModel.z()) + " vs "
+                    + new Vec3(sim.x(), sim.y(), sim.z()));
+        }
+    }
+
+    private net.minecraft.world.entity.Entity spawnSolid(final net.minecraft.world.entity.EntityType<?> type, final double x, final double y, final double z) {
+        final net.minecraft.world.entity.Entity entity = type.create(this.level, net.minecraft.world.entity.EntitySpawnReason.COMMAND);
+        entity.snapTo(x, y, z, 0.0F, 0.0F);
+        if (entity instanceof final net.minecraft.world.entity.Mob mob) {
+            mob.setNoAi(true); // a shulker that never peeks, shoots or teleports
+            mob.setPersistenceRequired();
+        }
+        this.level.addFreshEntity(entity);
+        return entity;
+    }
+
+    private void boatAhead() {
+        this.tests.check(this.auth.mode() == AuthMode.ENFORCE, "under enforce (" + this.auth.mode() + ")");
+        this.keys = Input.EMPTY;
+        this.preTick = tick -> {
+        };
+        this.script = tick -> {
+        };
+        this.yaw = -90.0F; // facing +x
+        this.pitch = 0.0F;
+        this.solidFloorY = this.clientModel.y();
+        this.solidX = this.clientModel.x();
+        this.solidZ = this.clientModel.z();
+        // Its +x side flush with a block edge, where a pit will open for the sneak
+        this.solid = this.spawnSolid(net.minecraft.world.entity.EntityTypes.OAK_BOAT, Mth.floor(this.solidX) + 4.0 - (double) 0.6875F, this.solidFloorY,
+            this.solidZ);
+    }
+
+    private void boatWalkUp() {
+        this.tests.check(this.clientWorld.solids.has(this.solid.getId()) && this.auth.world().solids.has(this.solid.getId()),
+            "the client holds the boat, and the server's copy of that client does");
+        this.tests.check(this.auth.world().solids.trusted(this.solid.getId()), "its copy is exact");
+        this.solidStart();
+        this.preTick = tick -> {
+            // Walk forward until stepped up onto it, then stand
+            this.keys = this.clientModel.y() > this.solidFloorY ? Input.EMPTY : FORWARD;
+        };
+    }
+
+    private void boatStandChecked() {
+        final double top = this.solidFloorY + (double) 0.5625F;
+        this.tests.check(this.auth.simulation().y() == top && this.clientModel.y() == top,
+            "stepped up and standing on the boat (truth y " + this.auth.simulation().y() + ", client y " + this.clientModel.y() + ", top " + top + ")");
+        this.solidJudged("a stationary boat", true);
+    }
+
+    private final List<net.minecraft.core.BlockPos> pit = new ArrayList<>();
+
+    private void boatSneak() {
+        // A pit past the boat's edge: a boat is lower than a step (0.5625), so only a real drop makes sneaking stop there
+        final int floor = Mth.floor(this.solidFloorY) - 1;
+        for (int dx = 4; dx <= 6; dx++) {
+            for (int dz = -1; dz <= 1; dz++) {
+                final net.minecraft.core.BlockPos pos = new net.minecraft.core.BlockPos(Mth.floor(this.solidX) + dx, floor, Mth.floor(this.solidZ) + dz);
+                this.level.setBlockAndUpdate(pos, net.minecraft.world.level.block.Blocks.AIR.defaultBlockState());
+                this.pit.add(pos);
+            }
+        }
+        this.solidStart();
+        this.preTick = tick -> this.keys = FORWARD_SNEAK;
+    }
+
+    private void boatSneakChecked() {
+        this.keys = Input.EMPTY;
+        this.preTick = tick -> this.keys = Input.EMPTY;
+        final double top = this.solidFloorY + (double) 0.5625F;
+        final double edge = this.solid.getX() + (double) 0.6875F;
+        this.tests.check(this.auth.simulation().y() == top && this.clientModel.y() == top, "still on the boat (truth y " + this.auth.simulation().y() + ")");
+        this.tests.check(this.auth.simulation().x() > edge - 0.3 && this.auth.simulation().x() < edge + 0.3,
+            "stopped at its edge (x " + this.auth.simulation().x() + ", edge " + edge + ")");
+        this.solidJudged("sneaking at a boat's edge", true);
+        for (final net.minecraft.core.BlockPos pos : this.pit) {
+            this.level.setBlockAndUpdate(pos, net.minecraft.world.level.block.Blocks.STONE.defaultBlockState());
+        }
+        this.pit.clear();
+    }
+
+    private void boatUnderFall() {
+        this.solid.discard(); // the player drops 0.5625 to the floor
+        this.solidStart();
+        this.keys = Input.EMPTY;
+        this.preTick = tick -> this.keys = Input.EMPTY;
+        // From 10 blocks up, a boat 3 blocks away is pushed under the landing spot (0.3 a tick, 10 ticks)
+        this.client.player.connection.teleport(this.solidX, this.solidFloorY + 10.0, this.solidZ, this.yaw, 0.0F);
+        this.solid = this.spawnSolid(net.minecraft.world.entity.EntityTypes.OAK_BOAT, this.solidX - 3.0, this.solidFloorY, this.solidZ);
+        this.script = tick -> {
+            if (this.solidSteps++ < 10) {
+                this.solid.setPos(this.solid.getX() + 0.3, this.solid.getY(), this.solid.getZ());
+            }
+        };
+    }
+
+    private void boatUnderFallChecked() {
+        this.script = tick -> {
+        };
+        final double top = this.solidFloorY + (double) 0.5625F;
+        this.tests.check(this.auth.simulation().y() == top && this.clientModel.y() == top && this.client.player.isAlive(),
+            "landed on the boat (truth y " + this.auth.simulation().y() + ", client y " + this.clientModel.y() + ", top " + top + ")");
+        this.solidJudged("a boat pushed under a falling player", true);
+    }
+
+    private void boatSlide() {
+        this.solid.discard(); // back to the floor
+        this.solidStart();
+        this.solid = this.spawnSolid(net.minecraft.world.entity.EntityTypes.OAK_BOAT, this.clientModel.x() - 3.0, this.solidFloorY, this.clientModel.z());
+        this.script = tick -> {
+            if (this.solidSteps++ >= 5 && this.solidSteps < 25) {
+                this.solid.setPos(this.solid.getX() + 0.3, this.solid.getY(), this.solid.getZ()); // through the standing player and on
+            }
+        };
+    }
+
+    private void boatSlideChecked() {
+        this.script = tick -> {
+        };
+        this.tests.check(this.solid.getX() > this.clientModel.x() + 2.0, "the boat slid through and past the player (boat x " + this.solid.getX() + ")");
+        this.tests.check(this.auth.simulation().y() == this.solidFloorY && this.clientModel.y() == this.solidFloorY,
+            "the player still stands on the floor: a box sliding into it never lifts it (y " + this.auth.simulation().y() + ")");
+        this.solidJudged("a boat sliding under a standing player", true);
+        this.solid.discard();
+    }
+
+    private void shulkersAhead() {
+        // A monster despawns in peaceful; the shulkers have no AI (closed, still)
+        this.server.setDifficulty(this.level, net.minecraft.world.Difficulty.NORMAL, null, true);
+        final int bx = Mth.floor(this.clientModel.x()) + 3;
+        final int bz = Mth.floor(this.clientModel.z());
+        this.solid = this.spawnSolid(net.minecraft.world.entity.EntityTypes.SHULKER, bx + 0.5, this.solidFloorY, bz + 0.5);
+        this.solid2 = this.spawnSolid(net.minecraft.world.entity.EntityTypes.SHULKER, bx + 1.5, this.solidFloorY, bz + 0.5);
+        this.solidX = bx;
+    }
+
+    private void shulkerAutoJump() {
+        this.tests.check(this.clientWorld.solids.has(this.solid.getId()) && this.auth.world().solids.trusted(this.solid.getId()) && this.solid.isAlive(),
+            "the client holds the shulkers, exactly");
+        this.solidStart();
+        this.clientModel.state().autoJumpOption = true; // the client's option (on by default)
+        this.clientModel.state().autoJumpEnabled = true;
+        this.honestAutoJump = true;
+        this.autoJumps = 0;
+        this.preTick = tick -> this.keys = this.clientModel.y() >= this.solidFloorY + 1.0 && this.clientModel.onGround() ? Input.EMPTY : FORWARD;
+    }
+
+    private void shulkerAutoJumpChecked() {
+        this.honestAutoJump = false;
+        this.preTick = tick -> this.keys = Input.EMPTY;
+        this.keys = Input.EMPTY;
+        final double top = this.solidFloorY + 1.0;
+        this.tests.check(this.autoJumps >= 1, "the client auto-jumped (" + this.autoJumps + ")");
+        this.tests.check(this.auth.simulation().y() == top && this.clientModel.y() == top,
+            "standing on the shulkers (truth y " + this.auth.simulation().y() + ", client y " + this.clientModel.y() + ", top " + top + ")");
+        this.solidJudged("auto-jump onto a shulker", true);
+        this.solid.discard();
+        this.solid2.discard();
+        this.server.setDifficulty(this.level, net.minecraft.world.Difficulty.PEACEFUL, null, true);
+    }
+
+    private final List<net.minecraft.core.BlockPos> ceiling = new ArrayList<>();
+
+    private void boatPhase() {
+        // A boat under a ceiling 2 blocks up: no stepping onto it, so it blocks the way. The cheat's own world leaves it out
+        this.solidStart();
+        final double x = this.clientModel.x();
+        final double z = this.clientModel.z();
+        final int floor = Mth.floor(this.solidFloorY);
+        for (int dx = -1; dx <= 6; dx++) {
+            for (int dz = -2; dz <= 2; dz++) {
+                final net.minecraft.core.BlockPos pos = new net.minecraft.core.BlockPos(Mth.floor(x) + dx, floor + 2, Mth.floor(z) + dz);
+                this.level.setBlockAndUpdate(pos, net.minecraft.world.level.block.Blocks.STONE.defaultBlockState());
+                this.ceiling.add(pos);
+            }
+        }
+        this.solid = this.spawnSolid(net.minecraft.world.entity.EntityTypes.OAK_BOAT, x + 2.5, this.solidFloorY, z);
+        this.solidX = x;
+        this.solidSteps = 0;
+        this.preTick = tick -> {
+            if (this.solidSteps++ == 10) {
+                // The cheat: its client drops the boat from its world and walks on as if it weren't there
+                this.clientWorld.solids.apply(new net.minecraft.network.protocol.game.ClientboundRemoveEntitiesPacket(this.solid.getId()));
+            }
+            this.keys = this.solidSteps > 10 && this.solidSteps < 35 ? FORWARD : Input.EMPTY;
+        };
+    }
+
+    private void boatPhaseChecked() {
+        this.preTick = tick -> this.keys = Input.EMPTY;
+        this.keys = Input.EMPTY;
+        final double blocked = this.solid.getX() - (double) 0.6875F - 0.3;
+        this.tests.check(this.auth.stats().corrections() > this.correctionsBefore, "the cheat is corrected ("
+            + (this.auth.stats().corrections() - this.correctionsBefore) + " corrections)");
+        this.tests.check(this.client.player.getX() <= blocked + 1.0E-6 && this.auth.simulation().x() <= blocked + 1.0E-6,
+            "the server never let it through the boat (server x " + this.client.player.getX() + ", truth x " + this.auth.simulation().x() + ", blocked at " + blocked + ")");
+        this.solidJudged("phasing through a boat", false);
+        this.solid.discard();
+        for (final net.minecraft.core.BlockPos pos : this.ceiling) {
+            this.level.setBlockAndUpdate(pos, net.minecraft.world.level.block.Blocks.AIR.defaultBlockState());
+        }
+        this.ceiling.clear();
+    }
+
+    // CraftBukkit's justTeleported (perf pass, "Server-thread pass"): after a teleport, the first PlayerMoveEvent whose from
+    // lags the player returned before the truth was written, leaving the ServerPlayer a move behind for a tick -----------
+
+    private long rewritesBefore;
+    private int truthOff;
+    private int truthTicks;
+
+    private void justTeleported() {
+        this.keys = Input.EMPTY;
+        this.preTick = tick -> this.keys = Input.EMPTY;
+        this.script = tick -> {
+        };
+        this.correctionsBefore = this.auth.stats().corrections();
+        this.rewritesBefore = this.auth.stats().truthRewrites();
+        // 0.02 above the floor: the settle is a move too small for a PlayerMoveEvent, so the walk's first event has a from
+        // (the teleport's destination) that lags where the player is
+        this.client.player.connection.teleport(this.client.player.getX(), this.solidFloorY + 0.02, this.client.player.getZ(), this.yaw, 0.0F);
+    }
+
+    private void justTeleportedWalk() {
+        this.tests.check(!this.auth.teleportPending(), "the teleport landed");
+        this.truthOff = 0;
+        this.truthTicks = 0;
+        this.preTick = tick -> this.keys = FORWARD;
+        this.script = tick -> {
+            final Simulation sim = this.auth.simulation();
+            this.truthTicks++;
+            if (this.client.player.getX() != sim.x() || this.client.player.getY() != sim.y() || this.client.player.getZ() != sim.z()) {
+                this.truthOff++;
+            }
+        };
+    }
+
+    private void justTeleportedChecked() {
+        this.preTick = tick -> this.keys = Input.EMPTY;
+        this.keys = Input.EMPTY;
+        this.script = tick -> {
+        };
+        final long rewrites = this.auth.stats().truthRewrites() - this.rewritesBefore;
+        this.tests.check(this.truthTicks >= 15 && this.truthOff == 0, "the ServerPlayer is the truth after every tick of the walk (" + this.truthOff + " of "
+            + this.truthTicks + " off)");
+        this.tests.check(rewrites >= 1, "the skipped write was caught and written again (" + rewrites + ")");
+        this.tests.check(this.auth.stats().corrections() == this.correctionsBefore, "no correction (" + (this.auth.stats().corrections() - this.correctionsBefore) + ")");
     }
 
     private void cleanup() {
@@ -1521,6 +1904,12 @@ final class AuthLiveScenarios {
         public boolean correction(final int ticksAhead, final Input keys, final float yRot, final float xRot, final ClientView view, final WorldView world,
                                   final double[] out) {
             return this.delegate.correction(ticksAhead, keys, yRot, xRot, view, world, out);
+        }
+
+        @Override
+        public boolean correction(final int ticksAhead, final Input keys, final float yRot, final float xRot, final ClientView view, final WorldView world,
+                                  final double[] out, final gg.hcfrevival.revival.auth.net.Transactions.Acked knocks) {
+            return this.delegate.correction(ticksAhead, keys, yRot, xRot, view, world, out, knocks);
         }
 
         @Override

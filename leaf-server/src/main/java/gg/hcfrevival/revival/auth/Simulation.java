@@ -146,6 +146,16 @@ public interface Simulation {
     }
 
     /**
+     * As above, with the knocks sent to the client that it hasn't applied yet ({@code Transactions.inFlightKnocks},
+     * torture F5): they reach the client before the correction, so its forecast takes every one of them at its start,
+     * and the truth's those that aren't force-applied already ({@code upperBound} false).
+     */
+    default boolean correction(final int ticksAhead, final Input keys, final float yRot, final float xRot, final ClientView view, final WorldView world,
+                               final double[] out, final gg.hcfrevival.revival.auth.net.Transactions.Acked knocks) {
+        return this.correction(ticksAhead, keys, yRot, xRot, view, world, out);
+    }
+
+    /**
      * Seeds at {@code to} with the velocity a vanilla client holds after a tick whose move went from {@code from} to
      * {@code to} (auth-sim-requests §1). Returns false when that velocity is not known bit for bit (it then seeds the most
      * likely one); not supported: false and nothing seeded.

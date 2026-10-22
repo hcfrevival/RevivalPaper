@@ -88,8 +88,19 @@ public final class OutboundClassifier {
      * attached to the player boosts it on the client every tick it is held (auth-sim §3.2).
      */
     public static final int ROCKET = 33;
+    /**
+     * Packets about a boat, shulker or happy ghast this client holds ({@code AddEntity}, moves, syncs, teleports, entity
+     * data, attributes, passengers, removal): the player collides with them on the client (auth-sim-requests §2).
+     */
+    public static final int SOLID_ENTITY = 34;
 
-    public static final int KINDS = 34;
+    public static final int KINDS = 35;
+
+    /**
+     * Or'ed into the kind of a force-applied entry handed back at its ping's real pong ({@code Transactions}): the drain
+     * in which the client applies it after all (torture F2, F5).
+     */
+    public static final int LANDED = 64;
 
     // Families: the packet type alone decides, or it decides together with the entity id
     private static final int F_SELF_ID = -1;        // SetEntityMotion, effects, entity event: self or nothing
@@ -171,6 +182,15 @@ public final class OutboundClassifier {
      * data and removal matter too).
      */
     public static int classify(final Packet<?> packet, final int self, final java.util.UUID selfUuid, final IntSet trackedPlayers, final IntSet trackedRockets) {
+        return classify(packet, self, selfUuid, trackedPlayers, trackedRockets, it.unimi.dsi.fastutil.ints.IntSets.EMPTY_SET);
+    }
+
+    /**
+     * As above, with {@code trackedSolids}: entity ids of the boats, shulkers and happy ghasts this client has been sent
+     * (the player's own collision).
+     */
+    public static int classify(final Packet<?> packet, final int self, final java.util.UUID selfUuid, final IntSet trackedPlayers, final IntSet trackedRockets,
+                               final IntSet trackedSolids) {
         final int family = BY_TYPE.getInt(packet.type());
         if (family >= 0) {
             return family;
@@ -183,13 +203,20 @@ public final class OutboundClassifier {
                     yield packet instanceof ClientboundSetEntityDataPacket ? SELF_ENTITY_DATA
                         : packet instanceof ClientboundUpdateAttributesPacket ? SELF_ATTRIBUTES : SELF_PASSENGERS;
                 }
-                yield trackedPlayers.contains(id) ? REMOTE_PLAYER
-                    : packet instanceof ClientboundSetEntityDataPacket && trackedRockets.contains(id) ? ROCKET : NONE;
+                if (trackedPlayers.contains(id)) {
+                    yield REMOTE_PLAYER;
+                }
+                if (packet instanceof ClientboundSetEntityDataPacket && trackedRockets.contains(id)) {
+                    yield ROCKET;
+                }
+                yield trackedSolids.contains(id) || packet instanceof final ClientboundSetPassengersPacket passengers && carriesAny(passengers, trackedSolids)
+                    ? SOLID_ENTITY : NONE;
             }
-            case F_REMOTE -> remote(packet, trackedPlayers, trackedRockets);
+            case F_REMOTE -> remote(packet, trackedPlayers, trackedRockets, trackedSolids);
             case F_ADD -> {
                 final net.minecraft.world.entity.EntityType<?> type = ((ClientboundAddEntityPacket) packet).getType();
-                yield type == net.minecraft.world.entity.EntityTypes.PLAYER ? REMOTE_PLAYER : type == net.minecraft.world.entity.EntityTypes.FIREWORK_ROCKET ? ROCKET : NONE;
+                yield type == net.minecraft.world.entity.EntityTypes.PLAYER ? REMOTE_PLAYER : type == net.minecraft.world.entity.EntityTypes.FIREWORK_ROCKET ? ROCKET
+                    : gg.hcfrevival.revival.auth.combat.SolidMirrors.kindOf(type) != 0 ? SOLID_ENTITY : NONE;
             }
             case F_CONTAINER -> {
                 final int container = packet instanceof final ClientboundContainerSetSlotPacket slot ? slot.getContainerId()
@@ -230,35 +257,32 @@ public final class OutboundClassifier {
         };
     }
 
-    private static int remote(final Packet<?> packet, final IntSet trackedPlayers, final IntSet trackedRockets) {
-        if (packet instanceof final net.minecraft.network.protocol.game.ClientboundRemoveEntitiesPacket remove && !trackedRockets.isEmpty()) {
-            boolean rocket = false;
+    private static int remote(final Packet<?> packet, final IntSet trackedPlayers, final IntSet trackedRockets, final IntSet trackedSolids) {
+        if (packet instanceof final net.minecraft.network.protocol.game.ClientboundRemoveEntitiesPacket remove) {
+            if (trackedPlayers.isEmpty() && trackedRockets.isEmpty() && trackedSolids.isEmpty()) {
+                return NONE;
+            }
+            int kind = NONE;
             for (int i = 0, n = remove.entityIds().size(); i < n; i++) {
                 final int id = remove.entityIds().getInt(i);
                 if (trackedPlayers.contains(id)) {
-                    return REMOTE_PLAYER; // the apply drops any rockets in it too
+                    return REMOTE_PLAYER; // the apply drops any rockets and solid entities in it too
                 }
-                rocket |= trackedRockets.contains(id);
-            }
-            return rocket ? ROCKET : NONE;
-        }
-        if (trackedPlayers.isEmpty()) {
-            return NONE;
-        }
-        return switch (packet) {
-            case final ClientboundMoveEntityPacket move -> trackedPlayers.contains(move.revivalEntityId()) ? REMOTE_PLAYER : NONE;
-            case final ClientboundEntityPositionSyncPacket sync -> trackedPlayers.contains(sync.id()) ? REMOTE_PLAYER : NONE;
-            case final ClientboundTeleportEntityPacket teleport -> trackedPlayers.contains(teleport.id()) ? REMOTE_PLAYER : NONE;
-            case final net.minecraft.network.protocol.game.ClientboundRemoveEntitiesPacket remove -> {
-                for (int i = 0, n = remove.entityIds().size(); i < n; i++) {
-                    if (trackedPlayers.contains(remove.entityIds().getInt(i))) {
-                        yield REMOTE_PLAYER;
-                    }
+                if (trackedRockets.contains(id)) {
+                    kind = ROCKET; // the apply drops any solid entities in it too
+                } else if (kind == NONE && trackedSolids.contains(id)) {
+                    kind = SOLID_ENTITY;
                 }
-                yield NONE;
             }
-            default -> NONE;
+            return kind;
+        }
+        final int id = switch (packet) {
+            case final ClientboundMoveEntityPacket move -> move.revivalEntityId();
+            case final ClientboundEntityPositionSyncPacket sync -> sync.id();
+            case final ClientboundTeleportEntityPacket teleport -> teleport.id();
+            default -> Integer.MIN_VALUE;
         };
+        return trackedPlayers.contains(id) ? REMOTE_PLAYER : trackedSolids.contains(id) ? SOLID_ENTITY : NONE;
     }
 
     /** The entity a self-or-remote packet is about. */
@@ -277,6 +301,18 @@ public final class OutboundClassifier {
         }
         for (final net.minecraft.network.protocol.game.ClientboundPlayerInfoUpdatePacket.Entry entry : packet.entries()) {
             if (self.equals(entry.profileId())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean carriesAny(final ClientboundSetPassengersPacket packet, final IntSet ids) {
+        if (ids.isEmpty()) {
+            return false;
+        }
+        for (final int passenger : packet.getPassengers()) {
+            if (ids.contains(passenger)) {
                 return true;
             }
         }

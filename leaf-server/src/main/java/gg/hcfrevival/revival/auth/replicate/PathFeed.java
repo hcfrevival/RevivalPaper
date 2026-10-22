@@ -194,9 +194,14 @@ public final class PathFeed {
         return this.settings;
     }
 
-    /** A new viewer of this player, not yet spawned. */
+    /** A new viewer of this player, not yet spawned, with the feed's K. */
     public Viewer viewer() {
-        return new Viewer();
+        return new Viewer(this.settings.stepTicks());
+    }
+
+    /** A new viewer of this player with its own K ({@code stepTicks}: the viewer's jitter decides, torture K1). */
+    public Viewer viewer(final int stepTicks) {
+        return new Viewer(stepTicks);
     }
 
     /** {@code VecDeltaCodec.encode} (:14-16). */
@@ -240,7 +245,15 @@ public final class PathFeed {
         private long keepAlives;
         private long respawns;
 
-        private Viewer() {
+        private final int stepTicks;
+
+        private Viewer(final int stepTicks) {
+            this.stepTicks = stepTicks;
+        }
+
+        /** This viewer's K: the tick offset of every step it is sent. */
+        public int stepTicks() {
+            return this.stepTicks;
         }
 
         /**
@@ -284,7 +297,7 @@ public final class PathFeed {
                 return Result.IDLE;
             }
             final PathFeed feed = PathFeed.this;
-            final int ticks = feed.settings.stepTicks();
+            final int ticks = this.stepTicks;
             boolean sent = false;
             if (this.preRollPending) {
                 // [(P0, K)]: the client starts interpolating with currentStepTicks = 1 inside a hold, not half-way into P1

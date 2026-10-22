@@ -35,7 +35,11 @@ import gg.hcfrevival.revival.auth.AuthMode;
  *                         before their {@code TickEnd}: a client back from a stall answers its queued pings and then runs
  *                         its catch-up ticks, which the stall is owed
  * @param maxBankedTicks the most client ticks a player can run in a burst after a stall (the client's own cap is 10)
- * @param timerQueueCapMs a client tick over the time budget waits this long for budget before it is refused
+ * @param timerQueueCapMs a client tick over the time budget waits this long for budget before it is refused (400: a
+ *                        window that waited longer is a cheat or a broken link, not a backlog; torture F4)
+ * @param catchUpGapMs a client tick whose {@code TickEnd} came less than this after the one before, with no pong in its
+ *                     drain, is a catch-up tick of a burst after a stall or hitch: ack deadlines don't count it (torture
+ *                     F3), at most {@code max-banked-ticks} in a row
  * @param rttCeilingMs the most round trip lag compensation makes good, and that any slack granted to the client is sized
  *                     from: the rewind cap, the ack deadline, the visibility growth and the correction lead all use
  *                     {@code min(rttBase, this)}, so a client that delays its pongs can't stretch them (review E5); past
@@ -67,6 +71,14 @@ import gg.hcfrevival.revival.auth.AuthMode;
  * @param heartbeatPing send a ping every server tick that sent the player nothing else, so the tick clock keeps an ack
  * @param bypassAudit watch each authoritative player's channel for physics packets written around the netcode (§15.1)
  * @param pathStepTicks replication: how long each authoritative path step lasts on viewers (report 03 §6, K)
+ * @param lowJitterStepTicks replication: K for a viewer whose own ack jitter (p90 − p10 RTT) is low: one tick (50 ms) of
+ *                           view latency back on every remote player (torture K1); set it to {@code path-step-ticks}
+ *                           to give every viewer the same K
+ * @param lowJitterMs replication: a viewer moves to {@code low-jitter-step-ticks} below this much jitter
+ * @param highJitterMs replication: and back to {@code path-step-ticks} above this much (the gap is hysteresis); a switch
+ *                     re-pairs the players fed to it
+ * @param stepSwitchSeconds replication: a viewer's K changes only after its jitter stayed on the other side this many
+ *                          once-a-second checks in a row (a join or teleport delays acks for a moment)
  * @param keepAlive replication: nudge still players by 1/4096 block on alternate ticks so viewers never starve
  * @param exactRadius replication: exact paths, keep-alives and mirrors only within this many blocks of a viewer; beyond
  *                    it (plus 4 blocks of hysteresis) the vanilla tracker cadence, still logged
@@ -106,9 +118,11 @@ import gg.hcfrevival.revival.auth.AuthMode;
  *                          adopted (a push moves a player at most about 0.51 a tick); the velocity stays the truth's
  * @param externalMoverDriftCap the most adopted push per axis within a {@code rebase-drift-window-ticks} window (a piston
  *                              push is 1.01 blocks)
- * @param externalMoverEntityRange solid entities (boats, shulkers, happy ghasts) this close to the player's box exempt the
- *                                 tick (the port has no collider for them); 0 turns the check off. Contact only: a
- *                                 wider range lets a player standing near one move as vanilla allows
+ * @param externalMoverEntityRange a solid entity (boat, shulker, happy ghast) this close to the player's box exempts the
+ *                                 tick when its client copy is not exact (a placeholder until a logged spawn, a copy
+ *                                 gone inexact, a vehicle the player drove, a passenger); exact copies are the port's
+ *                                 colliders. 0 turns the check off. Contact only: a wider range lets a player standing
+ *                                 near one move as vanilla allows
  * @param externalMoverMaxMove in an exempt mover tick, vanilla takes a claim only this close to where the server holds
  *                             the player on every axis
  * @param externalMoverGeyserDepth how far below a player in water a potent sulfur geyser is looked for; 0 turns it off
@@ -136,6 +150,7 @@ public record AuthoritativeSettings(
     int timerAckSettleMs,
     int maxBankedTicks,
     int timerQueueCapMs,
+    int catchUpGapMs,
     int rttCeilingMs,
     int ackJitterTicks,
     int maxUnackedMs,
@@ -151,6 +166,10 @@ public record AuthoritativeSettings(
     boolean heartbeatPing,
     boolean bypassAudit,
     int pathStepTicks,
+    int lowJitterStepTicks,
+    int lowJitterMs,
+    int highJitterMs,
+    int stepSwitchSeconds,
     boolean keepAlive,
     double exactRadius,
     boolean preRoll,
@@ -192,6 +211,7 @@ public record AuthoritativeSettings(
     public static final int RTT_CEILING_MS = 250;
     public static final double EXTERNAL_MOVER_ENTITY_RANGE = 0.1;
     public static final int MIRROR_HISTORY_TICKS = 16;
+    public static final int TIMER_QUEUE_CAP_MS = 400;
 
     private static String apolloRules(final ConfigReader reader) {
         final String value = reader.getString(PATH + "client-profiles.apollo-rules", "follow").trim().toLowerCase(java.util.Locale.ROOT);
@@ -245,7 +265,8 @@ public record AuthoritativeSettings(
             Math.max(0, reader.getInt(PATH + "timer-drift-ms", 120)),
             Math.max(0, reader.getInt(PATH + "timer-ack-settle-ms", 100)),
             Math.max(1, reader.getInt(PATH + "max-banked-ticks", 10)),
-            Math.max(0, reader.getInt(PATH + "timer-queue-cap-ms", 1000)),
+            Math.max(0, reader.getInt(PATH + "timer-queue-cap-ms", TIMER_QUEUE_CAP_MS)),
+            Math.max(0, reader.getInt(PATH + "catch-up-gap-ms", 15)),
             Math.max(50, reader.getInt(PATH + "rtt-ceiling-ms", RTT_CEILING_MS)),
             Math.max(0, reader.getInt(PATH + "ack-jitter-ticks", 4)),
             Math.max(100, reader.getInt(PATH + "max-unacked-ms", 1500)),
@@ -261,6 +282,10 @@ public record AuthoritativeSettings(
             reader.getBoolean(PATH + "heartbeat-ping", true),
             reader.getBoolean(PATH + "bypass-audit", true),
             Math.max(1, reader.getInt(PATH + "replication.path-step-ticks", 2)),
+            Math.max(1, reader.getInt(PATH + "replication.low-jitter-step-ticks", 1)),
+            Math.max(0, reader.getInt(PATH + "replication.low-jitter-ms", 25)),
+            Math.max(0, reader.getInt(PATH + "replication.high-jitter-ms", 35)),
+            Math.max(1, reader.getInt(PATH + "replication.step-switch-seconds", 5)),
             reader.getBoolean(PATH + "replication.keep-alive", true),
             Math.max(0.0, reader.getDouble(PATH + "replication.exact-radius", 24.0)),
             reader.getBoolean(PATH + "replication.pre-roll", true),
