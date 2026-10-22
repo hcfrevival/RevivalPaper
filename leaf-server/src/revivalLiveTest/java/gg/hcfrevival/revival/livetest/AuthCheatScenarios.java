@@ -1527,10 +1527,14 @@ final class AuthCheatScenarios {
         final String id = "combat: an honest hit at " + ticks * 50 + " ms of latency on a target sprinting across";
         this.combatJoin(id);
         this.step(1, id + ": latency", () -> this.c.latencyTicks = ticks);
-        // A steady ping, not one just switched on: rttBase (the p10 of 256 round trips) has to have caught up, or the
-        // deadline still sized from the old ping forces every entry and the mirror goes inexact
-        this.step(320, id + ": the round trip settles", () -> this.tests.getLogger().info("REVIVAL_CHEAT_NOTE " + id + ": rtt base "
-            + this.c.auth.transactions().rttBaseNanos() / 1_000_000L + " ms"));
+        // The ping just went up: rttBase follows once 29 of the last 32 acks are above it (RttBaseline, about 1.5 s plus
+        // the round trip), and from then on the deadline is sized from the new ping, so nothing is forced
+        final long[] forcedAtSettle = {0L};
+        this.step(50, id + ": the round trip settles", () -> {
+            forcedAtSettle[0] = this.c.auth.stats().forcedEntries();
+            this.tests.getLogger().info("REVIVAL_CHEAT_NOTE " + id + ": rtt base " + this.c.auth.transactions().rttBaseNanos() / 1_000_000L
+                + " ms, deadline " + this.deadline(this.c) + " windows, forced so far " + forcedAtSettle[0]);
+        });
         this.step(1, id + ": the target takes its place", () -> {
             this.open(id);
             this.label = "CONTROL";
@@ -1565,6 +1569,8 @@ final class AuthCheatScenarios {
                 + ", invalid " + d.attacksRejected() + "; rewind " + this.c.auth.lastHitRewindMillis() + " ms, cap " + this.c.auth.lastRewindCap()
                 + " ms, display " + this.c.auth.lastDisplayDelay() + " ms, rtt base " + this.c.auth.transactions().rttBaseNanos() / 1_000_000L
                 + " ms, verdict " + this.c.auth.lastHitVerdict() + ")");
+            final long forcedSince = this.c.auth.stats().forcedEntries() - forcedAtSettle[0];
+            this.honestExpect(forcedSince == 0, "nothing forced once the round trip settled (" + forcedSince + " entries)");
         });
         this.step(1, id + ": verdict", () -> {
             this.v.keys = NONE;
@@ -2291,8 +2297,10 @@ final class AuthCheatScenarios {
         return new double[] {s.x(), s.y(), s.z(), s.vx(), s.vy(), s.vz()};
     }
 
+    // AuthPlayer's: ceil(min(rttBase, rtt-ceiling-ms) / 50) + ack-jitter-ticks
     private int deadline(final Cheater x) {
-        return (int) Math.ceil(x.auth.transactions().rttBaseNanos() / 50_000_000.0) + Revival.settings().authoritative().ackJitterTicks();
+        final long rtt = Math.min(x.auth.transactions().rttBaseNanos(), Revival.settings().authoritative().rttCeilingMs() * 1_000_000L);
+        return (int) Math.ceil(rtt / 50_000_000.0) + Revival.settings().authoritative().ackJitterTicks();
     }
 
     /** An honest client's path from {@code start}: the port with a fresh client view, {@code n} ticks of {@code keys}, yaw 0. */

@@ -950,7 +950,8 @@ is.
 ### NW-3 Tab ping doesn't match what authority judges with — Open {#nw-3}
 
 - **Players:** arguments about who is "really" lagging; ping spoofing as an excuse.
-- **Cause:** server. Tab latency comes from keepalives. Authority uses ack RTT (`rttBase`, the p10 of 256 samples).
+- **Cause:** server. Tab latency comes from keepalives. Authority uses ack RTT (`rttBase`, the p10 of 256 samples,
+  or of the last 32 when that is higher).
 - **Fix (netcode):** report the ack RTT (a smoothed median) as the player's latency to the tab list and the API.
   Show `rttBase` and the rewind p50 in `debug.hud`.
 - **Proof (to add):** unit test. The tab latency equals the median ack RTT within 5 ms over a simulated stream.

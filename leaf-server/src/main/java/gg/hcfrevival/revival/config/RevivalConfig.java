@@ -24,7 +24,7 @@ import org.jspecify.annotations.Nullable;
  */
 public final class RevivalConfig {
 
-    public static final int CURRENT_VERSION = 3;
+    public static final int CURRENT_VERSION = 4;
 
     static final List<String> HEADER = List.of(
         "This is the main configuration file for RevivalPaper.",
@@ -192,6 +192,10 @@ public final class RevivalConfig {
                 migrateDefault(reader, "authoritative.max-rewind-ms", AuthoritativeSettings.MAX_REWIND_MS, 300, 400); // now a sanity bound
                 migrateDefault(reader, "authoritative.rtt-ceiling-ms", AuthoritativeSettings.RTT_CEILING_MS, 300);
                 migrateDefault(reader, "authoritative.external-movers.entity-range", AuthoritativeSettings.EXTERNAL_MOVER_ENTITY_RANGE, 1.0); // contact only
+            }
+            if (version < 4) {
+                // 4: lag compensation reads one tick of box history and the rewind cap tops out at 12 (review PT-16)
+                migrateDefault(reader, "authoritative.mirror-history-ticks", AuthoritativeSettings.MIRROR_HISTORY_TICKS, 64);
             }
             reader.set("config-version", CURRENT_VERSION);
         }

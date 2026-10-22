@@ -377,7 +377,8 @@ replace anything above that contradicts them.
   is unacked at `TickEnd(n + ceil(rttBase/50) + ack-jitter-ticks)` is **force-applied** to the truth at that tick
   (and the client is corrected as needed). Past `max-unacked-ms` (default 1500) the player is frozen, then kicked;
   log and mirror entries are dropped. `rttBase` = long-window low percentile of ack RTT (kernel TCP RTT when
-  available), never the latest pong.
+  available), never the latest pong; a short-window low percentile lifts it when that is higher, so a ping that went
+  up is followed in about 1.5 s (`RttBaseline`: p10 of the last 256 acks, or of the last 32).
 - **Bypass audit.** A Netty outbound auditor next to the encoder notices classified packets that did not come through
   our choke point (PacketEvents/ProtocolLib/Grim direct writes): blocks are logged with upper-bound timing, teleports
   and velocity mark the player for resync and count. In `enforce`, GrimAC movement/velocity/setback handling must be

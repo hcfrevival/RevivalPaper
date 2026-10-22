@@ -110,7 +110,13 @@ it decides **when** the client saw what, and feeds the simulation and the mirror
   are a violation, recent duplicates are ignored, other ids pass through.
 - Deadline: a ping sent after window `n` still unanswered at window `n + ceil(rttBase/50) + ack-jitter-ticks` has its
   entries force-applied. Past `max-unacked-ms` the player is frozen (windows refused); three times that, kicked in
-  enforce. `rttBase` is the 10th percentile of the last 256 ack round trips.
+  enforce. `rttBase` (`RttBaseline`) is the 10th percentile of the last 256 ack round trips, or of the last 32 when
+  that is higher: a ping that went up (Wi-Fi, a route change) is followed once 29 of the last 32 acks are above the
+  base, about 1.5 s, instead of the 12 s the long window alone took (every entry force-applied meanwhile, mirrors
+  inexact, hits UNKNOWN). It falls through the long window, once a tenth of its samples are lower; a lone spike moves
+  neither window. Both windows are kept sorted as they slide: exact on every ack, nothing allocated.
+- The per-tick bundle's list is reused once its ping is acked (the pong proves Netty's unbundler is done with it;
+  review PT-16). A forced ping reuses nothing.
 - Verified on the code: a ping inside a bundle encodes (the game protocol registers `CLIENTBOUND_PING`), the client's
   bundler only rejects terminal packets, `handleBundlePacket` handles sub-packets inline on the main thread, and
   `handlePing` answers from that drain (`PacketBundlePacker`, `ClientPacketListener.handleBundlePacket`,
@@ -193,7 +199,7 @@ All under `authoritative.` (defaults in brackets):
 | `vehicles` [`deny`] | `deny` refuses mounting under enforce; `vanilla` rides exempt (client-trusted) |
 | `honor-denied-predictions` [false], `max-attacks-per-client-tick` [1], `heartbeat-ping` [true], `bypass-audit` [true] | |
 | `replication.path-step-ticks` [2], `keep-alive` [true], `exact-radius` [24], `pre-roll` [true], `respawn-distance` [48], `path-buffer` [64], `repair-interval-ticks` [20] | K2 paths; a viewer whose mirror of a target went inexact gets it re-spawned at most this often |
-| `mirror-history-ticks` [64] | lag compensation history per viewer |
+| `mirror-history-ticks` [16] | lag compensation history per viewer-target pair; hits read their own tick's box and measure the rewind from its stamp, so 16 outlasts the 12-tick rewind cap (64 before config v4, migrated; review PT-16) |
 | `external-movers.block-window-ticks` [12], `block-range` [14], `band` [0.6], `drift-cap` [1.6], `entity-range` [0.1], `max-move` [1.0], `geyser-depth` [24] | pushes adopted within the band (drift-capped); solid entities in contact and geysers exempt, vanilla's claim within `max-move` |
 | `visibility.enabled` [false], `always-visible-distance` [8], `check-interval-ticks` [2], `hide-after-checks` [2], `max-speed` [1.0], `max-checks-per-tick` [512], `effect-reach` [1.5] | anti-ESP; the check budget is server-wide |
 | `stats.anomaly-alerts` [true], `double-click-ratio` [0.3], `double-click-min-attack-ticks` [40], `aim-gcd-miss-ratio` [0.5], `aim-min-turns` [200], `click-streak-ticks` [100], `grammar-violations` [3], `pong-lag-ms` [150] | `AuthInputAnomalyEvent` thresholds; seconds of pongs behind the keep-alive (counted) |

@@ -125,6 +125,31 @@ public final class PathFeed {
         return this.appended;
     }
 
+    /**
+     * The oldest step the ring still holds that is stamped at or after {@code sinceMillis}: its position goes to
+     * {@code out[0..2]} and its stamp is returned; {@code Long.MIN_VALUE} when even the newest step is older. When the
+     * ring no longer reaches back to {@code sinceMillis}, its oldest step is the answer (newer, never older).
+     */
+    public long positionSince(final long sinceMillis, final double[] out) {
+        final long held = Math.min(this.appended, (long) this.mask + 1L);
+        int found = -1;
+        // Newest first; stamps count up (System.currentTimeMillis per step), so stop at the first older one
+        for (long i = 1L; i <= held; i++) {
+            final int slot = (int) ((this.appended - i) & this.mask);
+            if (this.stamps[slot] < sinceMillis) {
+                break;
+            }
+            found = slot;
+        }
+        if (found < 0) {
+            return Long.MIN_VALUE;
+        }
+        out[0] = this.xs[found];
+        out[1] = this.ys[found];
+        out[2] = this.zs[found];
+        return this.stamps[found];
+    }
+
     /** Step packets built so far; every other move sent was a shared one ({@link #sharedMoves}). */
     public long builtMoves() {
         return this.cacheBuilt;

@@ -82,6 +82,11 @@ int r = sim.velocityAfterMove(before, sentKeys, fromX, fromY, fromZ, toX, toY, t
 - `MovementSim.collide(p, world, dx, dy, dz, out)` is `Entity.collide` alone, for tools and tests.
 - `MovementSim.lastMove(out)` is the last tick's exact move (`Entity.collide`'s result) and
   `velocityAfterExactMove(before, from, move, world, out)` takes it instead of `to`: for tools and tests (§3.4).
+- Solid entities come from `SimWorld.collectEntityColliders`: every boat, shulker and happy ghast the client holds near
+  the asked area, each with its box and position as the client holds them when its player ticks and a rule
+  (`SimWorld.ENTITY_SOLID`, or `ENTITY_SOLID_FROM_ABOVE` for an adult happy ghast off its still timeout), in the client's
+  entity order; the port picks each query's own (§3.5). auth-sim-requests.md §2 has the full contract: which entities,
+  which box at which point of the client tick, and how to mirror boats, shulkers and ghasts.
 - `setLocalGameModeSpectator` is a compatibility shim for one-call callers; prefer the two game-mode calls above
   (`PortSimulation` still uses the shim, and its `sync` writes `p.spectator` directly, which skips
   `onGameModeChanged`'s `vy = 0` when the tab-list mode turns spectator).
@@ -175,7 +180,9 @@ tick does not hold, it tries every way, and an axis counts as determined only wh
   under `Mth.equal`'s 1e-5 (one only ulps of the position deep: a longer one can swap collide's x/z order), just past
   and far past it, and 39 depths from 1e-5 to 3.6 where a bounce or the flight rule carries the depth into the velocity
   (slime or a bed under the box, the bounciness attribute, creative flight); for y also step-ups, from a fall or from
-  rises of several heights. Each combination goes through the port's own `collide` and is kept only if it lands exactly
+  rises of several heights, and from falls of those 39 depths when nothing holds up a player on the ground any more (a
+  boat that drove off or rose around its feet: the fall is not cut, and its depth decides what the box meets sideways
+  before the step). Each combination goes through the port's own `collide` and is kept only if it lands exactly
   on the observed position.
 - **What a still or rounded axis hides**: the other signed zero, a velocity under collide's 1e-7 cut, or one under
   `Entity.move`'s 3.2e-4 (a move that short is not applied when another axis lost more); and `to - from` is only one of
@@ -190,7 +197,7 @@ still axis stood still, a player on the ground pressed down on it), and the reas
 | `VELOCITY_ROUNDED` | `from + move` rounds to the ulp of `to`, so the move's bits below it are lost (nearly every move on a moving axis) | half an ulp of `to` per axis, times the drag |
 | `VELOCITY_UNMOVED` | an axis that did not move: `-0.0`, a velocity under 1e-7 (a near-cardinal yaw's sine), or under 3.2e-4 not applied | under 3.2e-4 |
 | `VELOCITY_COLLIDED` | a collision may have cut the move: hit or merely reached a wall (`-0.0` or the move), landed or arrived exactly, a bounce off slime or a bed (impact speed), a cut under 1e-5, a step | none |
-| `VELOCITY_EDGE` | sneaking at an edge may have shortened the move (`maybeBackOffFromEdge`), not the velocity | none |
+| `VELOCITY_EDGE` | sneaking at an edge may have shortened the move (`maybeBackOffFromEdge`), not the velocity (x and z; in water or lava y too, since `jumpOutOfFluid`'s `isFree` box moves by x and z) | none |
 | `VELOCITY_KEYS` | the tick's keys decide (water and lava sprint, a glide or flight started, jumping on a climbable, sneaking on a bounce); never with the keys | none |
 | `VELOCITY_PRE_MOVE` | creative flight while gliding or stuck keeps a y from before the move (tried over ±3.3, so every axis it reaches is flagged); or the glide fall clamp read it | none |
 | `VELOCITY_NO_TICK` | no tick from `p` makes this move here (an exempt state, a move into a block); `out` is NaN | |
@@ -208,43 +215,85 @@ after a move read what collide was given only through restitution (a bounce: lin
 flight rule (linear), the fluid falling test (its sign) and the inside-block walk's axis order (which the far cut flips);
 without a bounce or flight only the cut's sign counts, and with one the depths are dense, since the bounced velocity
 meets more thresholds (slime scales x and z under |vy| 0.1). The oracle fuzz and the traces check it on every tick (§4).
-The full runs found eight gaps the readings now cover: a step that ends below the start, a rising step to height 0, the
+The full runs found ten gaps the readings now cover: a step that ends below the start, a rising step to height 0, the
 border's size-dependent reach, a step height of 0 (which hid a rounded axis), a near cut that swapped collide's x/z
-order, a cut shallower than the position's rounding (not gathered), a slime bounce whose depth decides x and z, and a
-pre-glide y that honey reads into x and z.
+order, a cut shallower than the position's rounding (not gathered), a slime bounce whose depth decides x and z, a
+pre-glide y that honey reads into x and z, and with solid entities (2026-10-22) a player still on the ground after the
+boat under it drove off or rose around its feet, whose uncut fall went below a ledge it then stepped onto, and a sneak
+back-off in water (above a boat) whose kept x and z velocity moved `jumpOutOfFluid`'s box, so y too.
+
+### 3.5 Solid entities
+
+A 26.3 client collides with boats, shulkers and happy ghasts (the only types that override `canBeCollidedWith`), the
+same boxes in every query that reads entities: `Entity.collide` gathers them once over the box expanded by the move and
+by the step height upwards (26.3) and uses them for the sweep and the step-up, ahead of the border and the blocks;
+`noCollision` (the pose checks `canPlayerFitWithinBlocksAndEntitiesWhen`, the sneak back-off's `canFallAtLeast`,
+`jumpOutOfFluid`'s `isFree`) counts any of them; auto-jump's `getCollisions` scans them first. Each query is
+`level.getEntities(player, area.inflate(1e-7), NO_SPECTATORS.and(player::canCollideWith))` and the port does each step of
+it from the world's candidates:
+
+- **Sections.** `EntitySectionStorage` searches only the entity sections from `floor(minX - 2) >> 4` to
+  `floor(maxX + 2) >> 4` (z alike) and from `floor(minY - 4) >> 4` to `floor(maxY) >> 4`, an entity's section being its
+  block position's. A box that reaches into the area from outside that range is not found: a shulker's lid opening
+  down from the section above (its box hangs up to 3 blocks under its position), or a big one (scale up to 3, its lid
+  up to 3 more) opening sideways across a section line. The client's head goes into such a lid; the port's does too.
+- **Box.** The entity's box intersects the area (`AABB.intersects`, strict).
+- **Predicate.** `canCollideWith(entity)` = `entity.canBeCollidedWith(player) && !player.isPassengerOfSameVehicle(entity)`:
+  boats always, shulkers while alive, adult happy ghasts while alive and either on their still timeout or below a player
+  standing at or above their top (`player.getY() >= box.maxY`, at the query, so a ghast is solid to land on and to stand
+  on, and not to walk or jump into from below). The netcode leaves out what the port cannot judge (babies, dead ones,
+  entities riding the player) and passes the ghast's rule; the port tests the player's height per query.
+- **Shapes.** `Shapes.create(box)`: an `ArrayVoxelShape` over one cell for any box off the 1/8 grid of [0, 1], refilled in
+  place (§5); collider order as the candidates came (the client's entity order).
+
+Movers outside the player's tick stay out (§6): a shulker opening its lid over the player moves it in the shulker's
+tick, and boats and mobs push the local player only under a team collision rule other than `NEVER`.
 
 ## 4. Exactness
 
 Four independent checks, all green on 2026-10-21 with the final code (re-run 2026-10-22 after the tick was split at its
-move for `velocityAfterMove` and the unloaded-chunk fall removed), and a fifth for `velocityAfterMove`.
+move for `velocityAfterMove` and the unloaded-chunk fall removed, and again with solid entities), and a fifth for
+`velocityAfterMove`.
 
 1. **Collision, differential fuzzer** (`~/Developer/tools/auth-rig/diff/run.sh`, report 07 §1.6, the port is mode 2,
    compiled once per class loader against that loader's jar; the RevivalPaper jar refreshed from the 21:12 build):
    vanilla `Entity.collide` vs the port in the **patched RevivalPaper loader** and in the vanilla loader: **0
    differences** on 1,000,000 adversarial single moves and **0 of 20,000** 200-tick walks, in both loaders (seed 11).
    Paper/Moonrise differs in 233,558 of the same moves. The shape data the port reads hashes the same in both loaders
-   (`fadae0cab51c08fa`), and its world-border ring equals vanilla's.
+   (`fadae0cab51c08fa`), and its world-border ring equals vanilla's. Again 0 of 1,000,000 in both loaders on 2026-10-22
+   with the entity colliders (this fuzzer has no entities; item 2 has them).
 2. **Whole tick, vanilla oracle** (`~/Developer/tools/auth-rig/harness/sim.sh SimFuzz runs ticks seed`, or
    `fuzz-seeds.sh` for several seeds at once): vanilla's own `Player`/`LivingEntity`/`Entity` code from the 26.3 server
    jar running the local player on a client-side `Level` (`isClientSide() == true`, data pack and tags loaded), with
    `LocalPlayer`'s overrides copied verbatim (`rig.sim.OraclePlayer`, auto-jump included), against the port, in random
    worlds (the 30,000 shaped states, ladders, vines, scaffolding, water and lava at every level, bubble columns, honey
-   walls, powder snow, cobwebs, berry bushes, slime, ice, soul sand, beds, solid entity boxes, a close world border,
+   walls, powder snow, cobwebs, berry bushes, slime, ice, soul sand, beds, solid entities, a close world border,
    unloaded chunks, fields of one-block steps, 40-block drops onto water, hay, slime, cobwebs, ladders, vines, berry
    bushes, powder snow and scaffolding) with random keys, rotations (a sixtieth of them exact cardinals) and
    between-tick changes (knockback, explosions, effects, attribute packets with random modifiers incl. the sprint id,
    abilities, game modes, item use, attacks, teleports, rotations, prediction snaps, food, flag, pose and no-gravity
-   echoes, elytra, attached firework rockets as real `FireworkRocketEntity`s ticked after the player). The port gets
+   echoes, elytra, attached firework rockets as real `FireworkRocketEntity`s ticked after the player; and in half the
+   runs real vanilla boats, chest boats, rafts, shulkers and happy ghasts, `rig.sim.SolidScript`: in vanilla's client
+   entity storage (`TransientEntitySectionManager`, so vanilla's own section lookup, order and `canBeCollidedWith` decide),
+   under, beside and over the player, some scaled, some big shulkers across a section line, moving with interpolated
+   move packets (boats lerp over 3 steps, living ones step), teleported, shulker lids peeking and faces turning, ghasts
+   going on and off their still timeout, dying, removed, boats placed under the player mid-run, each ticked after the
+   player like ClientLevel does; the port reads them only as the netcode would hand them over). The port gets
    the keys the client sent (after `makeJump`); half the clients have auto-jump on, and half of the others are
    believed on, so the port has to learn the option. Every field movement touches is compared bit for bit every tick,
    plus `autoJumpTime` and the option belief. **0 differences in 4,800,000 ticks** (seeds 20-23, 3,000 runs of 400
    ticks each; again 2026-10-22 with the oracle's level as the client's: `hasChunk` always true, a missing chunk the
-   client cache's empty chunk, which an old-rule mutant fails on its first tick over one). Coverage per seed (1.2 million ticks, seed 20): ground 238k, water 39k, lava 12k, swimming 2.0k,
+   client cache's empty chunk, which an old-rule mutant fails on its first tick over one; and again 2026-10-22 with solid
+   entities). Coverage per seed (1.2 million ticks, seed 20): ground 238k, water 39k, lava 12k, swimming 2.0k,
    climbing 2.9k, stuck 17k, powder snow 1.9k, gliding 163k, rocket boosts 73k, flying 124k, item use 486k, crouching
    58k, sprinting 298k, bounces 5.6k, edge back-off 12k, currents 43k, bubble columns 0.7k, honey 16k, cobwebs 12k,
-   moves of a block or more per tick 191k, no gravity 68k, auto-jumps 1.8k, option learned off 207, solid entity boxes
-   in 72k, the border within 3 blocks in 56k. Mutations of the new code are caught: the rocket's 1.5 → 1.4 in 37 of
-   300 runs, the auto-jump look-ahead 7 → 6 in 21, the facing test -0.15 → 0.15 in 24, the shift test dropped in 3.
+   moves of a block or more per tick 191k, no gravity 68k, auto-jumps 1.8k, option learned off 207, the border within 3
+   blocks in 56k; solid entities in 1,525 of the 3,000 runs (610k ticks): within a block 118k, touching 33k, standing on
+   one 11k, touching a happy ghast that is solid only from above 5.6k (all four seeds: 129k touching, 43k standing on
+   one). Mutations of the new code are caught: the rocket's 1.5 → 1.4 in 37 of 300 runs, the auto-jump look-ahead 7 → 6
+   in 21, the facing test -0.15 → 0.15 in 24, the shift test dropped in 3; and of the entity colliders (1,000 runs of 200
+   ticks, seed 5): entities ignored in 439, the ghast's from-above rule dropped in 81, the section lookup dropped in 3,
+   a query past the candidates' area not asked again in 3 (asking for exactly each area instead passes).
 3. **Real client** (80 golden traces from an unmodified vanilla 26.3 client in the movement gym,
    `~/Developer/tools/auth-rig/traces`, see `README-traces.md` there): **80/80 traces, 5,085 client ticks, exact**
    (position and velocity bits, flags, pose, fall distance) with `harness/sim-replay.sh traces/`.
@@ -253,18 +302,24 @@ move for `velocityAfterMove` and the unloaded-chunk fall removed), and a fifth f
 4. **RevivalPaper tests** (`./gradlew :leaf-server:runRevivalTests`, on the patched server jar, so the deploy jar's
    block data, tags and shapes are what the port reads): `MovementSimTest` (30 mechanics against hand-worked vanilla
    formulas, auto-jump, rockets, the item-type ticker reset, effect updates and no gravity included),
-   `SimCollisionTest` (6), `SimAttributesTest` (6, the allocation-free copy included), `MovementSimGoldenTest` (18
-   scripted scenes, `GoldenScenes`, among them an auto-jump over steps, a rocket-boosted glide and no gravity, whose
-   per-tick positions, flags and final velocity, `GoldenData`, were recorded on the vanilla oracle; `harness/sim.sh
-   GoldenGen <path>` regenerates them) and `MovementSimFuzzReplayTest`: 300 random `FuzzScript` runs of 200 ticks
+   `SimCollisionTest` (6), `SimEntityCollisionTest` (6: a happy ghast solid only from above, the pose checks and the
+   sneak back-off on the same entity boxes, the section lookup missing a lid from the section above, extra candidates
+   ignored, a moving boat allocating nothing), `SimAttributesTest` (6, the allocation-free copy included),
+   `MovementSimGoldenTest` (25 scripted scenes, `GoldenScenes`, among them an auto-jump over steps, a rocket-boosted
+   glide, no gravity, and 7 with solid entities: stepping onto boats, landing on a boat placed under a fall, moving
+   boats, sneaking at a boat's edge, auto-jumping onto shulkers, a happy ghast solid only from above, a shulker lid the
+   section lookup misses; their per-tick positions, flags and final velocity, `GoldenData`, were recorded on the vanilla
+   oracle with real vanilla entities whose boxes the scenes' own match bit for bit; `harness/sim.sh GoldenGen <path>`
+   regenerates them) and `MovementSimFuzzReplayTest`: 300 random `FuzzScript` runs of 200 ticks
    (60,000 ticks, with no-gravity echoes, elytra and rockets, auto-jump on or off) whose per-run state hashes
    (`FuzzData`) vanilla's own Player code produced on the oracle (`harness/sim.sh FuzzRecord 300 77 <path>`). Plus a
-   missing chunk in `MovementSimTest` (now 31) and `VelocityAfterMoveTest` (9, item 5). All 71 pass, in a full suite of
-   299.
+   missing chunk in `MovementSimTest` (now 31) and `VelocityAfterMoveTest` (9, item 5). All 84 pass, in a full suite of
+   445 (2026-10-22).
 5. **`velocityAfterMove`** (§3.4), on every tick of the checks above (`rig.sim.VelocityCheck`): from the state before
    the tick, its position, velocity and rotation poisoned with NaN (so they cannot be read), and the tick's two
    positions; again with the tick's keys; and from the exact move (`lastMove`). Every axis reported determined must be
-   the tick's velocity bit for bit. **0 wrong on 4,800,000 oracle ticks** (seeds 20-23), on the 80 real-client traces
+   the tick's velocity bit for bit. **0 wrong on 4,800,000 oracle ticks** (seeds 20-23; again 2026-10-22 with solid
+   entities, after the two entity gaps of §3.4 were covered), on the 80 real-client traces
    (5,085 ticks) and on the 60,000 fuzz-script ticks, in all three; the RevivalPaper test does the last on the deploy
    jar and checks the state comes back untouched and the runs still hash like vanilla's. Determined on every axis:
 
@@ -272,14 +327,15 @@ move for `velocityAfterMove` and the unloaded-chunk fall removed), and a fifth f
    |---|---|---|
    | from positions | 1.4% (y alone 24%) | 3.2% (y alone 59%) |
    | from positions and the keys | 1.5% (y alone 24%) | 3.2% (y alone 63%) |
-   | from the exact move | 80.9% (each axis about 90%) | 32.3% |
+   | from the exact move | 80.4% (each axis about 90%) | 32.3% |
 
-   Reasons, share of oracle ticks (from positions / with the keys / exact move): `ROUNDED` 98.4 / 98.4 / 0, `UNMOVED`
-   12.6 / 12.5 / 8.5, `COLLIDED` 13.3 / 13.2 / 13.3, `EDGE` 4.5 / 0.3 / 4.5, `KEYS` 15.9 / 0 / 15.8, `PRE_MOVE` 3.2 /
-   2.8 / 3.2. Ticks with only `ROUNDED`/`UNMOVED`: 80% from positions (83% with the keys), largest error 3.0e-4 (the
+   Reasons, share of oracle ticks (from positions / with the keys / exact move; the 2026-10-22 run with solid
+   entities): `ROUNDED` 98.4 / 98.3 / 0, `UNMOVED` 12.6 / 12.6 / 8.7, `COLLIDED` 13.7 / 13.6 / 13.7, `EDGE` 4.7 / 0.3 /
+   4.7, `KEYS` 16.2 / 0 / 16.1, `PRE_MOVE` 3.2 / 2.8 / 3.2. Ticks with only `ROUNDED`/`UNMOVED`: 79% from positions (82%
+   with the keys), largest error 2.9e-4 (the
    `UNMOVED` bound; a `ROUNDED` axis alone is off by about an ulp of its position, 5e-14 in the short runs); in the
    traces largest 3.2e-8. The traces are mostly cardinal moves, whose still axis keeps a near-cardinal sine's
-   1e-17-to-1e-8 velocity (`UNMOVED`). The runs before the final code found the eight gaps listed in §3.4, each now
+   1e-17-to-1e-8 velocity (`UNMOVED`). The runs before the final code found the ten gaps listed in §3.4, each now
    covered.
 
 The test harnesses feed the port the keys the client would send: `FuzzScript.sent` adds the jump of an auto-jump the
@@ -288,7 +344,8 @@ port predicted, which equals the client's when the port's option is the client's
 ## 5. Cost
 
 `harness/sim.sh SimBench`, JIT-warm, one MacBook core shared with other work, 1,000,000 ticks per row, a PvP loadout
-(an enchanted, damaged sword whose stack is compared every tick, boots):
+(an enchanted, damaged sword whose stack is compared every tick, boots); re-run 2026-10-22 with the oracle fuzz's two
+JVMs on the same machine, so about 10% slower than before for the same code:
 
 | Scene | auto-jump | µs per tick | bytes allocated per tick |
 |---|---|---|---|
@@ -300,6 +357,8 @@ port predicted, which equals the client's when the port's option is the client's
 | | on | 6.3 | 0 |
 | water pool | off | 5.9 | 0 |
 | | on | 5.9 | 0 |
+| field of boats (60 parked, 8 driving circles through the middle, handed over like the netcode would) | off | 8.2 | 0 |
+| | on | 8.4 | 0 |
 | `SimPlayer.copyFrom` (the reconciler's fork, every tick) | | 0.18 | 0 |
 
 "0" is under 0.1 byte per tick, the measurement's own noise. The design target is 50 µs; auto-jump adds about 0.4 µs
@@ -309,9 +368,18 @@ allocate, all rare: the copy of a new main-hand item type, a modifier table that
 shape the port has not seen, and the shapes of blocks with a random offset (bamboo, pointed dripstone), which
 vanilla's own `getCollisionShape` builds per call (the cluttered row's bytes). Stage 2 removed the rest: the per-tick
 `ItemStack.matches` (only the item type of the copy is ever read, so the port compares types), attribute copies and
-recomputes (the subclassed maps copy tables and walk values in place), entity-collider shapes (a small cache by box,
-so a parked boat costs nothing) and `noCollision`'s entity check (a count). Vanilla's `LiquidBlock.getCollisionShape`
-allocates a lambda per call, so the port answers liquids itself (empty for players).
+recomputes (the subclassed maps copy tables and walk values in place), and `noCollision`'s entity check (a count).
+Vanilla's `LiquidBlock.getCollisionShape` allocates a lambda per call, so the port answers liquids itself (empty for
+players). Entity colliders allocate nothing even when they move (2026-10-22): collider `i` of a gather is a reused
+array-box shape, refilled (only a box on the 1/8 grid of [0, 1], at the origin, is built anew), and the world is asked
+for candidates once per tick (§3.5), not once per query.
+
+None of this leans on escape analysis: the port runs at 0 bytes under `-Xint` and `-XX:-DoEscapeAnalysis` too.
+`VelocityAfterMoveTest.allocatesNothingOnceWarm` failed at f7a0096e with 1,484,800 bytes in 400 calls: every one of the
+thousands of collision queries a `velocityAfterMove` makes called `collectEntityColliders`, whose test implementation
+looped with an `ArrayList` iterator that the test JVM evidently stopped scalar-replacing once `MoveVelocity` grew (the
+figure is exactly what that loop allocates with `-XX:-DoEscapeAnalysis`; JFR allocation samples showed nothing else). The port now calls the world once
+per call and tick, and the test worlds loop by index.
 
 `velocityAfterMove`, on the same machine under the fuzz's load: about 30-120 µs per call with the tick's keys, 200-600
 µs without them (16 key combinations; ground ticks and bounces try the most readings), allocation-free after its first
@@ -334,8 +402,10 @@ call (`VelocityAfterMoveTest`). It is meant for seeds and corrections, not every
 - **Movers outside the player's tick** (report 01 §6.6-6.7), which need the client's block entities or entity tick
   order, so the caller flags them with `p.externalMover`: moving pistons (a `MOVING_PISTON` shape needs its block
   entity; `SimLevel` has none, so it reads empty) and shulker boxes, shulkers' lids, potent sulfur geysers (a block
-  entity that adds velocity to nearby entities), pushes from mobs and remote players (Paper's
-  `enable-player-collisions: false` removes the player case). Rockets are modelled (§3.2).
+  entity that adds velocity to nearby entities), pushes from mobs, boats and remote players (Paper's
+  `enable-player-collisions: false` removes the player case, a client team collision rule of `NEVER` all of them). A
+  shulker's lid moves the player with `Entity.move(SHULKER)` in the shulker's tick while it opens over it; standing
+  shulkers, boats and happy ghasts are colliders (§3.5). Rockets are modelled (§3.2).
 - **Client-side block changes** are the world view's job: redstone ore lighting under the player (moves nothing), and
   a rocket's hit ray tilting a big dripleaf (it does change the collision shape; the oracle rig showed it, the port
   reads whatever `SimWorld` says).
@@ -343,8 +413,9 @@ call (`VelocityAfterMoveTest`). It is meant for seeds and corrections, not every
   auto-jump is learned by the port (§3.1).
 - **Netcode inputs the port trusts**: the sent keys per tick, velocities after `LpVec3` decoding, the tick each change
   was applied (transactions), the client's item copies (`LegacySwordBlocking.toClient`), hotbar changes (one-tick
-  ambiguity, report 01 §1.2), the block-prediction revert (`snapTo`), chunk loads, the border lerp, solid entity boxes
-  at their client-interpolated positions, which entity a remote-player attack hit, and the attached rockets' lifetimes.
+  ambiguity, report 01 §1.2), the block-prediction revert (`snapTo`), chunk loads, the border lerp, the solid entities
+  as the client holds them (boxes at their client-interpolated positions, rules, order: auth-sim-requests.md §2), which
+  entity a remote-player attack hit, and the attached rockets' lifetimes.
 - **Water's clip shape** in the long-fall clip: vanilla caches `FlowingFluid.getShape` per fluid state at the height of
   the first position ever asked, which no server can know; the port uses the height at the position (only a fall of
   more than a block per tick ending inside the top ninth of a water surface can tell).
@@ -353,7 +424,8 @@ call (`VelocityAfterMoveTest`). It is meant for seeds and corrections, not every
 - **Real-client traces for the rest**: the 80 golden traces cover walking, sprinting, jumping, stairs, slabs, fences,
   ledges, ceilings, ice, slime, honey, soul sand, cobwebs, berry bushes, powder snow, lava, ladders, vines, scaffolding,
   water, currents, bubble columns, floor bits, doors and crawling. Knockback, item use, effects, attribute changes,
-  elytra, rockets, flight, teleports and auto-jump are proven against vanilla's own code only (the oracle).
+  elytra, rockets, flight, teleports, auto-jump and solid entities are proven against vanilla's own code only (the
+  oracle, with real vanilla boats, shulkers and happy ghasts).
 - **`Math.sin`**: the `Mth` table is built with `Math.sin` on each JVM; values are rounded to float, so a 1-ulp
   intrinsic difference would have to cross a float boundary to show.
 
@@ -375,9 +447,11 @@ $R/harness/sim.sh SimBench                           # cost per tick
 ```
 
 `sim.sh` compiles the port straight from the checkout (`RP_SIM`, `RP_TESTS` override the paths) together with the rig
-(`harness/src-sim`: `RigWorld`, `RigBootstrap`, `OracleLevel`, `OraclePlayer`, `SimFuzz`, `GoldenGen`, `FuzzRecord`,
-`SimBench`, `VelocityCheck`) against the vanilla 26.3 server jar; `fuzz-seeds.sh` compiles once into its own directory
+(`harness/src-sim`: `RigWorld`, `RigBootstrap`, `OracleLevel`, `OraclePlayer`, `SimFuzz`, `SolidScript`, `GoldenGen`,
+`FuzzRecord`, `SimBench`, `VelocityCheck`) against the vanilla 26.3 server jar; `fuzz-seeds.sh` compiles once into its own directory
 and runs two seeds at a time. Point `RP_SIM` at a mutated copy of the sources to check the rigs still catch a change.
 `SimFuzz`, `FuzzRecord` and the trace replay also check `velocityAfterMove` on every tick (`rig.sim.VelocityCheck`, its
 report at the end; `RIG_JAVA_OPTS=-Dvelocity=false` skips it in the first two, `-Dvelocity.dump=<reason bits>` prints the
-ticks whose hard reasons are exactly those).
+ticks whose hard reasons are exactly those, `-Dvelocity.softdump=<error>` lists soft-only axes off by more). `SimFuzz runs
+ticks seed <run>` replays one run tick by tick, `-Dfuzz.from=<run>` skips the runs before one, and `JOBS=4
+fuzz-seeds.sh ...` runs four seeds at once (about 35 minutes for the four).

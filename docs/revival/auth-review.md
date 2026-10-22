@@ -286,5 +286,5 @@ cheat suite 82/82). "Test" names the unit test or live scenario that covers the 
 | PT-03 | fixed | See timer-backlog-permanent. | as above |
 | PT-11 | fixed | No allocation per check (boxes read in place), gone ids forgotten. | live `visibility:` |
 | PT-15 | fixed | See E7. | as above |
-| PT-16 | handed to combat | `auth/replicate` is the combat agent's. | — |
+| PT-16 | partly fixed | Netcode (2026-10-22): a tick bundle's list is reused once its ping is acked, and `mirror-history-ticks` defaults to 16 (config v4 migrates 64). The per-step `PathFeed` and `MirrorEvent` objects are `auth/replicate`'s and `auth/combat`'s. | `TransactionsTest.aTicksBundleListIsReusedOnceItsPingIsAcked`, `RevivalConfigTest.version3MirrorHistoryMovesToSixteenTicks` |
 | PT-13, PT-14, PT-17 | won't fix now | Streaming bundles (PT-13) and running a window at its move claim (PT-14) change the wire and window model; PT-17 is unconfirmed. Revisit with the load-test profiles. | — |

@@ -81,6 +81,30 @@ class RevivalConfigTest {
     }
 
     @Test
+    void version3MirrorHistoryMovesToSixteenTicks() throws Exception {
+        // Version 4 (review PT-16): 64 ticks of box history was the old default; an owner's own value stays
+        Files.writeString(this.file.toPath(), """
+            config-version: 3
+            authoritative:
+              mirror-history-ticks: 64
+            """);
+        RevivalConfig.init(this.file);
+        assertEquals(AuthoritativeSettings.MIRROR_HISTORY_TICKS, RevivalConfig.settings().authoritative().mirrorHistoryTicks());
+        assertEquals(16, AuthoritativeSettings.MIRROR_HISTORY_TICKS);
+        final YamlConfiguration saved = YamlConfiguration.loadConfiguration(this.file);
+        assertEquals(RevivalConfig.CURRENT_VERSION, saved.getInt("config-version"));
+        assertEquals(16, saved.getInt("authoritative.mirror-history-ticks"));
+
+        Files.writeString(this.file.toPath(), """
+            config-version: 3
+            authoritative:
+              mirror-history-ticks: 40
+            """);
+        RevivalConfig.init(this.file);
+        assertEquals(40, RevivalConfig.settings().authoritative().mirrorHistoryTicks(), "an owner's own value stays");
+    }
+
+    @Test
     void malformedFileStopsStartupAndIsNotOverwritten() throws Exception {
         Files.writeString(this.file.toPath(), BROKEN);
 

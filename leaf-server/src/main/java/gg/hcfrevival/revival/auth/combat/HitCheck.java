@@ -6,8 +6,15 @@ package gg.hcfrevival.revival.auth.combat;
  * @param distance eye to where the ray met the target's box, in blocks (0 when the eye was inside it; NaN when the ray
  *                 never met it)
  * @param rewindMillis how old the target's displayed position was, server time now minus its stamp
+ * @param capped the view was older than the rewind cap, so the ray was tested against the target's truth at the capped
+ *               age instead of the box the client drew (Overwatch's rule, {@link TruthHistory})
  */
-public record HitCheck(Verdict verdict, Reason reason, double distance, long rewindMillis) {
+public record HitCheck(Verdict verdict, Reason reason, double distance, long rewindMillis, boolean capped) {
+
+    /** A verdict on the box the client drew. */
+    public HitCheck(final Verdict verdict, final Reason reason, final double distance, final long rewindMillis) {
+        this(verdict, reason, distance, rewindMillis, false);
+    }
 
     public enum Verdict {
         /** The attacker's client picked the target: apply the hit. */
@@ -31,7 +38,10 @@ public record HitCheck(Verdict verdict, Reason reason, double distance, long rew
         BLOCKED,
         /** INVALID: another entity took the pick in every possible order. */
         OCCLUDED,
-        /** INVALID: the box the attacker aimed at shows the target older than the rewind cap allows. */
+        /**
+         * INVALID: the box the attacker aimed at shows the target older than the rewind cap allows, and the target has no
+         * truth that new to judge against instead (no replication path: outside authority).
+         */
         REWIND,
         /** UNKNOWN: the target's mirror is not exact at that tick (snap, riding, sleeping, late packet). */
         INEXACT_TARGET,

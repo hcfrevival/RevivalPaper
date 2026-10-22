@@ -64,15 +64,24 @@ ray.cast(attackerSnapshot, pickWorld);
 ray.resolveInOrder();                        // vanilla's exact result for this candidate order: kind(), hoveredIndex(), hitX()...
 ray.canPick(i, withInexact);                 // is there an order in which the client returns candidate i as an ENTITY hit
 
-HitCheck check = new HitValidator().validate(attacker, targetId, book, T, List<Candidate> nonPlayers, world, nowMillis, maxRewindMillis);
-// check.verdict(): VALID | INVALID | UNKNOWN; check.reason(); check.distance(); check.rewindMillis()
+HitCheck check = new HitValidator().validate(attacker, targetId, book, T, List<Candidate> nonPlayers, world, nowMillis, rewindCapMillis);
+// check.verdict(): VALID | INVALID | UNKNOWN; check.reason(); check.distance(); check.rewindMillis(); check.capped()
 ```
 
 - Order of checks: spear (`ATTACK_RANGE`) or riding attacker → UNKNOWN `UNSUPPORTED`; target never seen → INVALID
   `NOT_PRESENT`; no sample at T → UNKNOWN `NO_SAMPLE`; not pickable at T (removed, spectator) → INVALID `NOT_PRESENT`;
-  `now - stamp > maxRewind` → INVALID `REWIND` (the cap is inclusive); target sample inexact → UNKNOWN `INEXACT_TARGET`;
-  the outcome differs with and without inexact candidates → UNKNOWN `INEXACT_BLOCKER`; else VALID `PICKED` or INVALID
-  `MISSED` / `OUT_OF_REACH` / `BLOCKED` / `OCCLUDED`.
+  `now - stamp > cap` (the cap is inclusive, `CombatWiring.sharedRewindCap`) → the capped age, below; target sample
+  inexact → UNKNOWN `INEXACT_TARGET`; the outcome differs with and without inexact candidates → UNKNOWN
+  `INEXACT_BLOCKER`; else VALID `PICKED` or INVALID `MISSED` / `OUT_OF_REACH` / `BLOCKED` / `OCCLUDED`.
+- Past the cap, Overwatch's rule (2026-10-22): the ray is tested against the target's truth at the capped age instead
+  of the box the client drew. `TruthHistory` (live: `combat.TruthPaths`, the target's `PathFeed` ring, one step per
+  simulated client tick stamped when it was simulated) gives the oldest step stamped at or after `now - cap`, never an
+  older one; the box keeps the drawn sample's size and pose. That truth is the server's own, so it counts as exact, and
+  `capped()` is true. The client never drew it there: a high-ping attacker has to lead (in melee, aim at the leading part
+  of the box it shows), and a backtrack or a held view gains nothing past the cap. Only a target with no step that new
+  (no path: a player outside authority, or one whose path stopped) is INVALID `REWIND`. Other players stay where the
+  client drew them. `rewindMillis()` stays the age of the view. Neue's held-click landing (`NeueReach.authority`)
+  measures its reach the same way past the cap.
 - Why `canPick` and not one answer: `ProjectileUtil.getEntityHitResult` depends on the client's entity iteration order
   (section storage order, unknowable) when the eye is inside a candidate's box or two candidates tie, because a clipped
   entity coming *after* an inside one replaces it (`dd < nearest || nearest == 0.0`). `canPick` unrolls the loop:
@@ -184,8 +193,8 @@ does not change).
 | `MirrorBookTest` (8) | arrival ticks and the pick-time sample, late events, unbundled packets, bounded history and gaps, removal and pose via packets, unknown ids and non-players ignored, riding, clear |
 | `MirrorFingerprintTest` (3) | player update interval is 2; both fingerprints |
 | `PickRayTest` (11) | view vector equals `Entity.calculateViewVector` (10,000 rotations), eye lerp, reach strictly below the range (9.0 exactly misses), walls, a box flush with a block face, slabs, nearer of two players, eye inside (and the order quirk), the 1e-7 clip tolerance, block clip vs the server's `VoxelShape.clip` |
-| `HitValidatorTest` (14) | valid, out of reach, missed, blocked, occluded, eye inside the target, eye inside another player, not present / removed, inclusive rewind cap, rewind from the displayed step, inexact target, no sample, spear, exact vs inexact non-player blockers |
-| `PathFeedTest` (9) | PosRot with a 2-tick stepped delta through the real codec, viewer base equals the real `VecDeltaCodec` over 2,000 random ticks (syncs and keep-alives included), grid and exact sync positions, respawn decisions, ring overrun, no freeze for 1 or 2 silent ticks and one for 3, steady state 1.5 steps behind at speed 2, still player kept alive within 1/4096 block (and restarts without keep-alive), pre-roll |
+| `HitValidatorTest` (20) | valid, out of reach, missed, blocked, occluded, eye inside the target, eye inside another player, not present / removed, inclusive rewind cap, rewind from the displayed step, inexact target, no sample, spear, exact vs inexact non-player blockers; past the cap (a real `PathFeed` as the truth): a lead lands, the stale box misses, the first step at the capped age and never an older one, REWIND only with no truth that new, the truth never asked inside the cap, an inexact mirror judged on the truth |
+| `PathFeedTest` (11) | `positionSince` (the oldest held step at or after a stamp, inclusive; none past the newest; the ring's oldest when it no longer reaches back), PosRot with a 2-tick stepped delta through the real codec, viewer base equals the real `VecDeltaCodec` over 2,000 random ticks (syncs and keep-alives included), grid and exact sync positions, respawn decisions, ring overrun, no freeze for 1 or 2 silent ticks and one for 3, steady state 1.5 steps behind at speed 2, still player kept alive within 1/4096 block (and restarts without keep-alive), pre-roll |
 
 ### 3.4 Cost (this Mac, JDK 25, after warm-up)
 

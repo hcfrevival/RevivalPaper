@@ -28,20 +28,28 @@ final class NeueReach {
 
     /**
      * Under authority: eye to the closest point of the target's box as the attacker's client shows it now (the eye after
-     * its latest tick, the box its mirror holds for that tick), or NaN when the click can't land: the mirror inexact or
-     * older than the rewind cap, the box at or past the client's entity range, or (with {@code lineOfSight}) a block in
-     * between on the client's world.
+     * its latest tick, the box its mirror holds for that tick), or NaN when the click can't land: the mirror inexact, the
+     * box at or past the client's entity range, or (with {@code lineOfSight}) a block in between on the client's world.
+     * Past the rewind cap, the judge's rule ({@code HitValidator}): the target's truth at the capped age, in the drawn
+     * box's size; NaN when it has no truth that new.
      */
     static double authority(final ServerPlayer attacker, final Entity target, final boolean lineOfSight) {
         final AuthPlayer auth = attacker.revivalAuth;
         final AttackerSnapshot eye = CombatWiring.snapshot(auth);
         // shortcut: one small sample per landing (a few a second at most), not per packet
         final MirrorBook.Sample sample = new MirrorBook.Sample();
-        if (!CombatWiring.book(auth).sample(target.getId(), auth.tick(), sample) || !sample.exact || !sample.pickable) {
+        if (!CombatWiring.book(auth).sample(target.getId(), auth.tick(), sample) || !sample.pickable) {
             return Double.NaN;
         }
         final long cap = CombatWiring.sharedRewindCap(auth, target.getId(), auth.tick()); // the judge's own cap (HR-2), shared
-        if (System.currentTimeMillis() - sample.stamp > cap) {
+        final long now = System.currentTimeMillis();
+        if (now - sample.stamp > cap) {
+            final double[] truth = new double[3];
+            if (TruthPaths.INSTANCE.positionSince(target.getId(), now - cap, truth) == Long.MIN_VALUE) {
+                return Double.NaN;
+            }
+            sample.moveFeetTo(truth[0], truth[1], truth[2]);
+        } else if (!sample.exact) {
             return Double.NaN;
         }
         return reach(eye.eyeX(), eye.eyeY(), eye.eyeZ(), sample.minX, sample.minY, sample.minZ, sample.maxX, sample.maxY, sample.maxZ,

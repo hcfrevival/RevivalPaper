@@ -173,6 +173,17 @@ It checks: tipper/plain/sour knocks of 0.44/0.40/0.36, a 15° DI bend from held 
 height kept), a held click landing in the server tick whose level phase opened the window and flagged buffered, a click
 made 4 or more ticks early expiring, a parry (event, no damage, window or flash, riposte ready, recoil (0, 0.22, −0.45),
 a 10-tick cooldown on the sword, the slow, the guard-break sound, locked out), the riposte crit (12 damage) used up, the
-first attack after the stagger delivered exactly at `T_s + 10` under enforce (`S_parry + rtt + 10` outside), the slow off,
-no correction for the staggered client, a block-hit being a plain 4.5 block, and classic unchanged (0.40 at the edge, the
-click lost, a plain block, no stagger).
+first attack after the stagger delivered exactly at `T_s + 10` under enforce (`S_parry + rtt + 10` outside, the round
+trip taken at the parry), the slow off, no correction for the staggered client, a block-hit being a plain 4.5 block, and
+classic unchanged (0.40 at the edge, the click lost, a plain block, no stagger). Under enforce a third client, 450 ms away
+(every clientbound packet 9 ticks late), sees the victim sneaking across older than its rewind cap: aiming at the trailing
+edge of the box it shows is INVALID MISSED (the truth at the capped age is past the ray), aiming at its leading edge (a
+lead) lands (auth-combat.md §2.2).
+
+Determinism (2026-10-22). Health is the measure, so the set runs the world peaceful with no natural regeneration and puts
+both back: the async run's flat world spawned slimes that hit the parrier ("health 14, window 14"), and the sync run
+inherited peaceful from `AuthLiveScenarios`, whose heal of 1 every 20 ticks ignores food ("health 5.33" after the held
+click). Under enforce a tick's packets reach the client in its bundle at the tick's end, so the parry's recoil, cooldown and
+sound are read a tick later, and the attacker keeps its crosshair on the victim while the recoil and the riposte's knock
+lift it (a level ray from mid-air passes over the victim's head, which the judge calls a miss, not the lockout); the first
+attack after the lockout lands as a 1.7 crit when it is still falling.

@@ -66,6 +66,29 @@ class PathFeedTest {
     }
 
     /**
+     * The truth at a capped age (HitValidator past the rewind cap): the oldest step stamped at or after the time, never an
+     * older one; none when the newest is older; the ring's oldest when it no longer reaches back that far.
+     */
+    @Test
+    void positionSinceIsTheFirstStepAtOrAfterTheStamp() {
+        final double[] out = new double[3];
+        final PathFeed feed = new PathFeed(ID, 8, PathFeed.Settings.DEFAULT);
+        assertEquals(Long.MIN_VALUE, feed.positionSince(0L, out)); // nothing appended
+        for (int i = 0; i < 20; i++) {
+            feed.append(i, 64.0, -i, 0.0F, 0.0F, true, 1_000L + 50L * i);
+        }
+        assertEquals(1_700L, feed.positionSince(1_660L, out)); // between steps 13 and 14: step 14
+        assertEquals(14.0, out[0]);
+        assertEquals(64.0, out[1]);
+        assertEquals(-14.0, out[2]);
+        assertEquals(1_650L, feed.positionSince(1_650L, out)); // inclusive
+        assertEquals(1_950L, feed.positionSince(1_950L, out)); // the newest
+        assertEquals(Long.MIN_VALUE, feed.positionSince(1_951L, out)); // newer than anything appended
+        assertEquals(1_600L, feed.positionSince(0L, out)); // the ring holds 12..19: its oldest, newer than asked
+        assertEquals(12.0, out[0]);
+    }
+
+    /**
      * Review PT-16: viewers whose codec base gives the same delta get the same packet object, as the vanilla tracker fans
      * one packet out to every viewer; a viewer with another base gets its own. A still player's alternating keep-alive
      * (+1, -1 codec units) is built once each.

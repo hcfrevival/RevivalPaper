@@ -55,7 +55,12 @@ public final class Transactions {
     static final int MAX_PINGS = 1 << 14;
     static final int MAX_ENTRIES = 1 << 17;
     static final int RECENT_ACKS = 64;
-    static final int RTT_SAMPLES = 256;
+    /** Sent per-tick bundles whose lists wait for their ping's ack, at most; older ones are left to the GC. */
+    static final int SENT_BUNDLES = 32;
+    /** Acked bundle lists kept for the next ticks, at most. */
+    static final int SPARE_BUNDLES = 4;
+    /** A list that held more packets than this is not kept (a burst shouldn't pin a 4096-slot array). */
+    static final int SPARE_BUNDLE_MAX = 1024;
 
     public static boolean ours(final int id) {
         return id >= PING_MIN && id <= PING_MAX;
@@ -115,10 +120,24 @@ public final class Transactions {
     private int entryCount;
     private long releasedSeq;
 
-    // The open per-tick bundle
-    private @Nullable List<Packet<? super ClientGamePacketListener>> open;
-    private int openPing;
+    // The open per-tick bundle, and the seq of its ping
+    private @Nullable ArrayList<Packet<? super ClientGamePacketListener>> open;
+    private long openSeq;
     private boolean pingedThisTick;
+    // Bundle lists are reused (review PT-16: one list per viewer per tick otherwise). A sent one is reusable once a ping
+    // sent with or after it is acked: the client has read the bundle, so Netty's unbundler (PacketBundleUnpacker, on the
+    // event loop) iterated the list before the bundle's first byte was written. Pings go out in seq order with no ping
+    // sent while a bundle is open, so "seq <= the acked seq" is exactly "written before the acked ping". A forced ping
+    // proves nothing and reuses nothing. shortcut: a client pong-guessing a ping it was not sent yet can get a list
+    // reused under its own encoder; only its own connection reads that list
+    @SuppressWarnings("unchecked")
+    private final ArrayList<Packet<? super ClientGamePacketListener>>[] sentBundles = new ArrayList[SENT_BUNDLES];
+    private final long[] sentBundleSeqs = new long[SENT_BUNDLES];
+    private int sentBundleHead;
+    private int sentBundleCount;
+    @SuppressWarnings("unchecked")
+    private final ArrayList<Packet<? super ClientGamePacketListener>>[] spareBundles = new ArrayList[SPARE_BUNDLES];
+    private int spareBundleCount;
 
     // Other players this client has been sent, for REMOTE_PLAYER classification (guarded by the lock)
     private final IntOpenHashSet trackedPlayers = new IntOpenHashSet();
@@ -133,11 +152,7 @@ public final class Transactions {
     // Main-thread state
     private final int[] recentAcks = new int[RECENT_ACKS];
     private int recentAckIndex;
-    private final long[] rttSamples = new long[RTT_SAMPLES];
-    private int rttSampleCount;
-    private int rttSampleIndex;
-    private long rttBaseNanos = 100_000_000L;
-    private long rttHighNanos = 100_000_000L;
+    private final RttBaseline rtt = new RttBaseline(100_000_000L);
     private long lastAckedSentNanos;
     // The ack clock as the timer may use it (review timer-backlog-permanent): a drain's pongs count only once they have
     // settled, so the catch-up ticks that follow them in the same frame keep the credit the stall left
@@ -328,9 +343,51 @@ public final class Transactions {
     private void openBundle(final Context context) {
         final ClientboundPingPacket ping = this.newPing(context);
         this.tracePing(context, ping.getId());
-        this.open = new ArrayList<>();
-        this.open.add(ping);
-        this.openPing = ping.getId();
+        final ArrayList<Packet<? super ClientGamePacketListener>> bundle = this.spareBundleCount > 0
+            ? this.takeSpare()
+            : new ArrayList<>(64);
+        bundle.add(ping);
+        this.open = bundle;
+        this.openSeq = this.nextSeq - 1; // newPing's
+    }
+
+    private ArrayList<Packet<? super ClientGamePacketListener>> takeSpare() {
+        final ArrayList<Packet<? super ClientGamePacketListener>> spare = this.spareBundles[--this.spareBundleCount];
+        this.spareBundles[this.spareBundleCount] = null;
+        return spare;
+    }
+
+    // A list nothing reads any more: cleared and kept for a later bundle, or dropped
+    private void spare(final ArrayList<Packet<? super ClientGamePacketListener>> bundle) {
+        final boolean keep = bundle.size() <= SPARE_BUNDLE_MAX && this.spareBundleCount < SPARE_BUNDLES;
+        bundle.clear();
+        if (keep) {
+            this.spareBundles[this.spareBundleCount++] = bundle;
+        }
+    }
+
+    // The bundle just went to the connection: its list waits for an ack of its ping (or a later one)
+    private void keepSent(final ArrayList<Packet<? super ClientGamePacketListener>> bundle, final long seq) {
+        if (this.sentBundleCount == SENT_BUNDLES) {
+            this.sentBundles[this.sentBundleHead] = null; // the oldest, unacked this long: the GC's
+            this.sentBundleHead = (this.sentBundleHead + 1) % SENT_BUNDLES;
+            this.sentBundleCount--;
+        }
+        final int slot = (this.sentBundleHead + this.sentBundleCount) % SENT_BUNDLES;
+        this.sentBundles[slot] = bundle;
+        this.sentBundleSeqs[slot] = seq;
+        this.sentBundleCount++;
+    }
+
+    // An ack of the ping with this seq: every bundle sent with or before it was read by the client
+    private void reuseSent(final long ackedSeq) {
+        while (this.sentBundleCount > 0 && this.sentBundleSeqs[this.sentBundleHead] <= ackedSeq) {
+            final ArrayList<Packet<? super ClientGamePacketListener>> bundle = this.sentBundles[this.sentBundleHead];
+            this.sentBundles[this.sentBundleHead] = null;
+            this.sentBundleHead = (this.sentBundleHead + 1) % SENT_BUNDLES;
+            this.sentBundleCount--;
+            this.spare(bundle);
+        }
     }
 
     @SuppressWarnings("unchecked")
@@ -378,12 +435,13 @@ public final class Transactions {
 
     /** Sends the open bundle now (a packet that can't join it is next, or the open bundle is full). */
     private void closeOpen(final Connection connection, final @Nullable Context context, final boolean flush) {
-        final List<Packet<? super ClientGamePacketListener>> bundle = this.open;
+        final ArrayList<Packet<? super ClientGamePacketListener>> bundle = this.open;
         this.open = null;
         if (bundle == null) {
             return;
         }
         connection.send(new ClientboundBundlePacket(bundle), null, flush);
+        this.keepSent(bundle, this.openSeq);
     }
 
     private static boolean bundleable(final Packet<?> packet) {
@@ -678,6 +736,7 @@ public final class Transactions {
             this.pingHead = (this.pingHead + found + 1) & mask;
             this.pingCount -= found + 1;
             this.release(seq, out);
+            this.reuseSent(seq);
             this.acked++;
             final long now = System.nanoTime();
             this.lastAckedSentNanos = Math.max(this.lastAckedSentNanos, sentNanos);
@@ -687,7 +746,7 @@ public final class Transactions {
             this.pendingAckSentNanos = Math.max(this.pendingAckSentNanos, sentNanos);
             this.lastRttNanos = now - sentNanos;
             this.lastRttTicks = serverTick - sentTick;
-            this.sampleRtt(this.lastRttNanos);
+            this.rtt.sample(this.lastRttNanos); // rttBase: never the latest pong (§15.1)
             if (found > 0) {
                 this.skipped += found;
                 this.violations++;
@@ -739,24 +798,9 @@ public final class Transactions {
         this.releasedSeq = Math.max(this.releasedSeq, seq);
     }
 
-    // rttBase: a low percentile over a long window, never the latest pong (§15.1)
-    private void sampleRtt(final long rtt) {
-        this.rttSamples[this.rttSampleIndex] = rtt;
-        this.rttSampleIndex = (this.rttSampleIndex + 1) % RTT_SAMPLES;
-        if (this.rttSampleCount < RTT_SAMPLES) {
-            this.rttSampleCount++;
-        }
-        if (this.rttSampleCount <= 8 || (this.acked & 31) == 0) {
-            final long[] sorted = Arrays.copyOf(this.rttSamples, this.rttSampleCount);
-            Arrays.sort(sorted);
-            this.rttBaseNanos = sorted[this.rttSampleCount / 10];
-            this.rttHighNanos = sorted[Math.min(this.rttSampleCount - 1, this.rttSampleCount * 9 / 10)];
-        }
-    }
-
-    /** The p90 of the last 256 ack round trips: with {@link #rttBaseNanos}, the player's own jitter. */
+    /** The p90 of the last 256 ack round trips (at least {@link #rttBaseNanos}): with the base, the player's own jitter. */
     public long rttHighNanos() {
-        return this.rttHighNanos;
+        return this.rtt.high();
     }
 
     /** Age of the oldest unanswered ping, or 0. */
@@ -784,7 +828,14 @@ public final class Transactions {
             this.entryHead = 0;
             this.pingCount = 0;
             this.pingHead = 0;
-            this.open = null;
+            if (this.open != null) {
+                this.spare(this.open); // never sent
+                this.open = null;
+            }
+            // Sent lists go with their pings (the GC's): rare, and no ack of a dropped ping may reuse them
+            Arrays.fill(this.sentBundles, null);
+            this.sentBundleHead = 0;
+            this.sentBundleCount = 0;
             this.trackedPlayers.clear();
             this.trackedRockets.clear();
         }
@@ -816,9 +867,12 @@ public final class Transactions {
         return this.lastRttNanos;
     }
 
-    /** The connection's base round trip: the 10th percentile of the last 256 ack round trips. */
+    /**
+     * The connection's base round trip (§15.1, {@link RttBaseline}): the 10th percentile of the last 256 ack round trips,
+     * or of the last 32 when that is higher, so a ping that went up is followed within about 1.5 s.
+     */
     public long rttBaseNanos() {
-        return this.rttBaseNanos;
+        return this.rtt.base();
     }
 
     public int lastRttTicks() {

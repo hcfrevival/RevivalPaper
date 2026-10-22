@@ -257,6 +257,47 @@ class TransactionsTest {
         assertEquals(1, this.transactions.forcedCount());
     }
 
+    private Iterable<?> tickBundle(final double y) {
+        this.connection.sent.clear();
+        this.send(this.selfMotion(y));
+        this.transactions.endOfTick(this.connection, this.context, true);
+        return ((ClientboundBundlePacket) this.connection.sent.getLast()).subPackets();
+    }
+
+    @Test
+    void aTicksBundleListIsReusedOnceItsPingIsAcked() {
+        // Review PT-16: one list per viewer per tick otherwise. Only an ack proves the client read the bundle
+        this.context.coalesce = true;
+        final Iterable<?> first = this.tickBundle(0.1);
+        final int firstPing = pingId((Packet<?>) first.iterator().next());
+        final Iterable<?> second = this.tickBundle(0.2);
+        assertTrue(first != second, "unacked: the first list may still be on its way");
+        final Transactions.Acked out = new Transactions.Acked();
+        assertEquals(Transactions.ACKED, this.transactions.ack(firstPing, 0, out));
+        final Iterable<?> third = this.tickBundle(0.3);
+        assertSame(first, third, "acked: its list carries a later tick");
+        assertEquals(2, contents(this.connection.sent.getLast()).size());
+        assertTrue(second != third);
+    }
+
+    @Test
+    void aForcedPingReusesNothingAndALaterAckReusesEverythingBeforeIt() {
+        this.context.coalesce = true;
+        this.context.window = 10;
+        final Iterable<?> first = this.tickBundle(0.1);
+        final Iterable<?> second = this.tickBundle(0.2);
+        final int secondPing = pingId((Packet<?>) second.iterator().next());
+        final Transactions.Acked forced = new Transactions.Acked();
+        assertEquals(2, this.transactions.forceDue(20, 4, forced));
+        final Iterable<?> third = this.tickBundle(0.3);
+        assertTrue(third != first && third != second, "forced is not read");
+        // The client skipped the first pong: the second still proves both bundles were read
+        assertEquals(Transactions.SKIPPED, this.transactions.ack(secondPing, 0, new Transactions.Acked()));
+        final Iterable<?> fourth = this.tickBundle(0.4);
+        final Iterable<?> fifth = this.tickBundle(0.5);
+        assertTrue((fourth == first || fourth == second) && (fifth == first || fifth == second) && fourth != fifth);
+    }
+
     @Test
     void aReplicatedStepKeepsItsOwnStamp() {
         this.context.stamp = 123_456L;

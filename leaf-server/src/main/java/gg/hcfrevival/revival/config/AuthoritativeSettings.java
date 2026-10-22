@@ -72,7 +72,10 @@ import gg.hcfrevival.revival.auth.AuthMode;
  * @param pathBuffer replication: authoritative steps kept for viewers that drain late; one further behind is re-paired
  * @param repairIntervalTicks replication: a viewer whose mirror of a target lost exactness (a lag spike, a late pong) gets
  *                            the target re-spawned, at most once per this many server ticks
- * @param mirrorHistoryTicks lag compensation: viewer ticks of target boxes each viewer's mirrors keep
+ * @param mirrorHistoryTicks lag compensation: viewer ticks of target boxes each viewer's mirrors keep. Hits read the box
+ *                           of the attack's own tick and measure the rewind from its stamp, so the history only has to
+ *                           outlast the rewind cap ({@code max-rewind-ms} / 50 = 12 ticks); it costs 61 bytes per tick
+ *                           per viewer-target pair (review PT-16)
  * @param visibilityEnabled anti-ESP: players with no line of sight are not sent
  * @param alwaysVisibleDistance anti-ESP: players closer than this are always sent (footsteps range)
  * @param visibilityCheckIntervalTicks anti-ESP: server ticks between line-of-sight checks of one viewer-target pair
@@ -183,6 +186,7 @@ public record AuthoritativeSettings(
     public static final int MAX_REWIND_MS = 600;
     public static final int RTT_CEILING_MS = 250;
     public static final double EXTERNAL_MOVER_ENTITY_RANGE = 0.1;
+    public static final int MIRROR_HISTORY_TICKS = 16;
 
     private static String apolloRules(final ConfigReader reader) {
         final String value = reader.getString(PATH + "client-profiles.apollo-rules", "follow").trim().toLowerCase(java.util.Locale.ROOT);
@@ -256,7 +260,7 @@ public record AuthoritativeSettings(
             Math.clamp(reader.getDouble(PATH + "replication.respawn-distance", 48.0), 1.0, 63.0),
             Math.max(8, reader.getInt(PATH + "replication.path-buffer", 64)),
             Math.max(1, reader.getInt(PATH + "replication.repair-interval-ticks", 20)),
-            Math.max(8, reader.getInt(PATH + "mirror-history-ticks", 64)),
+            Math.max(8, reader.getInt(PATH + "mirror-history-ticks", MIRROR_HISTORY_TICKS)),
             reader.getBoolean(PATH + "visibility.enabled", false),
             Math.max(0.0, reader.getDouble(PATH + "visibility.always-visible-distance", 8.0)),
             Math.max(1, reader.getInt(PATH + "visibility.check-interval-ticks", 2)),

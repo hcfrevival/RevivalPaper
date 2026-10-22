@@ -84,7 +84,8 @@ public interface SimWorld {
      * </ul>
      * The port asks afresh at every {@code tick}, {@code collide} and {@code velocityAfterMove}; within one only for an
      * area the last answer did not cover, and the answers must agree (nothing moves the entities during the player's
-     * tick).
+     * tick). docs/revival/auth-sim-requests.md §2 says which box at which point of the client tick, and how the client
+     * moves each type (boats interpolate over 3 steps, shulkers snap and open their lids per tick).
      */
     void collectEntityColliders(SimBox area, SimBoxList out);
 

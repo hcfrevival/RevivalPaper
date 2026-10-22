@@ -166,7 +166,7 @@ public final class RevivalLiveTests extends JavaPlugin implements Listener {
         this.damageWindowScenarios();
         new AuthLiveScenarios(this, this.server, this.level).register();
         new AuthCheatScenarios(this, this.server, this.level).register();
-        // Last for now: its held-click landing check fails one tick late (combat side, 2026-10-22) and a failure stops the run
+        // Neue off, then under enforce with the 450 ms rewind-cap control; runs the world peaceful without regeneration, then restores both
         new NeueLiveScenarios(this, this.server, this.level).register();
         this.next();
     }

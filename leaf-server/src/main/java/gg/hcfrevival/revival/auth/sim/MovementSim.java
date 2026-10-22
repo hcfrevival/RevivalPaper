@@ -1383,7 +1383,10 @@ public final class MovementSim {
      * off slime or a bed, a cut under Mth.equal's 1e-5, or a stepped move.
      */
     public static final int VELOCITY_COLLIDED = 1 << 5;
-    /** Why: sneaking at an edge may have shortened the move (Player.maybeBackOffFromEdge), not the velocity. */
+    /**
+     * Why: sneaking at an edge may have shortened the move (Player.maybeBackOffFromEdge), not the velocity: x and z, and
+     * in water or lava y too (jumpOutOfFluid's isFree box is moved by x and z).
+     */
     public static final int VELOCITY_EDGE = 1 << 6;
     /**
      * Why: the tick's own keys decide, and they are not part of the state the tick started from: sprinting in water or

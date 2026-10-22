@@ -84,39 +84,51 @@ class NeueStateTest {
     void lockoutRunsFromTheRecoilsAckForTheStagger() {
         final NeueState state = new NeueState();
         final Object recoil = new Object();
-        state.stagger(1000L, recoil, NEUE.staggerTicks(), true);
+        state.stagger(1000L, recoil, NEUE.staggerTicks(), 3, true);
         assertTrue(state.staggered());
         // Before T_s is known every attack is refused: clicks made before the client saw the parry are the recovery
-        assertTrue(state.lockedOut(true, 40L, 1001L, 3));
+        assertTrue(state.lockedOut(true, 40L, 1001L));
         assertFalse(state.motionApplied(new Object(), 52L)); // another packet
         assertTrue(state.motionApplied(recoil, 52L));
         assertEquals(52L, state.staggerAck());
         for (long tick = 52L; tick <= 61L; tick++) {
-            assertTrue(state.lockedOut(true, tick, 1003L, 3), "window " + tick); // T_s ... T_s + 9
+            assertTrue(state.lockedOut(true, tick, 1003L), "window " + tick); // T_s ... T_s + 9
         }
-        assertFalse(state.lockedOut(true, 62L, 1004L, 3)); // T_s + 10 is delivered
+        assertFalse(state.lockedOut(true, 62L, 1004L)); // T_s + 10 is delivered
         assertFalse(state.staggered());
     }
 
     @Test
     void outsideAuthorityTheRoundTripStandsInForTheAck() {
         final NeueState state = new NeueState();
-        state.stagger(1000L, new Object(), 10, false);
-        assertTrue(state.lockedOut(false, 0L, 1012L, 3)); // S_parry + ceil(rtt / 50) + 10, exclusive
-        assertFalse(state.lockedOut(false, 0L, 1013L, 3));
+        state.stagger(1000L, new Object(), 10, 3, false);
+        assertTrue(state.lockedOut(false, 0L, 1012L)); // S_parry + ceil(rtt / 50) + 10, exclusive
+        assertFalse(state.lockedOut(false, 0L, 1013L));
         // A recoil a plugin cancelled has no ack to wait for
         final NeueState cancelled = new NeueState();
-        cancelled.stagger(1000L, null, 10, false);
-        assertTrue(cancelled.lockedOut(true, 99L, 1012L, 3));
-        assertFalse(cancelled.lockedOut(true, 99L, 1013L, 3));
+        cancelled.stagger(1000L, null, 10, 3, false);
+        assertTrue(cancelled.lockedOut(true, 99L, 1012L));
+        assertFalse(cancelled.lockedOut(true, 99L, 1013L));
+    }
+
+    @Test
+    void theRoundTripIsTakenOnceAtTheParry() {
+        // A keep-alive landing mid-stagger changes the connection's round trip; the stagger already running keeps its end
+        final NeueState state = new NeueState();
+        state.stagger(1000L, new Object(), 10, 1, false);
+        assertTrue(state.lockedOut(false, 0L, 1010L));
+        assertFalse(state.lockedOut(false, 0L, 1011L)); // S_parry + 1 + 10, whatever the round trip reads now
+        final NeueState next = new NeueState();
+        next.stagger(2000L, new Object(), 10, 0, false);
+        assertFalse(next.lockedOut(false, 0L, 2010L)); // a zero round trip: S_parry + 10
     }
 
     @Test
     void aLostAckStopsLockingEventually() {
         final NeueState state = new NeueState();
-        state.stagger(1000L, new Object(), 10, true);
-        assertTrue(state.lockedOut(true, 5L, 1110L, 3));
-        assertFalse(state.lockedOut(true, 5L, 1111L, 3));
+        state.stagger(1000L, new Object(), 10, 3, true);
+        assertTrue(state.lockedOut(true, 5L, 1110L));
+        assertFalse(state.lockedOut(true, 5L, 1111L));
         assertTrue(state.slowEnds(true, 5L, 1111L, 2));
     }
 
@@ -124,7 +136,7 @@ class NeueStateTest {
     void theSlowComesOffAHalfTripEarlySoItLandsOnTime() {
         final NeueState state = new NeueState();
         final Object recoil = new Object();
-        state.stagger(1000L, recoil, 10, true);
+        state.stagger(1000L, recoil, 10, 2, true);
         assertTrue(state.slowed());
         state.motionApplied(recoil, 52L);
         assertFalse(state.slowEnds(true, 59L, 1006L, 2));
@@ -132,7 +144,7 @@ class NeueStateTest {
         assertFalse(state.slowed());
         assertFalse(state.slowEnds(true, 61L, 1008L, 2)); // once
         final NeueState outside = new NeueState();
-        outside.stagger(1000L, null, 10, true);
+        outside.stagger(1000L, null, 10, 0, true);
         assertFalse(outside.slowEnds(false, 0L, 1009L, 0));
         assertTrue(outside.slowEnds(false, 0L, 1010L, 0));
     }
@@ -141,7 +153,7 @@ class NeueStateTest {
     void aStaggerDropsTheHeldClick() {
         final NeueState state = new NeueState();
         state.hold(7, new Object(), 1000L, 3, 0, new Object());
-        state.stagger(1001L, new Object(), 10, false);
+        state.stagger(1001L, new Object(), 10, 0, false);
         assertFalse(state.pending());
         assertEquals(1, state.staggers());
     }
@@ -149,9 +161,9 @@ class NeueStateTest {
     @Test
     void noStaggerLengthNoLockout() {
         final NeueState state = new NeueState();
-        state.stagger(1000L, new Object(), 0, true);
+        state.stagger(1000L, new Object(), 0, 0, true);
         assertFalse(state.staggered());
         assertFalse(state.slowed());
-        assertFalse(state.lockedOut(true, 1L, 1000L, 0));
+        assertFalse(state.lockedOut(true, 1L, 1000L));
     }
 }

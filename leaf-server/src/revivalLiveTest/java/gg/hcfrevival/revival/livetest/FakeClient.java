@@ -65,7 +65,7 @@ final class FakeClient {
 
         @Override
         public void send(final Packet<?> packet, final @Nullable ChannelFutureListener listener, final boolean flush) {
-            FakeClient.this.raw.add(packet);
+            FakeClient.this.raw.add(written(packet));
             FakeClient.this.receive(packet, false);
         }
 
@@ -100,7 +100,20 @@ final class FakeClient {
         }
     }
 
-    /** Every packet object written to the connection, bundles not unwrapped. */
+    // A bundle as the wire carries it: its members when it was written. Netty unbundles at the write, and the server
+    // reuses a tick bundle's list once its ping is acked (Transactions, review PT-16)
+    private static Packet<?> written(final Packet<?> packet) {
+        if (packet instanceof final net.minecraft.network.protocol.game.ClientboundBundlePacket bundle) {
+            final List<Packet<? super net.minecraft.network.protocol.game.ClientGamePacketListener>> members = new ArrayList<>();
+            for (final Packet<? super net.minecraft.network.protocol.game.ClientGamePacketListener> sub : bundle.subPackets()) {
+                members.add(sub);
+            }
+            return new net.minecraft.network.protocol.game.ClientboundBundlePacket(members);
+        }
+        return packet;
+    }
+
+    /** Every packet object written to the connection, bundles not unwrapped (a bundle as it was written). */
     final List<Packet<?>> raw = new CopyOnWriteArrayList<>();
     final List<Received> received = new CopyOnWriteArrayList<>();
     private final ConcurrentLinkedQueue<Packet<? super ServerGamePacketListener>> replies = new ConcurrentLinkedQueue<>();

@@ -12,9 +12,14 @@ do on the client: the entity sections a query searches, box intersection, `canCo
 the player's position at that query), `Shapes.create(box)`, the order entities, border, blocks; the same boxes feed
 `Entity.collide` (one gather over the move plus the 26.3 step-height expansion, shared by the sweep and the step-up),
 `noCollision` (crouch and stand checks `canPlayerFitWithinBlocksAndEntitiesWhen`, the sneak back-off at edges,
-`jumpOutOfFluid`'s `isFree`) and auto-jump's obstacle scan. Proof (auth-sim.md §4): real vanilla boats, shulkers and
-happy ghasts in the oracle's client-side level, stationary, moving with interpolation, teleported, peeking, dying, placed
-under a falling player, and `RESULTS_PLACEHOLDER`.
+`jumpOutOfFluid`'s `isFree`) and auto-jump's obstacle scan. Proof (auth-sim.md §4): the oracle fuzz with real vanilla
+boats, shulkers and happy ghasts in the oracle's client-side entity storage (in half the runs: stationary, moving with
+interpolated move packets, teleported, lids peeking, ghasts going still, dying, removed, boats placed under a falling
+player), **0 differences in 4,800,000 ticks** (129k ticks touching one, 43k standing on one; mutants that drop the
+entities, the ghast's rule or the section lookup are caught), `velocityAfterMove` 0 wrong on the same ticks; 7 golden
+scenes recorded on the oracle and replayed on the deploy jar (`MovementSimGoldenTest`); `SimEntityCollisionTest`; the
+80 real-client traces and the collision fuzzer unchanged (80/80, 0 of 1,000,000). Moving boats allocate nothing
+(`SimBench` boats row: 8.2 µs and 0 bytes per tick).
 
 What the netcode must supply, per call, for this player's client:
 
@@ -50,8 +55,8 @@ What the netcode must supply, per call, for this player's client:
      tick (`commonTick` → `interpolate`) moves `pos = pos.lerp(target, 1.0 / remaining)` (`Vec3.lerp`: `x + a * (tx - x)`)
      and counts down, reaching the target on the third tick. A jump of more than 64 blocks, or a sync for an entity not
      ticking, snaps (`snapTo`). The client never moves a boat it does not drive any other way (its tick zeroes its
-     velocity; a shulker lid could `move` it). Box: `EntityDimensions.makeBoundingBox`, `x ± (double) 0.6875F`, `y .. y + (double) 0.5625F`, `z ±
-     0.6875F`.
+     velocity; a shulker lid could `move` it). Box: `EntityDimensions.makeBoundingBox`: `x ± (double) 0.6875F`,
+     `y .. y + (double) 0.5625F`, `z ± (double) 0.6875F`.
    - **Shulkers**: no interpolation (`InterpolationHandler.NO_OP`): a move packet sets the position at once. Box:
      `Shulker.getProgressAabb(scale, attachFace.getOpposite(), 0.5F - Mth.sin((0.5F + peek) * 3.1415927F) * 0.5F, pos)`
      with `scale` the `SCALE` attribute capped at 3 (`sanitizeScale`), the attach face from entity data (the box is
@@ -59,7 +64,11 @@ What the netcode must supply, per call, for this player's client:
      towards `rawPeek * 0.01F` (`updatePeekAmount`, clamped to the target), `rawPeek` being the `DATA_PEEK_ID` byte.
    - **Happy ghasts**: a `LivingEntity`, so `SteppedInterpolationHandler` (steps of the type's update interval, a queue
      of targets and a catch-up speed, see the class). Box: `4.0F x 4.0F` scaled by `getScale()` (the `SCALE` attribute
-     capped at 1), `makeBoundingBox` at the position. Babies (0.2375) never collide.
+     capped at 1), `makeBoundingBox` at the position. Babies (0.2375) never collide. The platform: riders are passengers
+     (exempt); a player standing on top makes the server keep the ghast on its still timeout (`scanPlayerAboveGhast`
+     every tick, `STAYS_STILL` set), and then no rider steers it (`getControllingPassenger`), so it holds still and
+     solid under them. The client never carries a player standing on a ghast that does move: its box just moves, and one
+     that rises into the player's feet does not lift it (`Shapes.collide` ignores a box the player already overlaps).
 4. **Which order.** The client's, `EntitySectionStorage.getEntities`: by entity section (section x ascending; within an
    x, the section key's z then y bits as unsigned numbers, ascending), and within a section by when the entity entered
    it on the client (its `AddEntity`, or the client moving it there). The port keeps the order it is given. Only ties at

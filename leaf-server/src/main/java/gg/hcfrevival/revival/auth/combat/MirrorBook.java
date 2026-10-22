@@ -68,6 +68,19 @@ public final class MirrorBook {
         public AABB box() {
             return new AABB(this.minX, this.minY, this.minZ, this.maxX, this.maxY, this.maxZ);
         }
+
+        /** The same box (size and pose) with its feet centred on (x, y, z): the truth at another time, as drawn. */
+        public void moveFeetTo(final double x, final double y, final double z) {
+            final double halfX = (this.maxX - this.minX) * 0.5;
+            final double halfZ = (this.maxZ - this.minZ) * 0.5;
+            final double height = this.maxY - this.minY;
+            this.minX = x - halfX;
+            this.minY = y;
+            this.minZ = z - halfZ;
+            this.maxX = x + halfX;
+            this.maxY = y + height;
+            this.maxZ = z + halfZ;
+        }
     }
 
     /** One target: its mirror and its box history. */

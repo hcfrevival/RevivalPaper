@@ -25,10 +25,12 @@ import org.jspecify.annotations.Nullable;
  *       velocity that is not the move; one only ulps deep, since a longer one can swap collide's x/z order), just past
  *       it and far past it, and where a bounce or the flight rule can carry the depth into the velocity (a slime or bed
  *       under the box, the bounciness attribute, creative flight) 39 depths from 1e-5 to 3.6; for y also a step-up,
- *       from a fall or from a rise of several heights (what it ran into sideways decides the step). The world border counts at any distance (collide
- *       gathers it only for a move long enough to reach it). Each combination goes through the port's own
- *       {@link SimCollision#collide} and is kept only if it lands exactly on the observed move
- *       ({@link MovementSim#VELOCITY_COLLIDED} when kept ones disagree).
+ *       from a fall or from a rise of several heights (what it ran into sideways decides the step), and from a fall of
+ *       those 39 depths when nothing holds up a state on the ground any more (a boat that drove off or rose around its
+ *       feet: the fall is not cut, and its depth decides what the box meets sideways before the step). The world
+ *       border counts at any distance (collide gathers it only for a move long enough to reach it). Each combination
+ *       goes through the port's own {@link SimCollision#collide} and is kept only if it lands exactly on the observed
+ *       move ({@link MovementSim#VELOCITY_COLLIDED} when kept ones disagree).
  *   <li><b>What a zero or a rounded move hides</b>: an axis that did not move may hold the other signed zero, a
  *       velocity under collide's 1e-7 cut, or, from positions, one under Entity.move's 3.2e-4 threshold when another axis
  *       collided ({@link MovementSim#VELOCITY_UNMOVED}); and {@code to - from} is only one of the moves that
@@ -134,6 +136,7 @@ final class MoveVelocity {
     private final double[] bestGiven = new double[3];
     private final double[] velocity = new double[3];
     private final double[] trial = new double[3];
+    private final double[] probe = new double[3];
 
     MoveVelocity(final MovementSim sim) {
         this.sim = sim;
@@ -276,7 +279,10 @@ final class MoveVelocity {
                             }
                         }
                         if (this.backedOff(s, dx, dy, dz)) {
-                            result |= MovementSim.VELOCITY_X | MovementSim.VELOCITY_Z | MovementSim.VELOCITY_EDGE;
+                            // the velocity kept what the back-off took off the move; in a fluid, jumpOutOfFluid's isFree
+                            // box is moved by that x and z (LivingEntity.java:2562-2567), so y may depend on it too
+                            final boolean fluid = t.kind == MovementSim.Travel.WATER || t.kind == MovementSim.Travel.LAVA;
+                            result |= MovementSim.VELOCITY_X | MovementSim.VELOCITY_Z | MovementSim.VELOCITY_EDGE | (fluid ? MovementSim.VELOCITY_Y : 0);
                         }
                     }
                 }
@@ -385,7 +391,7 @@ final class MoveVelocity {
         final boolean still = Math.abs(my) < 1.0E-7;
         final boolean down = (still || my < 0.0) && this.touches(s, 1, -1);
         final boolean up = (still || my > 0.0) && this.touches(s, 1, 1);
-        final boolean deepDown = bouncy || t.flying || this.bouncesBelow(s);
+        final boolean deepDown = bouncy || t.flying || this.bouncesBelow(s) || this.unsupported(s);
         final boolean deepUp = bouncy || t.flying;
         this.counts[1] = 0;
         if (down) {
@@ -490,6 +496,21 @@ final class MoveVelocity {
             }
         }
         return false;
+    }
+
+    /**
+     * Whether the state is on the ground but nothing holds its box up any more: what held it moved away between ticks (a
+     * boat or a ghast driving off, a block the client lost), or moved into it (a boat rising around the feet, which
+     * collide ignores once overlapped). Its fall is then not cut at once (the port's own collide of a short fall says so),
+     * and how deep it went decides what a step meets on the way (Entity.collide steps from the ground without a vertical
+     * collision), so the fall depths are dense.
+     */
+    private boolean unsupported(final SimPlayer s) {
+        if (!s.onGround || s.noPhysics) {
+            return false;
+        }
+        this.sim.collision.collide(s, 0.0, -SHORT_CUT, 0.0, (float) s.attributes.stepHeight.value(), this.probe);
+        return this.probe[1] == -SHORT_CUT;
     }
 
     /** Adds a reading for {@code axis}, unless it already has the same one. */

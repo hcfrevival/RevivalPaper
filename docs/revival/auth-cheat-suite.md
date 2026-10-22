@@ -53,6 +53,10 @@ waits): honest hits land at 50, 150 and 250 ms, and at a steady 300 ms on a targ
 (rewind 445 ms, cap 513 ms). Past roughly 350-400 ms of steady ping, hits on moving players come back REWIND. Outcomes as
 printed by the suite:
 
+Re-run at 02:31 (run `d5d4fdfb`, netcode round: `rttBase` fast window, tick-bundle list reuse, `mirror-history-ticks`
+16): 82 of 82 again. #71 now switches its 300 ms on 2.5 s before the target moves (16 s before): `rttBase` is 346 ms by
+then (the long window alone was still at the old ping), and no entry is forced after that; its row below is from this run.
+
 | # | Cheat | Outcome | Evidence |
 |---|---|---|---|
 | 1 | honest: 5 players join 2 ticks apart on a floor, then walk | honest | Crowd1 not kicked; Crowd1 corrections 0; Crowd1 exact 28/28; Crowd1 walked (z +4.3134); Crowd1 stands on the floor (y -60.0000); Crowd2 not kicked; Crowd2 corrections 0; Crowd2 exact 28/28; Crowd2 walked (z +4.3134); Crowd2 stands on the floor (y -60.0000);... |
@@ -125,7 +129,7 @@ printed by the suite:
 | 68 | combat: an honest hit at 50 ms of latency (control) | control | an honest hit lands: landed 1 of 1 (judged valid 1, invalid 0, over cap 0) |
 | 69 | combat: an honest hit at 150 ms of latency (control) | control | an honest hit lands: landed 1 of 1 (judged valid 1, invalid 0, over cap 0) |
 | 70 | combat: an honest hit at 250 ms of latency (control) | control | an honest hit lands: landed 1 of 1 (judged valid 1, invalid 0, over cap 0) |
-| 71 | combat: an honest hit at 300 ms of latency on a target sprinting across | control | an honest hit lands: landed 1 (judged valid 1, invalid 0; rewind 445 ms, cap 513 ms, display 102 ms, rtt base 344 ms, verdict VALID) |
+| 71 | combat: an honest hit at 300 ms of latency on a target sprinting across | control | an honest hit lands: landed 1 (judged valid 1, invalid 0; rewind 455 ms, cap 514 ms, display 106 ms, rtt base 345 ms, verdict VALID); nothing forced once the round trip settled (0 entries) |
 | 72 | combat: fake lag (pongs on time, the victim's movement shown 10 ticks late) | blocked | refused: landed 0 (judged valid 0, invalid 1, verdict INVALID MISSED) |
 | 73 | combat: attack while blocking (autoblock) | blocked | refused: landed 0 while blocking true (judged valid 0) |
 | 74 | combat: attack in the window that closes a screen | blocked | refused: landed 0 (judged valid 0, grammar violations 0) |

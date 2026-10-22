@@ -190,7 +190,7 @@ public final class NeueCombat {
             return false;
         }
         final boolean authority = authority(player);
-        return state.lockedOut(authority, tick(player, authority), now(), rttTicks(player, authority));
+        return state.lockedOut(authority, tick(player, authority), now());
     }
 
     // ------------------------------------------------------------------------------------------------------------------
@@ -463,7 +463,7 @@ public final class NeueCombat {
             attacker.stopUsingItem();
         }
         final boolean slow = rules.staggerMoveMultiplier() < 1.0 && ticks > 0;
-        state(attacker).stagger(now(), packet, ticks, slow);
+        state(attacker).stagger(now(), packet, ticks, rttTicks(attacker, authority(attacker)), slow);
         if (slow) {
             final AttributeInstance speed = attacker.getAttribute(Attributes.MOVEMENT_SPEED);
             if (speed != null) {

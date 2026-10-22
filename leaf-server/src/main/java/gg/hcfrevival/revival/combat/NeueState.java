@@ -69,6 +69,7 @@ public final class NeueState {
     private long staggerAck = NEVER;
     private boolean staggerAckable;
     private int staggerTicks;
+    private int staggerRtt;
     private boolean slowed;
 
     // The held click (§5.2)
@@ -220,9 +221,11 @@ public final class NeueState {
     /**
      * Parried: locked out from now until the recoil is acked plus {@code staggerTicks} (§8.4). The held click goes, and
      * {@code packet} is the recoil, whose ack ({@link #motionApplied}) starts the clock; without one (a plugin cancelled
-     * the velocity event) the round trip stands in for the ack, as outside authority.
+     * the velocity event), and outside authority, {@code rttTicks} (the round trip now, in whole ticks rounded up) stand
+     * in for the ack. It is taken once, here: a round trip read again each tick would move the end of a stagger already
+     * running whenever a keep-alive or pong lands.
      */
-    public void stagger(final long serverNow, final @Nullable Object packet, final int staggerTicks, final boolean slowed) {
+    public void stagger(final long serverNow, final @Nullable Object packet, final int staggerTicks, final int rttTicks, final boolean slowed) {
         this.clearPending();
         this.staggers++;
         if (staggerTicks <= 0) {
@@ -234,6 +237,7 @@ public final class NeueState {
         this.staggerAckable = packet != null;
         this.staggerAck = NEVER;
         this.staggerTicks = staggerTicks;
+        this.staggerRtt = rttTicks;
         this.slowed |= slowed;
     }
 
@@ -250,10 +254,10 @@ public final class NeueState {
     /**
      * Whether an attack now is refused. Under authority ({@code clientClock}): every attack in windows up to
      * {@code T_s + stagger − 1}, and all of them until {@code T_s} is known (clicks made before the client could see the
-     * parry are part of the recovery). Outside it: {@code rttTicks} (the round trip, rounded up) stand in for the ack.
-     * Ends the stagger once it is over.
+     * parry are part of the recovery). Outside it: the round trip taken at the stagger stands in for the ack, so the
+     * first attack delivered is at server tick {@code S_parry + rtt + stagger}. Ends the stagger once it is over.
      */
-    public boolean lockedOut(final boolean clientClock, final long tick, final long serverNow, final int rttTicks) {
+    public boolean lockedOut(final boolean clientClock, final long tick, final long serverNow) {
         if (!this.staggered) {
             return false;
         }
@@ -263,7 +267,7 @@ public final class NeueState {
         } else if (clientClock && this.staggerAckable) {
             locked = this.staggerAck == NEVER || tick <= this.staggerAck + this.staggerTicks - 1;
         } else {
-            locked = serverNow < this.staggerServer + rttTicks + this.staggerTicks;
+            locked = serverNow < this.staggerServer + this.staggerRtt + this.staggerTicks;
         }
         if (!locked) {
             this.staggered = false;

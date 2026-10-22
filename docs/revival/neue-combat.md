@@ -298,9 +298,10 @@ opened is already visible. It runs once per server tick:
    what the attacker's client shows now:
    - `eye`: the eye from `CombatWiring.snapshot(attacker)`. That is the origin of the client's next pick: the truth
      after its latest tick, plus the eye offset while a correction is in flight (§15.3).
-   - `box`: `book(attacker).sample(targetId, attacker.tick(), s)`. It must be `exact` and `pickable`, and
-     `nowMillis − s.stamp` must be within `CombatWiring`'s cap,
-     `min(max-rewind-ms, rttBase + ack-jitter × 50 + path-step × 50)`.
+   - `box`: `book(attacker).sample(targetId, attacker.tick(), s)`. It must be `pickable`, and `exact` while
+     `nowMillis − s.stamp` is within the judge's cap (`CombatWiring.sharedRewindCap`). Past the cap the judge's
+     Overwatch rule applies (auth-combat.md §2.2): the box is the target's truth at the capped age, in the sample's
+     size (`TruthPaths`), and with no truth that new the click can't land.
    - `d² = Σ max(min − e, 0, e − max)²` over the axes: the closest point, and 0 inside the box. It must be
      `< entityRange²`, the client's `ENTITY_INTERACTION_RANGE` from `ClientView`, 3.0 by default.
    - With `click-buffer-line-of-sight`, a block clip (OUTLINE, no fluids, the `PickRay` block pass on the attacker's
@@ -831,7 +832,7 @@ Neue's exact semantics need `enforce`. These players get approximations:
 | Tipper | closest-point distance on server positions (§6.2 case 3) |
 | DI | `getLastClientInput()` and `getYRot()` |
 | Parry | `T_B`, `T_E` and `T_sw` from server ticks (use start and stop seen on the `ServerPlayer`, swing from `handlePunch`); `parry-jitter-ticks` 0 |
-| Stagger lockout | until `S_parry + ceil(rttBase / 50) + staggerTicks` server ticks (estimated `T_s`); the rest unchanged |
+| Stagger lockout | until `S_parry + ceil(rtt / 50) + staggerTicks` server ticks (estimated `T_s`), the round trip (the keep-alive latency) taken once at the parry, so a keep-alive answered mid-stagger doesn't move its end; the rest unchanged |
 
 ## 12. Autoclickers
 

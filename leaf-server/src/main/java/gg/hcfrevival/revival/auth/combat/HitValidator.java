@@ -10,8 +10,13 @@ import net.minecraft.world.phys.AABB;
  * blocks from the attacker's client world ({@link PickWorld}), the ray from {@link PickRay}.
  * <p>
  * The verdict is UNKNOWN, never a guess, when something it relies on is not exact (the target's or a deciding blocker's
- * mirror, a spear's ray, a riding attacker): the caller then falls back to the vanilla/Paper range check. A target whose
- * displayed position is older than the rewind cap is INVALID whatever the geometry (anti-backtrack, ping spoof).
+ * mirror, a spear's ray, a riding attacker): the caller then falls back to the vanilla/Paper range check.
+ * <p>
+ * Past the rewind cap, Overwatch's rule: when the box the attacker's client drew is older than the cap, the ray is
+ * tested against the target's truth at the capped age ({@link TruthHistory}: the oldest step of its path stamped at or
+ * after {@code now - cap}, never older), in the drawn box's size. The client never drew it there, so a high-ping
+ * attacker has to lead; a backtrack or a held view gains nothing past the cap. Only a target with no truth that new
+ * (no path: outside authority) is INVALID {@code REWIND}. Other players stay where the client drew them.
  * <p>
  * One instance per thread (it reuses a {@link PickRay}); {@link #validate} allocates only its result.
  */
@@ -29,6 +34,18 @@ public final class HitValidator {
 
     private final PickRay ray = new PickRay();
     private final MirrorBook.Sample sample = new MirrorBook.Sample();
+    private final TruthHistory history;
+    private final double[] truth = new double[3];
+
+    /** Judges past the cap on the live paths ({@code TruthPaths}): the server's judge. */
+    public HitValidator() {
+        this(gg.hcfrevival.revival.combat.TruthPaths.INSTANCE);
+    }
+
+    /** Judges past the cap on {@code history}; {@link TruthHistory#NONE} refuses every view past it. */
+    public HitValidator(final TruthHistory history) {
+        this.history = history;
+    }
 
     /**
      * Validates one attack.
@@ -40,7 +57,7 @@ public final class HitValidator {
      * @param others non-player candidates (may be empty)
      * @param world the attacker's client blocks
      * @param nowMillis server time now, on the clock the event stamps use
-     * @param maxRewindMillis {@code authoritative.max-rewind-ms}
+     * @param maxRewindMillis the attacker's rewind cap ({@code CombatWiring.sharedRewindCap}), inclusive
      */
     public HitCheck validate(final AttackerSnapshot attacker, final int targetId, final MirrorBook book, final int tick, final List<Candidate> others,
                              final PickWorld world, final long nowMillis, final long maxRewindMillis) {
@@ -58,10 +75,17 @@ public final class HitValidator {
             return new HitCheck(HitCheck.Verdict.INVALID, HitCheck.Reason.NOT_PRESENT, Double.NaN, 0L);
         }
         final long rewind = nowMillis - s.stamp;
-        if (rewind > maxRewindMillis) {
-            return new HitCheck(HitCheck.Verdict.INVALID, HitCheck.Reason.REWIND, Double.NaN, rewind);
+        final boolean capped = rewind > maxRewindMillis;
+        if (capped) {
+            // Overwatch's rule: the truth at the capped age, in the size the client drew (its pose at the attack tick)
+            final double[] truth = this.truth;
+            if (this.history.positionSince(targetId, nowMillis - maxRewindMillis, truth) == Long.MIN_VALUE) {
+                return new HitCheck(HitCheck.Verdict.INVALID, HitCheck.Reason.REWIND, Double.NaN, rewind);
+            }
+            s.moveFeetTo(truth[0], truth[1], truth[2]);
         }
-        final boolean targetExact = s.exact;
+        // The truth is the server's own: exact whatever the mirror was
+        final boolean targetExact = capped || s.exact;
 
         final PickRay ray = this.ray;
         ray.clear();
@@ -80,16 +104,16 @@ public final class HitValidator {
 
         final double distance = ray.touched(target) ? Math.sqrt(ray.distanceSq(target)) : Double.NaN;
         if (!targetExact) {
-            return new HitCheck(HitCheck.Verdict.UNKNOWN, HitCheck.Reason.INEXACT_TARGET, distance, rewind);
+            return new HitCheck(HitCheck.Verdict.UNKNOWN, HitCheck.Reason.INEXACT_TARGET, distance, rewind, false);
         }
         final boolean picked = ray.canPick(target, true);
         if (picked != ray.canPick(target, false)) {
-            return new HitCheck(HitCheck.Verdict.UNKNOWN, HitCheck.Reason.INEXACT_BLOCKER, distance, rewind);
+            return new HitCheck(HitCheck.Verdict.UNKNOWN, HitCheck.Reason.INEXACT_BLOCKER, distance, rewind, capped);
         }
         if (picked) {
-            return new HitCheck(HitCheck.Verdict.VALID, HitCheck.Reason.PICKED, distance, rewind);
+            return new HitCheck(HitCheck.Verdict.VALID, HitCheck.Reason.PICKED, distance, rewind, capped);
         }
-        return new HitCheck(HitCheck.Verdict.INVALID, this.reason(target, attacker.entityRange()), distance, rewind);
+        return new HitCheck(HitCheck.Verdict.INVALID, this.reason(target, attacker.entityRange()), distance, rewind, capped);
     }
 
     private HitCheck.Reason reason(final int target, final double entityRange) {
