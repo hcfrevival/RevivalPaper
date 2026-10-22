@@ -76,6 +76,19 @@ public final class WorldView implements gg.hcfrevival.revival.auth.sim.SimWorld,
     static final int MAX_SEQUENCE_JUMP = 1 << 16;
     private final BlockPos.MutableBlockPos cursor = new BlockPos.MutableBlockPos();
 
+    // The chunk of the last read (auth-load §8: block reads were 15 % of the server thread at N=50). The port reads ~80
+    // blocks per collision gather, nearly all in one or two chunks: whether the client holds the chunk and the server's
+    // LevelChunk for it are kept while the chunk record (recordVersion: chunks, chunksKnown, provisional, level) and the
+    // server's full-chunk map (ServerChunkCache.revivalFullChunks) are unchanged, so every answer is the uncached one
+    private int recordVersion;
+    private boolean cacheValid;
+    private int cacheChunkX;
+    private int cacheChunkZ;
+    private int cacheRecord;
+    private int cacheServer;
+    private boolean cacheHeld;
+    private net.minecraft.world.level.chunk.@Nullable LevelChunk cacheChunk;
+
     private long pins;
     private long reverts;
     // Overlay entries (sent, pinned) whose state holds a fluid: 0 almost always, so the fluid probe skips the overlay
@@ -102,6 +115,7 @@ public final class WorldView implements gg.hcfrevival.revival.auth.sim.SimWorld,
         }
         this.level = level;
         this.chunksKnown = chunksKnown;
+        this.recordVersion++;
     }
 
     public @Nullable ServerLevel level() {
@@ -120,10 +134,25 @@ public final class WorldView implements gg.hcfrevival.revival.auth.sim.SimWorld,
         if (y < live.getMinY() || y >= live.getMinY() + live.getHeight()) {
             return net.minecraft.world.level.block.Blocks.VOID_AIR.defaultBlockState();
         }
-        if (!this.hasChunk(x >> 4, z >> 4)) {
+        if (!this.chunkHeld(live, x >> 4, z >> 4)) {
             return net.minecraft.world.level.block.Blocks.VOID_AIR.defaultBlockState(); // EmptyLevelChunk: void air, no fluid
         }
-        final long key = BlockPos.asLong(x, y, z);
+        if (!this.predictions.isEmpty() || !this.sent.isEmpty() || !this.pinned.isEmpty()) {
+            final BlockState overlay = this.overlayState(BlockPos.asLong(x, y, z));
+            if (overlay != null) {
+                return overlay;
+            }
+        }
+        final net.minecraft.world.level.chunk.LevelChunk chunk = this.cacheChunk;
+        if (chunk != null && !live.captureTreeGeneration) {
+            // Level.getBlockState for a loaded full chunk (y is inside the build height, a loaded chunk's x/z are valid)
+            return chunk.getBlockStateFinal(x, y, z);
+        }
+        return live.getBlockState(this.cursor.set(x, y, z)); // not loaded on the server (or tree capture): the level decides
+    }
+
+    // Prediction, then sent, then pinned
+    private @Nullable BlockState overlayState(final long key) {
         if (!this.predictions.isEmpty()) {
             final Prediction prediction = this.predictions.get(key);
             if (prediction != null) {
@@ -136,13 +165,26 @@ public final class WorldView implements gg.hcfrevival.revival.auth.sim.SimWorld,
                 return state;
             }
         }
-        if (!this.pinned.isEmpty()) {
-            final BlockState state = this.pinned.get(key);
-            if (state != null) {
-                return state;
-            }
+        return this.pinned.isEmpty() ? null : this.pinned.get(key);
+    }
+
+    /**
+     * {@link #hasChunk} through the one-chunk cache; leaves {@code cacheChunk} as the server's loaded full chunk there
+     * (null when the client doesn't hold it or the server hasn't it loaded).
+     */
+    private boolean chunkHeld(final ServerLevel live, final int chunkX, final int chunkZ) {
+        final int server = live.getChunkSource().revivalFullChunks;
+        if (!this.cacheValid || chunkX != this.cacheChunkX || chunkZ != this.cacheChunkZ || this.cacheRecord != this.recordVersion || this.cacheServer != server) {
+            final boolean held = this.hasChunkUncached(chunkX, chunkZ);
+            this.cacheChunk = held ? live.getChunkSource().getChunkAtIfLoadedImmediately(chunkX, chunkZ) : null;
+            this.cacheHeld = held;
+            this.cacheChunkX = chunkX;
+            this.cacheChunkZ = chunkZ;
+            this.cacheRecord = this.recordVersion;
+            this.cacheServer = server;
+            this.cacheValid = true;
         }
-        return live.getBlockState(this.cursor.set(x, y, z));
+        return this.cacheHeld;
     }
 
     public BlockState blockState(final BlockPos pos) {
@@ -161,6 +203,11 @@ public final class WorldView implements gg.hcfrevival.revival.auth.sim.SimWorld,
      * ask). Before the chunk list is known, whatever the server has loaded.
      */
     public boolean hasChunk(final int chunkX, final int chunkZ) {
+        final ServerLevel level = this.level;
+        return level != null ? this.chunkHeld(level, chunkX, chunkZ) : this.hasChunkUncached(chunkX, chunkZ);
+    }
+
+    private boolean hasChunkUncached(final int chunkX, final int chunkZ) {
         if (this.chunksKnown) {
             if (this.chunks.contains(ChunkPos.pack(chunkX, chunkZ))) {
                 return true;
@@ -183,6 +230,7 @@ public final class WorldView implements gg.hcfrevival.revival.auth.sim.SimWorld,
      */
     public void endProvisional() {
         this.provisional = false;
+        this.recordVersion++;
     }
 
     /**
@@ -235,10 +283,10 @@ public final class WorldView implements gg.hcfrevival.revival.auth.sim.SimWorld,
     @Override
     public boolean sectionHasFluid(final int chunkX, final int sectionY, final int chunkZ) {
         final ServerLevel live = this.liveLevel();
-        if (!this.hasChunk(chunkX, chunkZ)) {
+        if (!this.chunkHeld(live, chunkX, chunkZ)) {
             return false;
         }
-        final net.minecraft.world.level.chunk.LevelChunk chunk = live.getChunkSource().getChunkAtIfLoadedImmediately(chunkX, chunkZ);
+        final net.minecraft.world.level.chunk.LevelChunk chunk = this.cacheChunk; // the server's loaded chunk there, or null
         final int index = sectionY - live.getMinSectionY();
         if (chunk == null || index < 0 || index >= chunk.getSectionsCount()) {
             return false;
@@ -381,6 +429,7 @@ public final class WorldView implements gg.hcfrevival.revival.auth.sim.SimWorld,
     /** Acked chunk data: the client replaced every block in the chunk. */
     public void onChunk(final int chunkX, final int chunkZ) {
         this.chunks.add(ChunkPos.pack(chunkX, chunkZ));
+        this.recordVersion++;
         this.clearChunk(chunkX, chunkZ);
     }
 
@@ -397,11 +446,13 @@ public final class WorldView implements gg.hcfrevival.revival.auth.sim.SimWorld,
                 ca.spottedleaf.moonrise.common.util.CoordinateUtils.getChunkZ(key)));
         }
         this.chunksKnown = true;
+        this.recordVersion++;
     }
 
     /** An acked {@code ForgetLevelChunk}. */
     public void onForgetChunk(final int chunkX, final int chunkZ) {
         this.chunks.remove(ChunkPos.pack(chunkX, chunkZ));
+        this.recordVersion++;
         this.clearChunk(chunkX, chunkZ);
         if (!this.predictions.isEmpty()) {
             this.predictions.keySet().removeIf(key -> (BlockPos.getX(key) >> 4) == chunkX && (BlockPos.getZ(key) >> 4) == chunkZ);

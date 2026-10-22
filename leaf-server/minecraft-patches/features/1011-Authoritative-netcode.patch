@@ -12,7 +12,9 @@ The logic lives in gg.hcfrevival.revival.auth; this patch adds the
 ServerPlayer.revivalAuth field and one-line calls: pong re-enqueue, the
 outbound choke point, flush suspend/resume (per-tick bundles), handler
 intercepts, teleport sent/accepted, the connection tick, and the block
-change journal in LevelChunk.setBlockState.
+change journal in LevelChunk.setBlockState. ServerChunkCache counts
+changes to its full-chunk map, so the per-player world view can keep the
+chunk of its last block read.
 
 diff --git a/net/minecraft/network/protocol/game/ClientboundEntityEventPacket.java b/net/minecraft/network/protocol/game/ClientboundEntityEventPacket.java
 index 84750ba92d197c6879d5e715397f04ef333877ed..8b49f744e8b64977077853de63caf86e37359167 100644
@@ -38,6 +40,22 @@ index d793b9b06e7494a376505e58b924d551869f340c..f414fd42f0bebbd7e2ad2585a48666bf
 +    public int revivalEntityId() { return this.entityId; } // Revival - Authoritative netcode: entity id
 +
  }
+diff --git a/net/minecraft/server/level/ServerChunkCache.java b/net/minecraft/server/level/ServerChunkCache.java
+index 1624e8792d6002b675e8bcfe5ccd5f0993f0d8d2..e3915d0dc711c9560b9ad8ab39f6eca3667f1847 100644
+--- a/net/minecraft/server/level/ServerChunkCache.java
++++ b/net/minecraft/server/level/ServerChunkCache.java
+@@ -87,8 +87,11 @@ public class ServerChunkCache extends ChunkSource implements ca.spottedleaf.moon
+     // Paper end
+     // Paper start - rewrite chunk system
+ 
++    public int revivalFullChunks; // Revival - Authoritative netcode: changes whenever the full-chunk map does (WorldView's chunk cache)
++
+     @Override
+     public final void moonrise$setFullChunk(final int chunkX, final int chunkZ, final LevelChunk chunk) {
++        this.revivalFullChunks++; // Revival - Authoritative netcode: full-chunk map version
+         final long key = ca.spottedleaf.moonrise.common.util.CoordinateUtils.getChunkKey(chunkX, chunkZ);
+         // Leaf start - thread unsafe chunk map
+         if (chunk == null) {
 diff --git a/net/minecraft/server/level/ServerPlayer.java b/net/minecraft/server/level/ServerPlayer.java
 index 497fcc55e31f94376fab76c1cd83534e45ee33b1..38ccab3de29aef573b2f0720706e98f4a7c717f2 100644
 --- a/net/minecraft/server/level/ServerPlayer.java
