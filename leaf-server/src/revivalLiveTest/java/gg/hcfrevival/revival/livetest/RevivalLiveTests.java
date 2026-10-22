@@ -164,6 +164,8 @@ public final class RevivalLiveTests extends JavaPlugin implements Listener {
         this.after(25, "damage windows off: fire inside a sword window is dropped, as in 26.x", this::windowsOffFire);
         this.after(1, "damage windows on", () -> this.damageWindows(true));
         this.damageWindowScenarios();
+        new AuthLiveScenarios(this, this.server, this.level).register();
+        new AuthCheatScenarios(this, this.server, this.level).register();
         this.next();
     }
 
@@ -507,7 +509,7 @@ public final class RevivalLiveTests extends JavaPlugin implements Listener {
         return Math.abs(motion.x - x) < EPSILON && Math.abs(motion.y - y) < EPSILON && Math.abs(motion.z - z) < EPSILON;
     }
 
-    private void after(final int ticks, final String name, final Runnable action) {
+    void after(final int ticks, final String name, final Runnable action) {
         this.steps.add(new Step(ticks, name, action));
     }
 
@@ -529,7 +531,7 @@ public final class RevivalLiveTests extends JavaPlugin implements Listener {
         }, Math.max(1, step.delay()));
     }
 
-    private void check(final boolean passed, final String detail) {
+    void check(final boolean passed, final String detail) {
         if (!passed) {
             throw new AssertionError(detail);
         }

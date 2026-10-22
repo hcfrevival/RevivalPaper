@@ -26,6 +26,7 @@ public final class RevivalCommand extends Command {
     public static final String RELOAD_PERMISSION = PERMISSION + ".reload";
     public static final String VERSION_PERMISSION = PERMISSION + ".version";
     public static final String KNOCKBACK_PERMISSION = PERMISSION + ".knockback";
+    public static final String AUTH_PERMISSION = PERMISSION + ".auth";
 
     private static final String RELOAD = "reload";
     private static final String VERSION = "version";
@@ -33,7 +34,7 @@ public final class RevivalCommand extends Command {
     public RevivalCommand() {
         super(LABEL);
         this.description = "RevivalPaper commands";
-        this.usageMessage = "/" + LABEL + " [" + RELOAD + " | " + VERSION + " | " + KnockbackCommand.LABEL + "]";
+        this.usageMessage = "/" + LABEL + " [" + RELOAD + " | " + VERSION + " | " + KnockbackCommand.LABEL + " | " + AuthCommand.LABEL + "]";
         this.setPermission(PERMISSION);
     }
 
@@ -43,7 +44,8 @@ public final class RevivalCommand extends Command {
         addPermission(pluginManager, new Permission(RELOAD_PERMISSION, "Reload revival.yml", PermissionDefault.OP));
         addPermission(pluginManager, new Permission(VERSION_PERMISSION, "Show the RevivalPaper build", PermissionDefault.OP));
         addPermission(pluginManager, new Permission(KNOCKBACK_PERMISSION, "Edit and assign knockback profiles", PermissionDefault.OP));
-        addPermission(pluginManager, new Permission(PERMISSION, "Use /revival", PermissionDefault.OP, Map.of(RELOAD_PERMISSION, true, VERSION_PERMISSION, true, KNOCKBACK_PERMISSION, true)));
+        addPermission(pluginManager, new Permission(AUTH_PERMISSION, "Inspect and switch authoritative movement, record traces", PermissionDefault.OP));
+        addPermission(pluginManager, new Permission(PERMISSION, "Use /revival", PermissionDefault.OP, Map.of(RELOAD_PERMISSION, true, VERSION_PERMISSION, true, KNOCKBACK_PERMISSION, true, AUTH_PERMISSION, true)));
     }
 
     private static void addPermission(final PluginManager pluginManager, final Permission permission) {
@@ -68,6 +70,13 @@ public final class RevivalCommand extends Command {
                     sender.sendMessage(Bukkit.permissionMessage());
                 }
             }
+            case AuthCommand.LABEL -> {
+                if (sender.hasPermission(AUTH_PERMISSION)) {
+                    AuthCommand.execute(sender, args);
+                } else {
+                    sender.sendMessage(Bukkit.permissionMessage());
+                }
+            }
             default -> sender.sendMessage(Component.text("Usage: " + this.usageMessage, NamedTextColor.RED));
         }
         return true;
@@ -79,9 +88,12 @@ public final class RevivalCommand extends Command {
             return List.of();
         }
         if (args.length > 1) {
+            if (args[0].equalsIgnoreCase(AuthCommand.LABEL)) {
+                return sender.hasPermission(AUTH_PERMISSION) ? AuthCommand.tabComplete(args) : List.of();
+            }
             return args[0].equalsIgnoreCase(KnockbackCommand.LABEL) && sender.hasPermission(KNOCKBACK_PERMISSION) ? KnockbackCommand.tabComplete(args) : List.of();
         }
-        final List<String> options = new ArrayList<>(3);
+        final List<String> options = new ArrayList<>(4);
         if (sender.hasPermission(RELOAD_PERMISSION)) {
             options.add(RELOAD);
         }
@@ -90,6 +102,9 @@ public final class RevivalCommand extends Command {
         }
         if (sender.hasPermission(KNOCKBACK_PERMISSION)) {
             options.add(KnockbackCommand.LABEL);
+        }
+        if (sender.hasPermission(AUTH_PERMISSION)) {
+            options.add(AuthCommand.LABEL);
         }
         return StringUtil.copyPartialMatches(args[0], options, new ArrayList<>(options.size()));
     }

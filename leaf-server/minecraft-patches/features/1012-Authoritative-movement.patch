@@ -1,0 +1,131 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: shaynelarocque <shaynelarocque@gmail.com>
+Date: Wed, 21 Oct 2026 19:51:26 -0400
+Subject: [PATCH] Authoritative movement
+
+In enforce mode the simulated position is written to the player through
+the same accepted-move path a client claim takes today (events, chunk
+moves, fall damage, statistics), and the zero-input server travel is
+skipped while the simulation owns the player's movement.
+
+The simulation is also the only writer of the player's pose, swimming,
+gliding and item-use state: the server's own per-tick recomputation of
+them is skipped, and a change the server makes on purpose (a plugin, an
+axe disabling a shield, a finished meal) is reported so it reaches the
+client in a transaction.
+
+diff --git a/net/minecraft/server/network/ServerGamePacketListenerImpl.java b/net/minecraft/server/network/ServerGamePacketListenerImpl.java
+index 8b42eefe8717fff1986ee086e47ff2b0abe0c240..81cdb511b3ee004288085f6132310173a1ed51f0 100644
+--- a/net/minecraft/server/network/ServerGamePacketListenerImpl.java
++++ b/net/minecraft/server/network/ServerGamePacketListenerImpl.java
+@@ -1578,6 +1578,14 @@ public class ServerGamePacketListenerImpl
+         }
+     }
+ 
++    // Revival start - Authoritative movement: the simulated truth takes the accepted-move path a claim takes today
++    public void revivalApplyTruth(final double x, final double y, final double z, final float yRot, final float xRot, final boolean onGround, final boolean horizontalCollision) {
++        if (this.hasClientLoaded() && !this.updateAwaitingTeleport()) {
++            this.handlePlayerPositionChange(x, y, z, yRot, xRot, onGround, horizontalCollision);
++        }
++    }
++    // Revival end - Authoritative movement
++
+     private void handlePlayerPositionChange(
+         final double requestedX,
+         final double requestedY,
+diff --git a/net/minecraft/world/entity/Entity.java b/net/minecraft/world/entity/Entity.java
+index 7ed71db5167c0bbd007d6cea36bd5beddede0544..0866f5106ca7d810b046229374c95daf6d913ed8 100644
+--- a/net/minecraft/world/entity/Entity.java
++++ b/net/minecraft/world/entity/Entity.java
+@@ -818,6 +818,7 @@ public abstract class Entity
+         if (pose == this.getPose()) {
+             return;
+         }
++        gg.hcfrevival.revival.auth.Authority.onServerPose(this); // Revival - Authoritative movement: server-meant pose
+         if (!this.generation) {
+             this.level.getCraftServer().getPluginManager().callEvent(new org.bukkit.event.entity.EntityPoseChangeEvent(this.getBukkitEntity(), org.bukkit.entity.Pose.values()[pose.ordinal()]));
+         }
+@@ -3600,6 +3601,7 @@ public abstract class Entity
+             }
+         }
+ 
++        if (gg.hcfrevival.revival.auth.Authority.refusesMount(this)) return false; // Revival - Authoritative movement: vehicles deny
+         if (force || this.canRide(entityToRide) && entityToRide.canAddPassenger(this)) {
+             // CraftBukkit start
+             if (entityToRide.getBukkitEntity() instanceof org.bukkit.entity.Vehicle vehicle && this instanceof LivingEntity entered) {
+@@ -4111,6 +4113,7 @@ public abstract class Entity
+ 
+     public void setSharedFlag(final @Entity.Flags int flag, final boolean value) {
+         byte currentValue = this.entityData.get(DATA_SHARED_FLAGS_ID);
++        if (((currentValue & 1 << flag) != 0) != value) gg.hcfrevival.revival.auth.Authority.onServerFlag(this, flag); // Revival - Authoritative movement: server-meant flags
+         if (value) {
+             this.entityData.set(DATA_SHARED_FLAGS_ID, (byte)(currentValue | 1 << flag));
+         } else {
+diff --git a/net/minecraft/world/entity/LivingEntity.java b/net/minecraft/world/entity/LivingEntity.java
+index 2d3f1414df285a67036ed626adc9125e8caa9fc8..5dece03001aff0a8c49d74b8513821993f6ce5a1 100644
+--- a/net/minecraft/world/entity/LivingEntity.java
++++ b/net/minecraft/world/entity/LivingEntity.java
+@@ -3930,7 +3930,7 @@ public abstract class LivingEntity extends Entity implements Attackable, Waypoin
+ 
+         if (this.getControllingPassenger() instanceof Player controller && this.isAlive()) {
+             this.travelRidden(controller, input);
+-        } else if (this.canSimulateMovement() && this.isEffectiveAi()) {
++        } else if (this.canSimulateMovement() && this.isEffectiveAi() && !(this instanceof net.minecraft.server.level.ServerPlayer authPlayer && authPlayer.revivalAuth.skipsTravel())) { // Revival - Authoritative movement: zero-input travel
+             this.travel(input);
+         }
+ 
+@@ -4046,7 +4046,7 @@ public abstract class LivingEntity extends Entity implements Attackable, Waypoin
+         this.checkFallDistanceAccumulation();
+         if (!this.level().isClientSide()) {
+             if (!this.canGlide()) {
+-                if (this.getSharedFlag(Entity.FLAG_FALL_FLYING) && !CraftEventFactory.callToggleGlideEvent(this, false).isCancelled()) // CraftBukkit
++                if (this.getSharedFlag(Entity.FLAG_FALL_FLYING) && !gg.hcfrevival.revival.auth.Authority.ownsClientState(this) && !CraftEventFactory.callToggleGlideEvent(this, false).isCancelled()) // CraftBukkit // Revival - Authoritative movement: the simulation ends the glide
+                 this.setSharedFlag(Entity.FLAG_FALL_FLYING, false);
+                 return;
+             }
+@@ -4396,6 +4396,7 @@ public abstract class LivingEntity extends Entity implements Attackable, Waypoin
+ 
+     // Paper start - Properly cancel usable items
+     public void resyncUsingItem(ServerPlayer serverPlayer) {
++        gg.hcfrevival.revival.auth.Authority.onServerResync(serverPlayer); // Revival - Authoritative movement: a refused use's resync is server-meant
+         this.resendPossiblyDesyncedDataValues(java.util.List.of(DATA_LIVING_ENTITY_FLAGS), serverPlayer);
+     }
+     // Paper end - Properly cancel usable items
+@@ -4408,7 +4409,7 @@ public abstract class LivingEntity extends Entity implements Attackable, Waypoin
+             if (ItemStack.isSameItem(this.getItemInHand(this.getUsedItemHand()), this.useItem)) {
+                 this.useItem = this.getItemInHand(this.getUsedItemHand());
+                 this.updateUsingItem(this.useItem);
+-            } else {
++            } else if (!gg.hcfrevival.revival.auth.Authority.ownsClientState(this)) { // Revival - Authoritative movement: the simulation ends use on a hand change
+                 this.stopUsingItem();
+             }
+         }
+@@ -4471,6 +4472,7 @@ public abstract class LivingEntity extends Entity implements Attackable, Waypoin
+ 
+     public void setLivingEntityFlag(final int flag, final boolean value) {
+         int currentFlags = this.entityData.get(DATA_LIVING_ENTITY_FLAGS);
++        if (((currentFlags & flag) != 0) != value) gg.hcfrevival.revival.auth.Authority.onServerUse(this); // Revival - Authoritative movement: server-meant item use
+         if (value) {
+             currentFlags |= flag;
+         } else {
+diff --git a/net/minecraft/world/entity/player/Player.java b/net/minecraft/world/entity/player/Player.java
+index 5b071dde7dc75d3ce6bb47a9c55b11d1c6ab4363..3d80bc12946d381f9b41553116b7bc4f2e50b721 100644
+--- a/net/minecraft/world/entity/player/Player.java
++++ b/net/minecraft/world/entity/player/Player.java
+@@ -345,7 +345,7 @@ public abstract class Player extends Avatar implements ContainerUser {
+         // Purpur end - Full netherite armor grants fire resistance
+ 
+         this.cooldowns.tick();
+-        this.updatePlayerPose();
++        if (!gg.hcfrevival.revival.auth.Authority.ownsClientState(this)) this.updatePlayerPose(); // Revival - Authoritative movement: the simulation owns the pose
+     }
+ 
+     @Override
+@@ -1604,6 +1604,7 @@ public abstract class Player extends Avatar implements ContainerUser {
+ 
+     @Override
+     public void updateSwimming() {
++        if (gg.hcfrevival.revival.auth.Authority.ownsClientState(this)) return; // Revival - Authoritative movement: the simulation owns swimming
+         if (this.abilities.flying) {
+             this.setSwimming(false);
+         } else {

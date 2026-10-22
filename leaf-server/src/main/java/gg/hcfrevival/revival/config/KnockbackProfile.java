@@ -62,7 +62,12 @@ public record KnockbackProfile(
         /** 1.7.10: knock from the player's 1.7 server motion, which keeps the knock, so combo hits compound. */
         VANILLA_1_7,
         /** Knock from 26.x's live server motion. */
-        NONE
+        NONE,
+        /**
+         * Knock from the client's own motion as the authoritative simulation has it (docs/revival/authoritative.md §7.2),
+         * so a running victim is knocked from their real run; players not under authority fall back to sportbukkit.
+         */
+        AUTHORITATIVE
     }
 
     public static final String DEFAULT = "legacy-1.7";

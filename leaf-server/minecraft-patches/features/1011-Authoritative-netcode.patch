@@ -1,0 +1,277 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: shaynelarocque <shaynelarocque@gmail.com>
+Date: Wed, 21 Oct 2026 19:51:26 -0400
+Subject: [PATCH] Authoritative netcode
+
+Players under authoritative movement (revival.yml authoritative.mode) get
+their gameplay packets buffered per client tick and replayed through the
+original handlers at the tick end, in client order, interleaved with the
+movement simulation. Physics packets sent to them are wrapped with our own
+pings so the server knows the client tick each one was applied before.
+The logic lives in gg.hcfrevival.revival.auth; this patch adds the
+ServerPlayer.revivalAuth field and one-line calls: pong re-enqueue, the
+outbound choke point, flush suspend/resume (per-tick bundles), handler
+intercepts, teleport sent/accepted, the connection tick, and the block
+change journal in LevelChunk.setBlockState.
+
+diff --git a/net/minecraft/network/protocol/game/ClientboundEntityEventPacket.java b/net/minecraft/network/protocol/game/ClientboundEntityEventPacket.java
+index 84750ba92d197c6879d5e715397f04ef333877ed..8b49f744e8b64977077853de63caf86e37359167 100644
+--- a/net/minecraft/network/protocol/game/ClientboundEntityEventPacket.java
++++ b/net/minecraft/network/protocol/game/ClientboundEntityEventPacket.java
+@@ -48,4 +48,7 @@ public class ClientboundEntityEventPacket implements Packet<ClientGamePacketList
+     public @EntityEvent.Value byte getEventId() {
+         return this.eventId;
+     }
++
++    public int revivalEntityId() { return this.entityId; } // Revival - Authoritative netcode: entity id
++
+ }
+diff --git a/net/minecraft/network/protocol/game/ClientboundMoveEntityPacket.java b/net/minecraft/network/protocol/game/ClientboundMoveEntityPacket.java
+index d793b9b06e7494a376505e58b924d551869f340c..f414fd42f0bebbd7e2ad2585a48666bfbb075d29 100644
+--- a/net/minecraft/network/protocol/game/ClientboundMoveEntityPacket.java
++++ b/net/minecraft/network/protocol/game/ClientboundMoveEntityPacket.java
+@@ -176,4 +176,7 @@ public abstract class ClientboundMoveEntityPacket implements MovementPacket<Clie
+             return GamePacketTypes.CLIENTBOUND_MOVE_ENTITY_ROT;
+         }
+     }
++
++    public int revivalEntityId() { return this.entityId; } // Revival - Authoritative netcode: entity id
++
+ }
+diff --git a/net/minecraft/server/level/ServerPlayer.java b/net/minecraft/server/level/ServerPlayer.java
+index 497fcc55e31f94376fab76c1cd83534e45ee33b1..38ccab3de29aef573b2f0720706e98f4a7c717f2 100644
+--- a/net/minecraft/server/level/ServerPlayer.java
++++ b/net/minecraft/server/level/ServerPlayer.java
+@@ -215,6 +215,7 @@ public class ServerPlayer extends Player implements ca.spottedleaf.moonrise.patc
+     public long lastSave = MinecraftServer.currentTick; // Paper - Incremental chunk and player saving
+     public final gg.hcfrevival.revival.combat.MotionShadow revivalMotionShadow = new gg.hcfrevival.revival.combat.MotionShadow(); // Revival - Consistent knockback
+     public final gg.hcfrevival.revival.combat.SprintLedger revivalSprintLedger = new gg.hcfrevival.revival.combat.SprintLedger(); // Revival - Sprint
++    public final gg.hcfrevival.revival.auth.AuthPlayer revivalAuth = new gg.hcfrevival.revival.auth.AuthPlayer(this); // Revival - Authoritative netcode: ServerPlayer field
+     public net.minecraft.world.entity.@org.jspecify.annotations.Nullable Entity revivalBaseKnockTarget; // Revival - Damage immunity
+     public final gg.hcfrevival.revival.combat.LegacyHitRegistration revivalHitRegistration = new gg.hcfrevival.revival.combat.LegacyHitRegistration(); // Revival - Hit registration
+     public @org.jspecify.annotations.Nullable String revivalKnockbackProfile; // Revival - Live profiles
+diff --git a/net/minecraft/server/network/ServerCommonPacketListenerImpl.java b/net/minecraft/server/network/ServerCommonPacketListenerImpl.java
+index 2bdb335e0a83ff8f756d66ac3ede58479075262f..3f1e9e0ebc1429928c4e0b22c4df56f2c9b7c280 100644
+--- a/net/minecraft/server/network/ServerCommonPacketListenerImpl.java
++++ b/net/minecraft/server/network/ServerCommonPacketListenerImpl.java
+@@ -155,6 +155,7 @@ public abstract class ServerCommonPacketListenerImpl implements ServerCommonPack
+ 
+     @Override
+     public void handlePong(final ServerboundPongPacket serverboundPongPacket) {
++        gg.hcfrevival.revival.auth.Authority.onPong(this, serverboundPongPacket); // Revival - Authoritative netcode: handlePong
+     }
+ 
+     // Paper start
+@@ -345,10 +346,12 @@ public abstract class ServerCommonPacketListenerImpl implements ServerCommonPack
+ 
+     public void suspendFlushing() {
+         this.suspendFlushingOnServerThread = true;
++        gg.hcfrevival.revival.auth.Authority.onSuspendFlushing(this); // Revival - Authoritative netcode: suspendFlushing
+     }
+ 
+     public void resumeFlushing() {
+         this.suspendFlushingOnServerThread = false;
++        gg.hcfrevival.revival.auth.Authority.onResumeFlushing(this, this.connection); // Revival - Authoritative netcode: resumeFlushing
+         this.connection.flushChannel();
+     }
+ 
+@@ -371,7 +374,7 @@ public abstract class ServerCommonPacketListenerImpl implements ServerCommonPack
+         boolean flush = !this.suspendFlushingOnServerThread || !this.server.isSameThread();
+ 
+         try {
+-            this.connection.send(packet, listener, flush);
++            gg.hcfrevival.revival.auth.Authority.send(this, this.connection, packet, listener, flush); // Revival - Authoritative netcode: send
+         } catch (Throwable t) {
+             CrashReport report = CrashReport.forThrowable(t, "Sending packet");
+             CrashReportCategory category = report.addCategory("Packet being sent");
+diff --git a/net/minecraft/server/network/ServerGamePacketListenerImpl.java b/net/minecraft/server/network/ServerGamePacketListenerImpl.java
+index fe9f6ed0ce24680e2abc086173c22e581c3d8b9b..8b42eefe8717fff1986ee086e47ff2b0abe0c240 100644
+--- a/net/minecraft/server/network/ServerGamePacketListenerImpl.java
++++ b/net/minecraft/server/network/ServerGamePacketListenerImpl.java
+@@ -375,6 +375,7 @@ public class ServerGamePacketListenerImpl
+ 
+     @Override
+     public void tick() {
++        this.player.revivalAuth.onServerTick(); // Revival - Authoritative netcode: tick
+         if (this.ackBlockChangesUpTo > -1) {
+             this.send(new ClientboundBlockChangedAckPacket(this.ackBlockChangesUpTo));
+             this.ackBlockChangesUpTo = -1;
+@@ -518,6 +519,7 @@ public class ServerGamePacketListenerImpl
+     @Override
+     public void handlePlayerInput(final ServerboundPlayerInputPacket packet) {
+         PacketUtils.ensureRunningOnSameThread(packet, this, this.player.level());
++        if (this.player.revivalAuth.intercept(packet)) return; // Revival - Authoritative netcode: handlePlayerInput
+         // CraftBukkit start
+         if (!packet.input().equals(this.player.getLastClientInput())) {
+             PlayerInputEvent event = new PlayerInputEvent(this.player.getBukkitEntity(), new org.bukkit.craftbukkit.CraftInput(packet.input()));
+@@ -808,6 +810,7 @@ public class ServerGamePacketListenerImpl
+     @Override
+     public void handleAcceptTeleportPacket(final ServerboundAcceptTeleportationPacket packet) {
+         PacketUtils.ensureRunningOnSameThread(packet, this, this.player.level());
++        if (this.player.revivalAuth.onTeleportAccept(packet)) return; // Revival - Authoritative netcode: handleAcceptTeleportPacket
+         if (packet.id() == this.awaitingTeleport) {
+             if (this.awaitingPositionFromClient == null || containsInvalidValues(packet.x(), packet.y(), packet.z(), packet.yRot(), packet.xRot())) {
+                 ServerGamePacketListenerImpl.LOGGER.warn("Disconnected on accept teleport packet. Was not expecting position data from client at this time"); // Purpur - Add more logger output for invalid movement kicks
+@@ -835,6 +838,7 @@ public class ServerGamePacketListenerImpl
+     @Override
+     public void handleAcceptPlayerLoad(final ServerboundPlayerLoadedPacket packet) {
+         PacketUtils.ensureRunningOnSameThread(packet, this, this.player.level());
++        if (this.player.revivalAuth.intercept(packet)) return; // Revival - Authoritative netcode: handleAcceptPlayerLoad
+         this.markClientLoaded(false); // Paper - Add PlayerLoadedWorldEvent
+     }
+ 
+@@ -850,6 +854,7 @@ public class ServerGamePacketListenerImpl
+     @Override
+     public void handleBundleItemSelectedPacket(final ServerboundSelectBundleItemPacket packet) {
+         PacketUtils.ensureRunningOnSameThread(packet, this, this.player.level());
++        if (this.player.revivalAuth.intercept(packet)) return; // Revival - Authoritative netcode: handleBundleItemSelectedPacket
+         CraftEventFactory.callPlayerBundleItemSelectEvent(this.player, packet.slotId(), packet.selectedItemIndex()); // Paper - PlayerBundleItemSelectEvent
+         this.player.containerMenu.setSelectedBundleItemIndex(packet.slotId(), packet.selectedItemIndex());
+     }
+@@ -1054,6 +1059,7 @@ public class ServerGamePacketListenerImpl
+     public void handlePickItemFromBlock(final ServerboundPickItemFromBlockPacket packet) {
+         ServerLevel level = this.player.level();
+         PacketUtils.ensureRunningOnSameThread(packet, this, level);
++        if (this.player.revivalAuth.intercept(packet)) return; // Revival - Authoritative netcode: handlePickItemFromBlock
+         BlockPos pos = packet.pos();
+         if (this.player.isWithinBlockInteractionRange(pos, 1.0)) {
+             if (level.isLoaded(pos)) {
+@@ -1088,6 +1094,7 @@ public class ServerGamePacketListenerImpl
+     public void handlePickItemFromEntity(final ServerboundPickItemFromEntityPacket packet) {
+         ServerLevel level = this.player.level();
+         PacketUtils.ensureRunningOnSameThread(packet, this, level);
++        if (this.player.revivalAuth.intercept(packet)) return; // Revival - Authoritative netcode: handlePickItemFromEntity
+         Entity entity = level.getEntityOrPart(packet.id());
+         if (entity != null && this.player.isWithinEntityInteractionRange(entity, 3.0)) {
+             ItemStack itemStack = entity.getPickResult();
+@@ -1524,6 +1531,7 @@ public class ServerGamePacketListenerImpl
+     @Override
+     public void handleMovePlayer(final ServerboundMovePlayerPacket packet) {
+         PacketUtils.ensureRunningOnSameThread(packet, this, this.player.level());
++        if (this.player.revivalAuth.intercept(packet)) return; // Revival - Authoritative netcode: handleMovePlayer
+         // Purpur start - Add more logger output for invalid movement kicks
+         boolean invalidX = Double.isNaN(packet.getX(0.0));
+         boolean invalidY = Double.isNaN(packet.getY(0.0));
+@@ -2067,12 +2075,14 @@ public class ServerGamePacketListenerImpl
+         this.lastYRot = this.player.getYRot();
+         this.lastXRot = this.player.getXRot();
+         // CraftBukkit end
++        this.player.revivalAuth.onTeleportSent(this.awaitingTeleport, destination, relatives); // Revival - Authoritative netcode: internalTeleport
+         this.send(ClientboundPlayerPositionPacket.of(this.awaitingTeleport, destination, relatives));
+     }
+ 
+     @Override
+     public void handlePlayerAction(final ServerboundPlayerActionPacket packet) {
+         PacketUtils.ensureRunningOnSameThread(packet, this, this.player.level());
++        if (this.player.revivalAuth.intercept(packet)) return; // Revival - Authoritative netcode: handlePlayerAction
+         if (this.player.isImmobile()) return; // CraftBukkit
+         if (this.hasClientLoaded()) {
+             BlockPos pos = packet.getPos();
+@@ -2233,6 +2243,7 @@ public class ServerGamePacketListenerImpl
+     @Override
+     public void handleUseItemOn(final ServerboundUseItemOnPacket packet) {
+         PacketUtils.ensureRunningOnSameThread(packet, this, this.player.level());
++        if (this.player.revivalAuth.intercept(packet)) return; // Revival - Authoritative netcode: handleUseItemOn
+         if (this.player.isImmobile()) return; // CraftBukkit
+         if (!this.checkLimit(packet.timestamp())) return; // Spigot - check limit
+         if (this.hasClientLoaded()) {
+@@ -2327,6 +2338,7 @@ public class ServerGamePacketListenerImpl
+     @Override
+     public void handleUseItem(final ServerboundUseItemPacket packet) {
+         PacketUtils.ensureRunningOnSameThread(packet, this, this.player.level());
++        if (this.player.revivalAuth.intercept(packet)) return; // Revival - Authoritative netcode: handleUseItem
+         if (this.player.isImmobile()) return; // CraftBukkit
+         if (!this.checkLimit(packet.timestamp())) return; // Spigot - check limit
+         if (this.hasClientLoaded()) {
+@@ -2458,6 +2470,7 @@ public class ServerGamePacketListenerImpl
+     @Override
+     public void handleSetCarriedItem(final ServerboundSetCarriedItemPacket packet) {
+         PacketUtils.ensureRunningOnSameThread(packet, this, this.player.level());
++        if (this.player.revivalAuth.intercept(packet)) return; // Revival - Authoritative netcode: handleSetCarriedItem
+         if (this.player.isImmobile()) return; // CraftBukkit
+         if (packet.getSlot() >= 0 && packet.getSlot() < Inventory.getSelectionSize()) {
+             if (packet.getSlot() == this.player.getInventory().getSelectedSlot()) { return; } // Paper - don't fire itemheldevent when there wasn't a slot change
+@@ -2857,6 +2870,7 @@ public class ServerGamePacketListenerImpl
+     @Override
+     public void handlePunch(final ServerboundPunchPacket packet) {
+         PacketUtils.ensureRunningOnSameThread(packet, this, this.player.level());
++        if (this.player.revivalAuth.intercept(packet)) return; // Revival - Authoritative netcode: handlePunch
+         if (this.player.isImmobile()) return; // CraftBukkit
+         this.player.resetLastActionTime();
+         // CraftBukkit start - Raytrace to look for 'rogue armswings'
+@@ -2891,6 +2905,7 @@ public class ServerGamePacketListenerImpl
+     @Override
+     public void handlePlayerCommand(final ServerboundPlayerCommandPacket packet) {
+         PacketUtils.ensureRunningOnSameThread(packet, this, this.player.level());
++        if (this.player.revivalAuth.intercept(packet)) return; // Revival - Authoritative netcode: handlePlayerCommand
+         if (this.hasClientLoaded()) {
+             // CraftBukkit start
+             if (this.player.isRemoved()) return;
+@@ -3079,6 +3094,7 @@ public class ServerGamePacketListenerImpl
+     @Override
+     public void handleInteract(final ServerboundInteractPacket packet) {
+         PacketUtils.ensureRunningOnSameThread(packet, this, this.player.level());
++        if (this.player.revivalAuth.intercept(packet)) return; // Revival - Authoritative netcode: handleInteract
+         if (this.player.isImmobile()) return; // CraftBukkit
+         if (this.hasClientLoaded()) {
+             ServerLevel level = this.player.level();
+@@ -3193,6 +3209,7 @@ public class ServerGamePacketListenerImpl
+     @Override
+     public void handleClientCommand(final ServerboundClientCommandPacket packet) {
+         PacketUtils.ensureRunningOnSameThread(packet, this, this.player.level());
++        if (this.player.revivalAuth.intercept(packet)) return; // Revival - Authoritative netcode: handleClientCommand
+         this.player.resetLastActionTime();
+         ServerboundClientCommandPacket.Action action = packet.getAction();
+         switch (action) {
+@@ -3257,6 +3274,7 @@ public class ServerGamePacketListenerImpl
+     @Override
+     public void handleContainerClick(final ServerboundContainerClickPacket packet) {
+         PacketUtils.ensureRunningOnSameThread(packet, this, this.player.level());
++        if (this.player.revivalAuth.intercept(packet)) return; // Revival - Authoritative netcode: handleContainerClick
+         if (this.player.isImmobile()) return; // CraftBukkit
+         this.player.resetLastActionTime();
+         if (this.player.containerMenu.containerId == packet.containerId() && this.player.containerMenu.stillValid(this.player)) { // CraftBukkit
+@@ -3665,6 +3683,7 @@ public class ServerGamePacketListenerImpl
+     @Override
+     public void handleContainerButtonClick(final ServerboundContainerButtonClickPacket packet) {
+         PacketUtils.ensureRunningOnSameThread(packet, this, this.player.level());
++        if (this.player.revivalAuth.intercept(packet)) return; // Revival - Authoritative netcode: handleContainerButtonClick
+         if (this.player.isImmobile()) return; // CraftBukkit
+         this.player.resetLastActionTime();
+         if (this.player.containerMenu.containerId == packet.containerId() && !this.player.isSpectator()) {
+@@ -3683,6 +3702,7 @@ public class ServerGamePacketListenerImpl
+     @Override
+     public void handleSetCreativeModeSlot(final ServerboundSetCreativeModeSlotPacket packet) {
+         PacketUtils.ensureRunningOnSameThread(packet, this, this.player.level());
++        if (this.player.revivalAuth.intercept(packet)) return; // Revival - Authoritative netcode: handleSetCreativeModeSlot
+         if (this.player.hasInfiniteMaterials()) {
+             boolean drop = packet.slotNum() < 0;
+             ItemStack itemStack = packet.itemStack();
+@@ -3786,6 +3806,7 @@ public class ServerGamePacketListenerImpl
+     @Override
+     public void handlePlayerAbilities(final ServerboundPlayerAbilitiesPacket packet) {
+         PacketUtils.ensureRunningOnSameThread(packet, this, this.player.level());
++        if (this.player.revivalAuth.intercept(packet)) return; // Revival - Authoritative netcode: handlePlayerAbilities
+         // CraftBukkit start
+         if (this.player.getAbilities().mayfly && this.player.getAbilities().flying != packet.isFlying()) {
+             PlayerToggleFlightEvent event = new PlayerToggleFlightEvent(this.player.getBukkitEntity(), packet.isFlying());
+@@ -3933,6 +3954,7 @@ public class ServerGamePacketListenerImpl
+     @Override
+     public void handleClientTickEnd(final ServerboundClientTickEndPacket packet) {
+         PacketUtils.ensureRunningOnSameThread(packet, this, this.player.level());
++        if (this.player.revivalAuth.intercept(packet)) return; // Revival - Authoritative netcode: handleClientTickEnd
+         this.tickEndEvent.callEvent(); // Paper - add client tick end event
+         if (!this.receivedMovementThisTick) {
+             this.player.setKnownMovement(Vec3.ZERO);
+diff --git a/net/minecraft/world/level/chunk/LevelChunk.java b/net/minecraft/world/level/chunk/LevelChunk.java
+index 9851a60140f9989fbac317db200d8484d43ee16c..9c7a7113b6dcdda15305b9c5b29ff9dcfe9d454e 100644
+--- a/net/minecraft/world/level/chunk/LevelChunk.java
++++ b/net/minecraft/world/level/chunk/LevelChunk.java
+@@ -453,6 +453,7 @@ public class LevelChunk extends ChunkAccess implements DebugValueSource, ca.spot
+         if (oldState == state) {
+             return null;
+         }
++        gg.hcfrevival.revival.auth.Authority.onBlockChanged(this.level, pos, oldState, state); // Revival - Authoritative netcode: setBlockState
+         // Leaf start - optimize random tick
+         if (oldState.isRandomlyTicking() != state.isRandomlyTicking()) {
+             leaf$tickingBlocksDirty = true;

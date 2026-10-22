@@ -1,0 +1,50 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: shaynelarocque <shaynelarocque@gmail.com>
+Date: Wed, 21 Oct 2026 20:35:40 -0400
+Subject: [PATCH] Authoritative paths
+
+Players under authority are replicated from their simulated path: every
+simulated client tick is one 2-tick step, drained to each viewer within
+authoritative.replication.exact-radius every server tick, so 26.3's
+stepped interpolation never runs dry. The vanilla tracker's movement
+packets for that player skip those viewers; farther viewers keep the
+vanilla cadence. The logic lives in gg.hcfrevival.revival.auth.PathWiring
+and auth.replicate.PathFeed; this patch adds the calls in ServerEntity
+(movement send, per-tick drain, pairing and unpairing).
+
+diff --git a/net/minecraft/server/level/ServerEntity.java b/net/minecraft/server/level/ServerEntity.java
+index edad1bd673c5913e2339cfa830b6684e21b091e2..617856f1873af04636158a9b0d5ff8ec8d74278b 100644
+--- a/net/minecraft/server/level/ServerEntity.java
++++ b/net/minecraft/server/level/ServerEntity.java
+@@ -225,7 +225,7 @@ public class ServerEntity {
+                 }
+ 
+                 if (packet != null) { // Leaf - Multithreaded tracker - diff on change
+-                    this.synchronizer.sendToTrackingPlayers(packet);
++                    gg.hcfrevival.revival.auth.Authority.sendMovement(this.entity, this.synchronizer, packet); // Revival - Authoritative paths: vanilla moves skip viewers on the feed
+                     this.sendDirtyEntityData();
+                     if (packet.hasPosition()) {
+                         this.positionCodec.setBase(currentPosition);
+@@ -252,6 +252,7 @@ public class ServerEntity {
+             this.forceStateResync = false; // Paper - fix desync when a player is added to the tracker
+         }
+ 
++        gg.hcfrevival.revival.auth.Authority.drainPaths(this, this.trackedPlayers); // Revival - Authoritative paths: drain
+         this.tickCount++;
+         if (this.entity.syncVelocity) {
+             // CraftBukkit start - Create PlayerVelocity event
+@@ -368,12 +369,14 @@ public class ServerEntity {
+     public void removePairing(final ServerPlayer player) {
+         this.entity.stopSeenByPlayer(player);
+         player.connection.send(new ClientboundRemoveEntitiesPacket(this.entity.getId()));
++        gg.hcfrevival.revival.auth.Authority.onUnpaired(this.entity, player); // Revival - Authoritative paths: unpair
+     }
+ 
+     public void addPairing(final ServerPlayer player) {
+         List<Packet<? super ClientGamePacketListener>> packets = new ArrayList<>();
+         this.sendPairingData(player, packets::add);
+         player.connection.send(new ClientboundBundlePacket(packets));
++        gg.hcfrevival.revival.auth.Authority.onPaired(this.entity, player, packets); // Revival - Authoritative paths: pair
+         this.entity.startSeenByPlayer(player);
+     }
+ 

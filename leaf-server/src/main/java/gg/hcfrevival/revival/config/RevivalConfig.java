@@ -37,7 +37,7 @@ public final class RevivalConfig {
         "Pick one with legacy-combat.knockback-profile. Under knockback-profiles, a profile named after a preset",
         "overrides only the keys it sets; any other name starts from legacy-1.7. Keys: friction, friction-vertical,",
         "horizontal, vertical, vertical-cap, extra-horizontal, extra-vertical, attacker-slowdown, velocity-clamp,",
-        "resistance-mode (none, roll or scale), motion-model (sportbukkit, vanilla-1.7 or none),",
+        "resistance-mode (none, roll or scale), motion-model (sportbukkit, vanilla-1.7, none or authoritative),",
         "ground-prediction-distance (0 = off), ground-prediction-ping-offset, sprint-armed-level, sprint-held-level",
         "and sprint-arm-requires-ground. Preset numbers come from the",
         "server-config archives curated by Mental (github.com/owengregson/Mental, MIT, (c) 2024 Owen Gregson);",
@@ -192,7 +192,8 @@ public final class RevivalConfig {
             Map.copyOf(worlds),
             profiles,
             reader.getBoolean("knockback-autosave", false),
-            SwordBlockingSettings.read(reader)
+            SwordBlockingSettings.read(reader),
+            AuthoritativeSettings.read(reader)
         );
     }
 

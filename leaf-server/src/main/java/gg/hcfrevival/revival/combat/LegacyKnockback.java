@@ -100,9 +100,31 @@ public final class LegacyKnockback {
         }
     }
 
-    /** START_SPRINTING: arms the sprint ledger and fires {@link SprintArmEvent}. */
+    /**
+     * START_SPRINTING: arms the sprint ledger and fires {@link SprintArmEvent}. Under authority the simulation arms it
+     * instead ({@link #simulatedSprint}), so sprint packets alone can't re-arm a sprint knock.
+     */
     public static void sprintStart(final ServerPlayer player) {
-        if (player.revivalSprintLedger.start(player.onGround()) && SprintArmEvent.getHandlerList().getRegisteredListeners().length > 0) {
+        if (player.revivalAuth.ownsClientState()) {
+            return;
+        }
+        arm(player, player.onGround());
+    }
+
+    /**
+     * The simulation saw the client start or stop sprinting (enforce, design §7.2): the ledger follows the client's real
+     * sprint. {@code onGround} is the client's ground state when it decided, before that tick's move.
+     */
+    public static void simulatedSprint(final ServerPlayer player, final boolean sprinting, final boolean onGround) {
+        if (sprinting) {
+            arm(player, onGround);
+        } else {
+            player.revivalSprintLedger.stop();
+        }
+    }
+
+    private static void arm(final ServerPlayer player, final boolean onGround) {
+        if (player.revivalSprintLedger.start(onGround) && SprintArmEvent.getHandlerList().getRegisteredListeners().length > 0) {
             new SprintArmEvent(player.getBukkitEntity()).callEvent();
         }
     }
@@ -174,10 +196,14 @@ public final class LegacyKnockback {
         return true;
     }
 
-    // The motion a victim is knocked from: a player's 1.7 server motion, or the entity's own for mobs and model none
+    // The motion a victim is knocked from: a player's 1.7 server motion, the entity's own for mobs and model none, or the
+    // client's own (simulated) motion for model authoritative while the simulation owns the victim
     static Vec3 motion(final LivingEntity victim, final Vec3 current, final KnockbackProfile profile) {
         if (!(victim instanceof final ServerPlayer player) || profile.motionModel() == KnockbackProfile.MotionModel.NONE) {
             return current;
+        }
+        if (profile.motionModel() == KnockbackProfile.MotionModel.AUTHORITATIVE && player.revivalAuth.ownsClientState()) {
+            return current; // the server's motion is the simulation's (§15.5)
         }
         final Vec3 shadow = player.revivalMotionShadow.motion();
         if (profile.groundPredictionDistance() > 0.0 && airborne(player)) {
@@ -225,7 +251,12 @@ public final class LegacyKnockback {
 
     /** The sprint part of a legacy hit's extra-knockback level, from the attacker's {@link SprintLedger}. */
     public static double sprintLevel(final Player attacker, final KnockbackProfile profile) {
-        return attacker instanceof final ServerPlayer player ? player.revivalSprintLedger.level(player.isSprinting(), profile) : 0.0;
+        if (!(attacker instanceof final ServerPlayer player)) {
+            return 0.0;
+        }
+        // Under authority, the sprint the client attacked with (the simulation's), not the last sprint packet
+        final boolean sprinting = player.revivalAuth.ownsClientState() ? player.revivalAuth.combatSprinting() : player.isSprinting();
+        return player.revivalSprintLedger.level(sprinting, profile);
     }
 
     /**

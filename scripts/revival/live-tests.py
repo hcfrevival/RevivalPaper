@@ -42,6 +42,8 @@ def run(name: str, async_tracker: bool, server_jar: pathlib.Path, plugin: pathli
     (server / "config").mkdir()
     (server / "config/leaf-global.yml").write_text(
         f"async:\n  async-entity-tracker:\n    enabled: {'true' if async_tracker else 'false'}\n")
+    # Authoritative-movement playtest instruments: the HUD and the per-correction log run on every live test
+    (server / "revival.yml").write_text("authoritative:\n  debug:\n    hud: true\n    log: true\n")
     (server / "eula.txt").write_text("eula=true\n")
     (server / "server.properties").write_text(
         f"server-ip=127.0.0.1\nserver-port={free_port()}\nonline-mode=false\n"

@@ -1,0 +1,21 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: shaynelarocque <shaynelarocque@gmail.com>
+Date: Wed, 21 Oct 2026 19:51:26 -0400
+Subject: [PATCH] Lag-compensated hits
+
+Attack packets join the client-tick window like other gameplay packets
+and are judged at their place in it, from what the attacker's client saw,
+before the original handler runs.
+
+diff --git a/net/minecraft/server/network/ServerGamePacketListenerImpl.java b/net/minecraft/server/network/ServerGamePacketListenerImpl.java
+index 81cdb511b3ee004288085f6132310173a1ed51f0..4987c19f7892764a93dd458b69075af81f394488 100644
+--- a/net/minecraft/server/network/ServerGamePacketListenerImpl.java
++++ b/net/minecraft/server/network/ServerGamePacketListenerImpl.java
+@@ -3059,6 +3059,7 @@ public class ServerGamePacketListenerImpl
+     @Override
+     public void handleAttack(final ServerboundAttackPacket packet) {
+         PacketUtils.ensureRunningOnSameThread(packet, this, this.player.level());
++        if (this.player.revivalAuth.intercept(packet)) return; // Revival - Lag-compensated hits
+         if (this.player.isImmobile()) return; // Paper
+         if (this.hasClientLoaded() && !this.player.isSpectator()) {
+             ServerLevel level = this.player.level();
