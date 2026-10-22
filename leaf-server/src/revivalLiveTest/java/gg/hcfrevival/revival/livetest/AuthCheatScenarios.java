@@ -1522,7 +1522,7 @@ final class AuthCheatScenarios {
     // The rewind-cap policy (2026-10-22): ping made good up to rtt-ceiling-ms (250) plus the client's own display delay,
     // jitter and tick waits. Expected at 300 ms on a target sprinting across the line of sight: the hit lands (the ceiling
     // plus the 150 ms tick-wait slack still covers a 300 ms round trip and its waits); past roughly 350-400 ms of steady
-    // ping, hits on moving players come back REWIND and the shooter has to lead (RewindCapTest.pastTheCeiling...)
+    // ping a hit is judged at the target's truth at the capped age, so the shooter leads moving players (RewindCapTest)
     private void combatLatencyMoving(final int ticks) {
         final String id = "combat: an honest hit at " + ticks * 50 + " ms of latency on a target sprinting across";
         this.combatJoin(id);

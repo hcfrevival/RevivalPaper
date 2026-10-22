@@ -102,6 +102,8 @@ public final class AuthStats {
     long mirrorRepairs;
     long attacksOverCps;
     long pongsBehindKeepAlive;
+    long teleportsHeld;
+    long teleportChunksSent;
     long moverClaimsRefused;
     long violationLines;
 
@@ -304,6 +306,16 @@ public final class AuthStats {
      */
     public long pongsBehindKeepAlive() {
         return this.pongsBehindKeepAlive;
+    }
+
+    /** Server teleports held until the chunk under the destination was on its way to the client (pvp-issues PR-8). */
+    public long teleportsHeld() {
+        return this.teleportsHeld;
+    }
+
+    /** Destination chunks sent ahead of a held teleport because Moonrise hadn't sent them yet. */
+    public long teleportChunksSent() {
+        return this.teleportChunksSent;
     }
 
     /** Attacks the click cap refused (neue-combat §4.3): no token, not judged, not delivered. */

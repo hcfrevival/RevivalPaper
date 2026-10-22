@@ -726,6 +726,7 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
     }
 
     private void deactivate() {
+        this.releaseHeldTeleports(this.settings(), true); // nothing held is lost when authority goes off
         this.uninstallAuditor();
         this.netActive = false;
         this.mode = AuthMode.OFF;
@@ -760,6 +761,18 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
         if (!this.visibility.hidden().isEmpty() && MinecraftServer.getServer().isSameThread() && this.givesAwayHidden(packet)) {
             return;
         }
+        if (packet instanceof final ClientboundPlayerPositionPacket position && !Reconciler.ours(position.id()) && this.netActive
+            && MinecraftServer.getServer().isSameThread() && this.settings().teleportHoldMaxTicks() > 0
+            && (!this.heldTeleports.isEmpty() || this.destinationUnsent())) {
+            // pvp-issues PR-8: a teleport into a chunk the client hasn't been sent would drop it into void air (a 26.3
+            // client's missing chunk); it waits for that chunk, which then goes out ahead of it
+            if (this.heldTeleports.isEmpty()) {
+                this.heldSince = MinecraftServer.currentTick;
+            }
+            this.heldTeleports.add(new HeldPacket(connection, packet, listener, flush));
+            this.stats.teleportsHeld++;
+            return;
+        }
         if (this.ownsClientState() && MinecraftServer.getServer().isSameThread()) {
             final Simulation sim = this.simulation;
             if (packet instanceof final ClientboundSetEntityDataPacket data && data.id() == this.player.getId()) {
@@ -780,6 +793,80 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
             }
         }
         this.transactions.send(connection, out, listener, flush, this);
+    }
+
+    // Server teleports held until their destination chunk is on its way to the client, in send order
+    private record HeldPacket(Connection connection, Packet<?> packet, @Nullable ChannelFutureListener listener, boolean flush) {
+    }
+
+    private final java.util.ArrayDeque<HeldPacket> heldTeleports = new java.util.ArrayDeque<>();
+    private int heldSince;
+
+    // Whether a chunk under the player's box (where the server put it) is neither held by the client nor sent to it yet
+    private boolean destinationUnsent() {
+        final ServerLevel level = (ServerLevel) this.player.level();
+        if (this.world.level() != level || !this.world.chunksKnown()) {
+            return false; // another level: the client's loading screen waits for its chunk itself
+        }
+        final net.minecraft.world.phys.AABB box = this.player.getBoundingBox();
+        final ca.spottedleaf.moonrise.patches.chunk_system.player.RegionizedPlayerChunkLoader.PlayerChunkLoaderData loader =
+            this.player.moonrise$getChunkLoader();
+        for (int cx = Mth.floor(box.minX) >> 4; cx <= Mth.floor(box.maxX) >> 4; cx++) {
+            for (int cz = Mth.floor(box.minZ) >> 4; cz <= Mth.floor(box.maxZ) >> 4; cz++) {
+                if (!this.world.hasChunk(cx, cz) && (loader == null
+                    || !loader.getSentChunksRaw().contains(ca.spottedleaf.moonrise.common.util.CoordinateUtils.getChunkKey(cx, cz)))) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    // Sends the loaded chunks under the destination now (Moonrise sends the same chunk again later, harmlessly): false
+    // while one of them isn't loaded on the server yet
+    private boolean sendDestinationChunks() {
+        final ServerLevel level = (ServerLevel) this.player.level();
+        final net.minecraft.world.phys.AABB box = this.player.getBoundingBox();
+        for (int cx = Mth.floor(box.minX) >> 4; cx <= Mth.floor(box.maxX) >> 4; cx++) {
+            for (int cz = Mth.floor(box.minZ) >> 4; cz <= Mth.floor(box.maxZ) >> 4; cz++) {
+                if (level.getChunkSource().getChunkAtIfLoadedImmediately(cx, cz) == null) {
+                    return false;
+                }
+            }
+        }
+        for (int cx = Mth.floor(box.minX) >> 4; cx <= Mth.floor(box.maxX) >> 4; cx++) {
+            for (int cz = Mth.floor(box.minZ) >> 4; cz <= Mth.floor(box.maxZ) >> 4; cz++) {
+                if (!this.world.hasChunk(cx, cz)) {
+                    net.minecraft.server.network.PlayerChunkSender.sendChunk(this.player.connection, level,
+                        level.getChunkSource().getChunkAtIfLoadedImmediately(cx, cz));
+                    this.stats.teleportChunksSent++;
+                }
+            }
+        }
+        return true;
+    }
+
+    // Each server tick: the held teleports go out once their chunk is on its way (or sent now), or after the hold limit
+    private void releaseHeldTeleports(final AuthoritativeSettings settings, final boolean force) {
+        if (this.heldTeleports.isEmpty()) {
+            return;
+        }
+        final int waited = MinecraftServer.currentTick - this.heldSince;
+        boolean ready = force || !this.destinationUnsent();
+        if (!ready && waited >= settings.teleportChunkSendTicks()) {
+            ready = this.sendDestinationChunks();
+        }
+        if (!ready && waited < settings.teleportHoldMaxTicks()) {
+            return;
+        }
+        HeldPacket held;
+        while ((held = this.heldTeleports.poll()) != null) {
+            if (this.netActive) {
+                this.transactions.send(held.connection(), held.packet(), held.listener(), held.flush(), this);
+            } else {
+                held.connection().send(held.packet(), held.listener(), held.flush());
+            }
+        }
     }
 
     /**
@@ -1043,6 +1130,7 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
         // at their deadline; vanilla's keep-alive timeout disconnects a connection that is really gone. Only protocol
         // violations kick, and the memory caps (a 512-packet tick, the outbound log) resync rather than kick
         final AuthoritativeSettings settings = this.settings();
+        this.releaseHeldTeleports(settings, false);
         this.updateFrozen(now, settings);
         if (MinecraftServer.currentTick % 20 == 0 && this.player.connection != null
             && this.transactions.rttBaseNanos() / 1_000_000L - this.player.connection.latency() > settings.pongLagMs()) {

@@ -64,7 +64,7 @@ is.
 
 | # | Item | Status | Owner | In one line |
 |---|---|---|---|---|
-| 1 | [HR-2](#hr-2) | Partial | netcode | The rewind cap is a fixed 300 ms, and a hit's rewind is about RTT + 110 ms, so players above about 150 ms RTT start losing honest hits and above about 190 ms lose most of them. |
+| 1 | [HR-2](#hr-2) | Partial | netcode | Was a fixed 300 ms rewind cap; now the attacker's ping is made good up to 250 ms plus its display delay, jitter and tick waits, and past the cap a hit is judged at the target's capped-age truth (the latency-proxy proof is still to add). |
 | 2 | [SV-1](#sv-1) | Partial | netcode | Authority has never run a big fight. 100+ players within 24 blocks with K2 paths (twice vanilla's movement packets) are unmeasured for MSPT and bandwidth. |
 | 3 | [NW-1](#nw-1) | Partial | netcode | Every real-client run was on localhost. Real ping, jitter and loss were never exercised, so forced knocks, corrections and freezes for Wi-Fi players are unknown. |
 | 4 | [CL-1](#cl-1) | Open | netcode, config, core | Lunar's Apollo combat options (no miss penalty, dig-and-use) and other PvP-client changes may break the exact input grammar and use prediction for the biggest client population. |
@@ -100,7 +100,7 @@ is.
 | 34 | [SV-4](#sv-4) | Partial | netcode | An exception in authority code falls back to the claim now, but no fault-injection test proves it never kicks. |
 | 35 | [SV-6](#sv-6) | Partial | netcode | Stock Spigot movement checks no longer judge the truth, but the stock-checks run predates the fix. |
 | 36 | [VI-4](#vi-4) | Partial | config, netcode | Anti-ESP is built but off by default, and pop-in when it is on is unmeasured. |
-| 37 | [PR-8](#pr-8) | Partial | netcode | A far teleport or pearl into a chunk the client lacks costs one correction. |
+| 37 | [PR-8](#pr-8) | Solved | netcode | A far teleport or pearl into a chunk the client lacks: held until the chunk is on its way. |
 | 38 | [PR-5](#pr-5) | Partial [limit] | none server-side | On high ping the heal lands late; the throw origin is already exact. |
 | 39 | [VI-2](#vi-2) | Open [limit] | none server-side | Remote players are drawn about 75-125 ms + RTT behind; lag compensation hides it for hits. |
 | 40 | [HR-11](#hr-11) | Open | combat | A damage window opens after 9 or 10 server ticks, depending on whether the hit came in a queued window. |
@@ -147,23 +147,15 @@ is.
     wait for the client tick and the server tick.
   - From those numbers: some honest hits fail from about 145 ms RTT, most fail from about 190 ms, all fail past about
     200 ms. This is arithmetic from measured parts; no run with real latency exists (NW-1).
-- **Today:** lag compensation is exact inside the cap (HR-1). Beyond it the hit is refused, by design, against
-  backtrack.
-- **Fix (netcode):** a per-attacker cap that follows the connection.
-  - `cap = clamp(rttHigh + display + slack, floor, ceiling)`, where:
-    - `rttHigh` is the p90 of the last 256 ack round trips (not the p10 `rttBase`, so honest jitter fits);
-    - `display` is the measured K2 display lag (about 110 ms);
-    - `slack` is 50 ms;
-    - `floor` is 250 ms and `ceiling` is `max-rewind-ms`, raised to 500.
-  - A player whose rewinds keep exceeding `rttBase + display + jitter` gets a new `rewind-stretch` kind of
-    `AuthInputAnomalyEvent`. That catches toggled fake lag (HR-3).
-  - Record the rewind histogram per player in `/revival auth inspect`.
-- **Proof (to add):**
-  - Real client through a latency proxy in the rig (a delaying TCP proxy, or `dnctl`/`pfctl` dummynet for loss) at
-    0, 50, 100, 150, 200, 250 and 300 ms RTT with ±20 ms jitter. Scenarios `attack_strafe_near` and
-    `attack_ranges`: every attack the client picked must be `VALID`.
-  - Cheat suite: on a 20 ms link, hold pongs and entity packets 150 ms for 2 s, then attack. Hits beyond the cap are
-    `INVALID` and one `rewind-stretch` event fires.
+- **Today (2026-10-22, Overwatch's policy):** one cap for melee, Neue's held-click landing and projectiles
+  (`CombatWiring.sharedRewindCap`): `min(rttBase, rtt-ceiling-ms 250)` + the display delay measured from the attacker's
+  own mirror + its jitter (p90 − p10, at most the ceiling) + `rewind-slack-ms` (150). `max-rewind-ms` (600) is only a
+  sanity bound. Inside the cap the hit is judged on the box the client drew (HR-1); past it, against the target's truth
+  at the capped age (`HitValidator`, `TruthHistory`), so a shooter whose ping exceeds the ceiling leads moving players
+  by the excess instead of losing every hit. Config version 3 moves files still holding the old 300/400 to 600.
+- **Proof:** `RewindCapTest`; cheat suite: honest hits at 50, 150 and 250 ms land, at a steady 300 ms on a target
+  sprinting across (rewind 445 ms, cap 513 ms); fake lag stays `INVALID`. Still to add: the real-client latency proxy
+  runs, and the `rewind-stretch` anomaly.
 
 ### HR-3 Backtrack and fake lag inside the cap; hit "behind cover" — Partial {#hr-3}
 
@@ -176,11 +168,10 @@ is.
   - A cheater who delays its own pongs delays its own knockback too, bounded by the ack deadline (cheat rows 15-17).
   - A cheater who answers pongs but holds entity packets is judged on the mirror the pongs say it has, so its old-box
     hits are `INVALID`.
-  - Past 300 ms everything is refused (row 54).
-  - The gap: inside 300 ms, a 20 ms player can add about 170 ms of lag freely, and any victim can be hit up to 300 ms
-    in the past.
-- **Fix (netcode):** the same per-attacker cap as HR-2, plus the `rewind-stretch` flag. Low-ping players then get a
-  tight cap (about 250 ms) and high-ping players a wide one.
+  - The cap is the attacker's own (HR-2): a 20 ms player's is about 20 + display + jitter + 150, so the fake lag it
+    can add freely is about the slack and its own jitter; past the cap its hits are judged at the target's truth at the
+    capped age, not at the stale box it chose.
+  - The gap left: the 150 ms tick-wait slack, and the `rewind-stretch` flag (not built).
 - **Proof (to add):** the HR-2 cheat row. Also a victim-side metric: the share of hits taken where the victim's own
   truth was more than 1 block from the attacker's mirrored box. Report p50 and p99 per ping band in playtests.
 
@@ -728,19 +719,19 @@ is.
   ends past the blocking plane, the refund fires when no spot fits, and an honest pearl onto open ground lands on
   vanilla's spot.
 
-### PR-8 Teleport into a chunk the client hasn't received — Partial {#pr-8}
+### PR-8 Teleport into a chunk the client hasn't received — Solved {#pr-8}
 
 - **Players:** a long pearl or `/tp` falls into the ground, or snaps back once.
 - **Cause:** client and server ordering. The client reads a missing chunk as void air and falls (it does on vanilla
   servers too).
-- **Today:**
-  - The chunk set is seeded at activation from Moonrise's sent set.
-  - The port's unloaded-chunk gravity branch was found dead on 26.3 and fixed (`auth-sim.md` §6).
-  - One correction remains per such teleport (`README-enforce.md` root cause 1).
-- **Fix (netcode):** hold a server teleport whose destination chunk hasn't been sent to this player until it has, and
-  send chunk and teleport together. Or ping right before and after each chunk packet, so the ack is exact.
-- **Proof (to add):** a dedicated rig scenario: a 218-block teleport into a forgotten chunk, then a walk. 0
-  corrections. Today it only shows through scenario order.
+- **Today (2026-10-22):** fixed. A server teleport (`/tp`, plugin teleports, pearls) whose destination chunk under the
+  player's box is neither held by the client nor already sent to it is held in `AuthPlayer` (`HeldPacket`) until it is:
+  Moonrise usually sends it within a tick or two; after `teleport-chunk-send-ticks` (2) the netcode sends it itself, and
+  after `teleport-hold-max-ticks` (100) the teleport goes out regardless (a chunk the server can't load). The chunk then
+  reaches the client ahead of the teleport, so it never stands over void air. On the 03:03 NAS jar the chunk-seeding
+  change had made this fatal (the truth and the client fell through the gym floor together, 0 corrections).
+- **Proof:** live `auth: a 220-block teleport` and `auth: a 1000-block teleport` (the 1000 one into chunks nobody had
+  loaded): the player stands on the floor at the destination, truth and client bit for bit, no correction.
 
 ---
 

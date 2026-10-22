@@ -188,7 +188,7 @@ All under `authoritative.` (defaults in brackets):
 | `correction-persist-ticks` [20] | a claim off by less than the threshold this many ticks in a row is corrected anyway |
 | `correction-repeat-limit` [2] | the same correction (or accepts that keep needing one) this many times goes out absolute |
 | `max-corrections-per-second` [5] | |
-| `max-rewind-ms` [600], `rewind-jitter-factor` [1.0], `rewind-slack-ms` [150] | the per-attacker rewind cap (HR-2, one method for melee, Neue's landing and projectiles): `min(rttBase, rtt-ceiling-ms)` + the client's measured display delay + jitter (spread capped at the ceiling) + slack; `max-rewind-ms` is only a sanity bound. Past the ceiling a high-ping shooter's hits on moving players come back REWIND (it has to lead them) |
+| `max-rewind-ms` [600], `rewind-jitter-factor` [1.0], `rewind-slack-ms` [150] | the per-attacker rewind cap (HR-2, one method for melee, Neue's landing and projectiles): `min(rttBase, rtt-ceiling-ms)` + the client's measured display delay + jitter (spread capped at the ceiling) + slack; `max-rewind-ms` is only a sanity bound. Past the cap a hit is judged at the target's truth at the capped age (`HitValidator`): a high-ping shooter leads moving players |
 | `attack-eye-offset-cap` [0.5] | off the truth, attacks are cast from the claim only within this per axis (review E3) |
 | `timer-drift-ms` [120], `timer-ack-settle-ms` [100], `max-banked-ticks` [10], `timer-queue-cap-ms` [1000] | the tick clock; pongs bind the timer for later frames, or after the settle (review timer-backlog) |
 | `rtt-ceiling-ms` [250] | the ping lag compensation makes good, and what every slack (deadlines, visibility growth, correction lead) is sized from: `min(rttBase, this)` (review E5) |
@@ -196,6 +196,7 @@ All under `authoritative.` (defaults in brackets):
 | `client-profiles.protocol-kick-rate` [20], `client-profiles.apollo-rules` [`follow`] | §15.8: ordering-only violations kick only past this many in 60 s; Apollo options read into the profile |
 | `ineligible` [`allow`] | `deny` refuses ViaVersion/Geyser players while the mode is enforce (review E4) |
 | `seed-max-move` [10] | a seed's claimed move and velocity, per axis (review E1) |
+| `teleport-chunk-send-ticks` [2], `teleport-hold-max-ticks` [100] | PR-8: a server teleport into a chunk the client hasn't been sent waits for it; the netcode sends it itself after the first, and lets the teleport go after the second |
 | `vehicles` [`deny`] | `deny` refuses mounting under enforce; `vanilla` rides exempt (client-trusted) |
 | `honor-denied-predictions` [false], `max-attacks-per-client-tick` [1], `heartbeat-ping` [true], `bypass-audit` [true] | |
 | `replication.path-step-ticks` [2], `keep-alive` [true], `exact-radius` [24], `pre-roll` [true], `respawn-distance` [48], `path-buffer` [64], `repair-interval-ticks` [20] | K2 paths; a viewer whose mirror of a target went inexact gets it re-spawned at most this often |

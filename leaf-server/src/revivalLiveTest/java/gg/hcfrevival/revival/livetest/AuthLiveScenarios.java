@@ -160,8 +160,10 @@ final class AuthLiveScenarios {
         this.tests.after(1, "auth: visibility: a wall between two players", this::visibilitySetup);
         this.tests.after(30, "auth: visibility: a player behind a wall is not sent", this::visibilityHidden);
         this.tests.after(20, "auth: visibility: shown again as soon as the wall is gone", this::visibilityShown);
-        this.tests.after(5, "auth: a far teleport, into chunks the client hasn't got yet", this::farTeleport);
-        this.tests.after(80, "auth: a far teleport needs no correction: the truth holds the client's chunks", this::farTeleportChecked);
+        this.tests.after(5, "auth: a 220-block teleport, into chunks the client hasn't got yet", () -> this.farTeleport(220));
+        this.tests.after(80, "auth: a 220-block teleport: the chunk arrives before the teleport, the player stands, no correction", this::farTeleportChecked);
+        this.tests.after(5, "auth: a 1000-block teleport, into chunks nobody has loaded", () -> this.farTeleport(1000));
+        this.tests.after(100, "auth: a 1000-block teleport: the chunk arrives before the teleport, the player stands, no correction", this::farTeleportChecked);
         this.tests.after(2, "auth: cleanup", this::cleanup);
     }
 
@@ -1049,21 +1051,32 @@ final class AuthLiveScenarios {
 
     // §15.2: the client's chunks after a far teleport ------------------------------------------------------------------
 
-    private void farTeleport() {
+    private double farFloorY;
+
+    // pvp-issues PR-8 (NAS 2026-10-22: /tp to the gym dropped the player through the floor and out of the world): the
+    // client applies a chunk only when it arrives and has void air where it has none, so the teleport must come after it
+    private void farTeleport(final int distance) {
         this.correctionsBefore = this.auth.stats().corrections();
         this.overBefore = this.auth.stats().overThreshold();
         this.keys = Input.EMPTY;
         this.preTick = tick -> {
         };
-        final int x = Mth.floor(this.client.player.getX()) + 400;
+        this.farFloorY = this.client.player.getY();
+        final int x = Mth.floor(this.client.player.getX()) + distance;
         final int z = Mth.floor(this.client.player.getZ());
-        this.client.player.connection.teleport(x + 0.5, this.client.player.getY(), z + 0.5, this.yaw, 0.0F);
+        if (distance < 500) {
+            this.level.getChunk(x >> 4, z >> 4); // the server has the destination loaded (as /tp to a built place does)
+        }
+        this.client.player.connection.teleport(x + 0.5, this.farFloorY, z + 0.5, this.yaw, 0.0F);
         this.tests.check(this.auth.world().chunksKnown(), "the server knows which chunks the client holds");
     }
 
     private void farTeleportChecked() {
         final Simulation sim = this.auth.simulation();
         this.tests.check(this.auth.world().hasChunkAt(Mth.floor(sim.x()), Mth.floor(sim.z())), "the destination chunk reached the client");
+        this.tests.check(sim.y() == this.farFloorY && this.clientModel.y() == this.farFloorY && this.client.player.isAlive(),
+            "the player stands on the floor at the destination (truth y " + sim.y() + ", client y " + this.clientModel.y() + ", floor " + this.farFloorY
+            + "; teleports held " + this.auth.stats().teleportsHeld() + ", chunks sent ahead " + this.auth.stats().teleportChunksSent() + ")");
         this.tests.check(this.auth.stats().corrections() == this.correctionsBefore, "no correction (" + (this.auth.stats().corrections() - this.correctionsBefore)
             + "; exempt chunk-unknown " + this.auth.stats().exempt(gg.hcfrevival.revival.auth.AuthStats.EXEMPT_CHUNK_UNKNOWN) + ", inexact seeds "
             + this.auth.stats().inexactSeeds() + ", missing positions " + this.auth.stats().missingPositionViolations() + ")");

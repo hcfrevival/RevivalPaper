@@ -55,6 +55,9 @@ import gg.hcfrevival.revival.auth.AuthMode;
  *                         or sprint command in a tick, a teleport never accepted, a backwards prediction sequence) a
  *                         player may make in 60 s before a kick (design §15.8: in HCF a kick is a combat-logger death);
  *                         0 kicks at the first. Forged or unknown replies, overflow and a second move claim kick at once
+ * @param teleportChunkSendTicks a server teleport into a chunk the client hasn't been sent is held (pvp-issues PR-8): if
+ *                               Moonrise hasn't sent that chunk within this many ticks, it is sent now, then the teleport
+ * @param teleportHoldMaxTicks a held teleport goes out after this many ticks whatever its chunk (one the server can't load)
  * @param seedMaxMove the most a claimed move or a seeded velocity may be on one axis, in blocks per tick: a seed from
  *                    two claims further apart than this uses the server's known movement (vanilla's moved-too-quickly
  *                    bound is 10 blocks)
@@ -140,6 +143,8 @@ public record AuthoritativeSettings(
     String ineligible,
     String apolloRules,
     int protocolKickRate,
+    int teleportChunkSendTicks,
+    int teleportHoldMaxTicks,
     double seedMaxMove,
     boolean honorDeniedPredictions,
     int maxAttacksPerClientTick,
@@ -248,6 +253,8 @@ public record AuthoritativeSettings(
             ineligible(reader),
             apolloRules(reader),
             Math.max(0, reader.getInt(PATH + "client-profiles.protocol-kick-rate", 20)),
+            Math.max(0, reader.getInt(PATH + "teleport-chunk-send-ticks", 2)),
+            Math.max(0, reader.getInt(PATH + "teleport-hold-max-ticks", 100)),
             Math.max(0.1, reader.getDouble(PATH + "seed-max-move", 10.0)),
             reader.getBoolean(PATH + "honor-denied-predictions", false),
             Math.max(1, reader.getInt(PATH + "max-attacks-per-client-tick", 1)),

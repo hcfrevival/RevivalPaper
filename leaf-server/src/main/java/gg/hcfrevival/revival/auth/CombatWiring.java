@@ -95,8 +95,9 @@ public final class CombatWiring implements ViewerMirrors, AttackJudge, Projectil
      * mirror of the target: how far the box its client shows at this tick (interpolating, K2) lags the newest position of
      * the target it has acked. A rewind is then honest when {@code now - newest acked position <= rtt + jitter + slack}:
      * what the client could have seen is bounded by what it acked, so a client that holds pongs to keep an old view only
-     * makes its own view older. {@code max-rewind-ms} (600) is only a sanity bound on top. Past the ceiling a high-ping
-     * shooter's hits on moving players come back REWIND: it has to lead them (the judge refuses rather than clamps).
+     * makes its own view older. {@code max-rewind-ms} (600) is only a sanity bound on top. Past the cap the judge
+     * ({@code HitValidator}) tests the hit against the target's truth at the capped age, not the box the client drew: a
+     * high-ping shooter has to lead moving players by what its ping exceeds the cap.
      */
     long rewindCap(final AuthPlayer attacker, final int targetId, final int tick, final AuthoritativeSettings settings) {
         final long rttBase = attacker.transactions().rttBaseNanos() / 1_000_000L;

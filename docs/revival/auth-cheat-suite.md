@@ -50,8 +50,8 @@ cheat suite, authority refuses there). The three `honest:` joins at the top guar
 2026-10-22 (a truth that fell through the floor of a crowd joining together). The latency controls follow the rewind-cap
 policy of 2026-10-22 (ping made good up to `rtt-ceiling-ms` 250, plus the client's own display delay, jitter and tick
 waits): honest hits land at 50, 150 and 250 ms, and at a steady 300 ms on a target sprinting across the line of sight
-(rewind 445 ms, cap 513 ms). Past roughly 350-400 ms of steady ping, hits on moving players come back REWIND. Outcomes as
-printed by the suite:
+(rewind 445 ms, cap 513 ms). Past roughly 350-400 ms of steady ping a hit is judged at the target's truth at the capped
+age, so a high-ping shooter leads moving players. Outcomes as printed by the suite:
 
 Re-run at 02:31 (run `d5d4fdfb`, netcode round: `rttBase` fast window, tick-bundle list reuse, `mirror-history-ticks`
 16): 82 of 82 again. #71 now switches its 300 ms on 2.5 s before the target moves (16 s before): `rttBase` is 346 ms by

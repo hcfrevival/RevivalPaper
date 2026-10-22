@@ -12,7 +12,8 @@ Status, 2026-10-22: combat side written, compiles, unit-tested. Every hook below
 > `CombatWiring.sharedRewindCap` (the judge's HR-2 cap, also Neue's landing); `clientBlocks` is the player's `WorldView`
 > itself (it implements `ProjectileBlocks`). N3: under enforce the thrower's position at the `UseItem` replay is the
 > truth after the previous client tick (the truth writer runs at each simulated tick, before the next window's
-> packets), and `getKnownMovement()` is the truth's last move. N2 (teleport hold) not done.
+> packets), and `getKnownMovement()` is the truth's last move. N2: done 2026-10-22 (pvp-issues PR-8): a teleport into an
+> unsent chunk, pearls included, waits until that chunk is on its way to the client.
 
 ## What needs no hook
 

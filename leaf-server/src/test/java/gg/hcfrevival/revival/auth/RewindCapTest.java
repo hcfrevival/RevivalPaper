@@ -56,7 +56,7 @@ class RewindCapTest {
 
     @Test
     void pastTheCeilingThePingIsNotMadeGood() {
-        // A 600 ms shooter: 250 compensated; with a steady connection its hits on moving players come back REWIND
+        // A 600 ms shooter: 250 compensated; past the cap its hits are judged at the target's capped-age truth, so it leads
         final long cap = CombatWiring.cap(Math.min(600, 250), 600, 620, 100, 1.0, 150);
         assertTrue(honestRewind(600, 100, 60) > cap, "rewind " + honestRewind(600, 100, 60) + " over " + cap);
         // A 300 ms one still fits: the ceiling plus the tick-wait slack covers 300 ms and its waits
