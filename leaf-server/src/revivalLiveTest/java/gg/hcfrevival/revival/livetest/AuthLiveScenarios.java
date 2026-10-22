@@ -126,7 +126,9 @@ final class AuthLiveScenarios {
         this.tests.after(1, "auth: under enforce the server's pose is the simulation's", this::sneak);
         this.tests.after(8, "auth: under enforce the server's pose is the simulation's (check)", this::sneakChecked);
         this.tests.after(5, "auth: a pose the server sets on purpose reaches the client", this::meantPose);
-        this.tests.after(15, "auth: a pose the server sets on purpose reaches the client, then the simulation owns it again", this::meantPoseChecked);
+        // Room for the echo's ack on a busy machine: the pose write and the server's own pose update after it are two echoes,
+        // each a round of pings (it failed now and then at 15 ticks while builds ran alongside)
+        this.tests.after(30, "auth: a pose the server sets on purpose reaches the client, then the simulation owns it again", this::meantPoseChecked);
         this.tests.after(1, "auth: a number-key slot switch while blocking", this::hotbarSetup);
         this.tests.after(5, "auth: a number-key slot switch while blocking (walk)", this::hotbarWalk);
         this.tests.after(30, "auth: a number-key slot switch while blocking takes the hotbar branch, not a correction", this::hotbarChecked);
@@ -1144,7 +1146,6 @@ final class AuthLiveScenarios {
 
     private double farFloorY;
     private int farMark;
-    private long farOrigin;
 
     // pvp-issues PR-8 (NAS 2026-10-22: /tp to the gym dropped the player through the floor and out of the world): the
     // client applies a chunk only when it arrives and has void air where it has none, so the teleport must come after it
@@ -1156,7 +1157,6 @@ final class AuthLiveScenarios {
         };
         this.farFloorY = this.client.player.getY();
         this.farMark = this.client.received.size();
-        this.farOrigin = net.minecraft.world.level.ChunkPos.pack(Mth.floor(this.client.player.getX()) >> 4, Mth.floor(this.client.player.getZ()) >> 4);
         final int x = Mth.floor(this.client.player.getX()) + distance;
         final int z = Mth.floor(this.client.player.getZ());
         if (distance < 500) {
@@ -1168,21 +1168,9 @@ final class AuthLiveScenarios {
 
     private void farTeleportChecked() {
         final Simulation sim = this.auth.simulation();
-        // Real-client run N5: the origin's chunks are forgotten only after the (held) teleport, never under the client
-        int teleportAt = -1;
-        int forgetAt = -1;
-        for (int i = this.farMark; i < this.client.received.size(); i++) {
-            final net.minecraft.network.protocol.Packet<?> packet = this.client.received.get(i).packet();
-            if (teleportAt < 0 && packet instanceof final net.minecraft.network.protocol.game.ClientboundPlayerPositionPacket position
-                && !gg.hcfrevival.revival.auth.reconcile.Reconciler.ours(position.id())) {
-                teleportAt = i;
-            } else if (forgetAt < 0 && packet instanceof final net.minecraft.network.protocol.game.ClientboundForgetLevelChunkPacket forget
-                && net.minecraft.world.level.ChunkPos.pack(forget.pos().x(), forget.pos().z()) == this.farOrigin) {
-                forgetAt = i;
-            }
-        }
-        this.tests.check(teleportAt >= 0 && (forgetAt < 0 || forgetAt > teleportAt), "the origin's chunk is forgotten after the teleport, not before it "
-            + "(teleport at " + teleportAt + ", forget at " + forgetAt + ")");
+        // Real-client run N5 (the client a tick or two on void air at the origin while the teleport is held) is the client
+        // dropping the origin's chunks at the chunk-cache centre update, which must precede the destination's chunks; the
+        // forgets go out as they come, so the truth falls with it there and nothing diverges (classic run 2026-10-22)
         this.tests.check(this.auth.world().hasChunkAt(Mth.floor(sim.x()), Mth.floor(sim.z())), "the destination chunk reached the client");
         this.tests.check(sim.y() == this.farFloorY && this.clientModel.y() == this.farFloorY && this.client.player.isAlive(),
             "the player stands on the floor at the destination (truth y " + sim.y() + ", client y " + this.clientModel.y() + ", floor " + this.farFloorY

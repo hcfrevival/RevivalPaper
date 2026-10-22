@@ -858,13 +858,11 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
             this.stats.teleportsHeld++;
             return;
         }
-        if (packet instanceof net.minecraft.network.protocol.game.ClientboundForgetLevelChunkPacket && !this.heldTeleports.isEmpty()
-            && MinecraftServer.getServer().isSameThread()) {
-            // Real-client run N5: the chunk loader follows the server player at once and forgets the origin's chunks while
-            // the client, its teleport held, still stands there (on void air); they go right after the teleport instead
-            this.heldTeleports.add(new HeldPacket(connection, packet, listener, flush));
-            return;
-        }
+        // Real-client run N5 (a held far teleport leaves the client a tick or two on void air at the origin) can't be fixed by
+        // holding the origin's ForgetLevelChunks behind the teleport: the SetChunkCacheCenter that must precede the
+        // destination's chunks (ClientChunkCache ignores a chunk outside its storage range) already drops the origin's from
+        // the client. Held forgets only kept them in our record, so the truth stood while the client fell (classic run
+        // 2026-10-22: six divergences at far teleports, none before). Sent as they come, the truth falls with the client.
         if (this.ownsClientState() && MinecraftServer.getServer().isSameThread()) {
             final Simulation sim = this.simulation;
             if (packet instanceof final ClientboundSetEntityDataPacket data && data.id() == this.player.getId()) {

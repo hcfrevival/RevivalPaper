@@ -233,5 +233,8 @@ trackers), "cheat" the cheat suite in it.
 | R2C-08 | fixed | `applyTruth` uses the resolved write only while the `ServerPlayer` is where the last truth write left it; after a server push (or anything else that moved it) the collided branch runs, as a claim's would | live TruthPathCheck and pushes rows |
 
 Also from the real-client run (README-enforce.md N4, N5): N4 is PT2-06's fix above. N5, a held far teleport leaving the
-client on void air at the origin: `ForgetLevelChunk`s sent while a teleport is held are held behind it, in order, and go
-right after it (live: "the origin's chunk is forgotten after the teleport, not before it", in the far-teleport rows).
+client on void air at the origin: holding the `ForgetLevelChunk`s behind the teleport was tried and reverted (classic run
+2026-10-22). The `SetChunkCacheCenter` that must precede the destination's chunks already drops the origin's from the
+client, so the held forgets only kept them in the server's record: the truth stood while the client fell (six
+divergences at far teleports, none before). The forgets go out as they come again, and the truth falls with the client
+for those ticks; no correction either way.

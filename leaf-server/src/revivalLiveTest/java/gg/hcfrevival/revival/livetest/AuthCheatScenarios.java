@@ -287,6 +287,9 @@ final class AuthCheatScenarios {
         this.silentPot();
         this.offhandPot(true);
         this.offhandPot(false);
+        // Classic audit #9: eating and drinking under enforce, as an honest client does them
+        this.consume("honest: a golden apple eaten under enforce (control)", false);
+        this.consume("honest: a Speed potion drunk under enforce, then a sprint (control)", true);
         this.inventoryMove();
         this.mountDenied();
         this.vehiclesStep("vanilla");
@@ -2476,6 +2479,43 @@ final class AuthCheatScenarios {
             this.set(at[0].getX(), at[0].getY(), at[0].getZ(), Blocks.AIR.defaultBlockState());
             final BlockPos head = at[0].relative(facing);
             this.set(head.getX(), head.getY(), head.getZ(), Blocks.AIR.defaultBlockState());
+        });
+        this.finish(id);
+    }
+
+    // The client eats or drinks it to the end (the server's completion reaches it as USE_ITEM_COMPLETE), then walks or
+    // sprints: no correction while it eats, slowed, or after, sped up by the potion
+    private void consume(final String id, final boolean potion) {
+        this.begin(id, () -> {
+        });
+        this.step(1, id + ": in hand", () -> {
+            this.c.player.getInventory().setItem(0, potion
+                ? net.minecraft.world.item.alchemy.PotionContents.createItemStack(Items.POTION, net.minecraft.world.item.alchemy.Potions.SWIFTNESS)
+                : new ItemStack(Items.GOLDEN_APPLE));
+            this.c.player.getInventory().setSelectedSlot(0);
+            this.c.player.inventoryMenu.broadcastChanges();
+        });
+        this.step(5, id + ": use it, walking", () -> {
+            this.open(id);
+            this.label = "CONTROL";
+            this.base = this.snap(this.c);
+            this.c.forcePosition = true;
+            this.c.keys = FORWARD;
+            this.c.actions.add(new ServerboundUseItemPacket(InteractionHand.MAIN_HAND, 1, this.c.yaw, this.c.pitch));
+        });
+        this.step(45, id + ": done, sprint", () -> {
+            this.honestExpect(!this.c.player.isUsingItem() && !this.c.auth.simulation().usingItem(), "the use ended on both (server "
+                + this.c.player.isUsingItem() + ", truth " + this.c.auth.simulation().usingItem() + ")");
+            this.honestExpect(potion ? this.c.player.hasEffect(net.minecraft.world.effect.MobEffects.SPEED)
+                : this.c.player.hasEffect(net.minecraft.world.effect.MobEffects.ABSORPTION), "the effect is on");
+            this.c.keys = FORWARD_SPRINT;
+        });
+        this.judge(20, id, () -> {
+            final Snap d = this.delta(this.c);
+            this.honestExpect(d.corrections() == 0 && d.exact() == d.compared() && d.compared() >= 40, "no correction: " + d.corrections()
+                + " corrections, " + d.exact() + "/" + d.compared() + " claims exact");
+            this.c.keys = NONE;
+            this.c.player.removeAllEffects();
         });
         this.finish(id);
     }
