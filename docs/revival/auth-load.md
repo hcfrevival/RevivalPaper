@@ -303,6 +303,11 @@ every player.
 
 This removes 3 of 4 `setPos` and the collision pass, and with the locator bar on cuts the waypoint work by 4×.
 
+**Done** (2026-10-22, [server-thread pass](#server-thread-pass-2026-10-22)), differently from the sketch above: the
+branch runs as before, in its order, so every event sees what it saw (the player held at the start during
+`PlayerMoveEvent`, step sounds and game events from the interim position); the truth's move skips the collision pass
+and the interim positions skip the waypoint updates. Only the final position runs them.
+
 ### 8. Block reads in the port (sim, P2)
 
 `WorldView.blockState` (`view/WorldView.java:113`) does `hasChunk` (`:157`: `getChunkAtIfLoadedImmediately`, a
@@ -317,6 +322,8 @@ self 1 %).
 - Cache the last chunk (key and `LevelChunk`) in `WorldView` and read the section directly.
 - Hoist `isChunkLoaded` per (x>>4, z>>4) column in `gatherBlocks`.
 - Keep one "overlay empty" flag instead of three `isEmpty` checks.
+
+**Done** (2026-10-22, [server-thread pass](#server-thread-pass-2026-10-22)).
 
 ### 9. Per-packet cost on the O(N²) replication path (netcode/replicate, P2)
 
@@ -340,6 +347,12 @@ At N=100, `auth.net` is 12.9 % of the server thread:
 RotateHead (1,290/s per player at N=100) could ride in the path step's rotation (`MoveEntity.PosRot` already carries
 yRot): K2 sends both every tick.
 
+**Partly done** (2026-10-22, [server-thread pass](#server-thread-pass-2026-10-22)): classification per packet class, the
+recorder asked once, bundles grown once. Not done: per-target classification and step reuse in `PathFeed`, RotateHead
+folding, and Paper's per-packet `Connection.send` lambda (the packets that still go out one by one are mostly waypoint
+packets to other players, sent between ticks while their connection has no bundle open; bundling them would change the
+framing on the wire).
+
 ### 10. Smaller notes
 
 - Keep-alives are pulled into the open bundle (`Transactions.send`: bundleable and no listener) and so are answered at
@@ -358,12 +371,64 @@ yRot): K2 sends both every tick.
 | 2 | `gamerule locator_bar false` on PvP servers | config | −55 % bandwidth, −0.35 Netty cores and −25 % server thread at N=50; O(N²) packets gone |
 | 3 | Stall recovery: one absolute resync per client after forced entries, re-pair mirrors when acks are current | netcode | the N=100 cascade (140k forced entries, 0 VALID hits) |
 | 4 | Rewind cap per player (`rttBase + jitter + K·50 + 100 ms`, ceiling about 500), measured on the ack clock | combat | 14.6 % of honest hits rejected at 125 ms RTT → about 0 |
-| 5 | Truth-only apply path (one `absSnapTo`, no `player.move`, no start/target ping-pong for `PlayerMoveEvent`) | sim/netcode | 20 % (N=50) to 41 % (N=100) of the server thread → about a quarter of that; 3 of 4 waypoint/section updates |
+| 5 | Truth-only apply path (one `absSnapTo`, no `player.move`, no start/target ping-pong for `PlayerMoveEvent`) | sim/netcode | 20 % (N=50) to 41 % (N=100) of the server thread → about a quarter of that; 3 of 4 waypoint/section updates. **Done**: 30 → 21 % (N=50), 45 → 29 % (N=100); the rest is the one write's vanilla waypoint update |
 | 6 | Fix `seedChunks` at activation (include chunks in flight, or fall back to the live world until the first chunk ack) | netcode | the current tree's fall-through-floor bug |
 | 7 | Sticky keys seeded from `getLastClientInput()` at activation | netcode | no correction storm for a player holding a key through a join or respawn |
-| 8 | Chunk cache in `WorldView`, per-column `isChunkLoaded` in `gatherBlocks` | sim | about 10 % of the server thread at N=50 |
-| 9 | Replication per target per tick (classify once, reuse steps, one send per bundle, no `traceState` when off, presized bundles) | netcode/replicate | about half of `auth.net` (12.9 % at N=100), −20 MB/s allocation at N=100 |
+| 8 | Chunk cache in `WorldView`, per-column `isChunkLoaded` in `gatherBlocks` | sim | about 10 % of the server thread at N=50. **Done**: sim + view 49 → 31 ms/s at N=50 |
+| 9 | Replication per target per tick (classify once, reuse steps, one send per bundle, no `traceState` when off, presized bundles) | netcode/replicate | about half of `auth.net` (12.9 % at N=100), −20 MB/s allocation at N=100. **Partly done**: per-class classification, recorder once, bundles grown once |
 | 10 | Fold RotateHead into the K2 path step | replicate | −20 % of packets per player at N=100 |
+
+## Server-thread pass (2026-10-22)
+
+Findings 7, 8 and part of 9, as three commits on top of 07c5ca46. Behaviour is unchanged except for one thing: the
+waypoint (locator bar) updates of the truth's interim positions, superseded inside the same call, are no longer sent.
+
+| Change | What it removes |
+|---|---|
+| Truth path (patch 1012, `Entity.revivalMoveResolved`, `revivalQuietSnapTo`) | the second collision pass of the truth's move, and the waypoint updates of its three interim positions (`setPosRaw` still moves entity sections and the box for them); one position per tick runs the waypoint updates |
+| `WorldView` chunk cache (patch 1011 counter, `WorldView.chunkHeld`, `SimCollision.gatherBlocks`) | two hash lookups per block read (the client's chunk record and the server's full-chunk map); the block comes from the cached `LevelChunk`; `isChunkLoaded` once per chunk column in a gather |
+| Per-class classification (`OutboundClassifier.ClassInfo`, `Transactions.send`) | the type lookup, `isReady`/`getExtraPackets`/`isTerminal` calls, `track` instanceof chains and repeated recorder lookups per packet; bundle lists grown packet by packet |
+
+**Equivalence.** `TruthPathCheck` (live suite, docs/revival/auth-netcode.md "Testing") replays 420 port-simulated ticks
+over a course through the claim's branch and through the truth path: state, events and packets match on every move
+(279 move events, 6 jumps, fall damage, a swim, 57 block insides, a plate, 28 sounds); waypoint packets 166 → 56. A
+mutation (no snap back to the start before `PlayerMoveEvent`) fails it at move 6. The port's checks are unchanged: the
+80 golden client traces replay exact, the oracle fuzz (`fuzz-seeds.sh 3000 400 20 21 22 23`, 4.8M ticks) has 0 runs
+that differ, the unit suite (446) passes, and the live suites pass (sync 522 checks, cheat suite 82/82, Neue; async 123).
+
+**Load** (same harness, jars built from 07c5ca46 and from the pass, runs interleaved per N so both see the same
+machine; other agents kept the load average at 4-12, and runs cut short by it are left out). Run directories
+`runs/perf-{base,v1,final}-*`.
+
+| N | build | server thread (cores) | auth µs / player / tick | server Netty (cores) | down KiB/s per player | TrackedWaypoint / s per player | server-thread allocation MB/s | MSPT mean |
+|---|---|---|---|---|---|---|---|---|
+| 50 | 07c5ca46 | 0.17, 0.18 | 122, 132 | 0.88, 0.85 | 121, 103 | 1,917, 1,487 | 63, 59 | 2.05, 2.36 |
+| 50 | pass | 0.14, 0.17, 0.14 | 99, 109, 98 | 0.61, 0.57, 0.50 | 68, 60, 58 | 736, 547, 447 | 36, 34, 33 | 2.21, 2.53, 2.38 |
+| 100 | 07c5ca46 | 0.49, 0.49 | 211, 214 | 2.58, 1.89 | 217, 218 | 3,256, 3,472 | 192, 218 | 9.85, 16.12 |
+| 100 | pass | 0.36, 0.40 | 146, 160 | 2.02, 1.99 | 136, 131 | 1,305, 1,268 | 104, 108 | 5.97, 7.62 |
+
+- **Server thread: about −20 % at N=50 and N=100**, auth µs per player per tick −20 to −25 %. Truth application went
+  from 30 % (N=50) and 45 % (N=100) of the server thread to 21 % and 29 %: what is left is the one position write's
+  vanilla waypoint update (an O(players) loop over Guava tables, `ImmutableSet.copyOf` and `CraftPlayer.canSee` per
+  pair) and the chunk map's move, which every vanilla move pays too. Sim + view (block reads): 49 → 31 ms/s at N=50,
+  96 → 64 ms/s at N=100.
+- **Network:** −60 % locator-bar packets, about −40 % bandwidth per player, −0.3 Netty cores at N=50.
+- **Allocation on the server thread: about halved** (the waypoint manager's tables and packets, and the bundle growth).
+- **Honesty unchanged:** N=50 0 corrections in every run of both builds; hits VALID except 1-4 `INVALID MISSED` per
+  15k-16k attacks in both builds alike (the harness's pick, not the authority). N=100 keeps finding 2's collapse in both
+  builds (4-9k corrections with the pass, 20-25k without, same load); it is the netcode's, not this pass's.
+
+What is left on the server thread, by size: the locator bar's O(N²) waypoint work in the one remaining write
+(finding 6: `locator_bar false`, or Leaf's experimental `performance.optimize-waypoint`, would remove most of it), the
+mirrors (finding 10), replication (`PathFeed`, §9), and the port itself (`gatherBlocks` now reads blocks straight from the
+chunk; the rest is the exact port's collision work).
+
+**Found on the way** (both branches, unchanged): CraftBukkit's `justTeleported`. After any teleport, the first move whose
+`PlayerMoveEvent` fires with `from` (Paper's last event position, which lags while moves stay under the 1/256 threshold)
+not where the player stands returns early and leaves the `ServerPlayer` at the start of that move; the next tick writes
+the truth. `TruthPathCheck` meets it once, crossing the cobweb after the join teleport. `AuthPlayer.applyTruth` assumes
+the write happened (it sets the motion and feeds the path either way), so for that one tick the server player trails the
+truth by one move.
 
 ## Reproduce
 
