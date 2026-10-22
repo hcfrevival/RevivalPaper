@@ -59,6 +59,8 @@ public final class PortSimulation implements Simulation {
     private float previousXRot;
     private boolean beliefOn;
     private boolean beliefValid;
+    // The belief's last tick read a hole (a block the client broke and the server kept)
+    private boolean beliefHole;
     private boolean seeded;
     private long sprintMismatches;
     private long flightMismatches;
@@ -331,6 +333,17 @@ public final class PortSimulation implements Simulation {
     }
 
     @Override
+    public void startUsingItem(final InteractionHand hand, final ClientView view) {
+        this.player.mainHand = view.items.mainHand();
+        this.player.offHand = view.items.hand(InteractionHand.OFF_HAND);
+        if (this.beliefOn && this.beliefValid) {
+            this.belief.mainHand = this.player.mainHand;
+            this.belief.offHand = this.player.offHand;
+        }
+        this.startUsingItem(hand);
+    }
+
+    @Override
     public void releaseUsingItem() {
         this.sim.releaseUsingItem(this.player);
     }
@@ -388,6 +401,51 @@ public final class PortSimulation implements Simulation {
     }
 
     @Override
+    public boolean beliefTouchedHole() {
+        return this.beliefHole;
+    }
+
+    @Override
+    public double beliefPos(final int axis) {
+        final SimPlayer p = this.beliefOn && this.beliefValid ? this.belief : this.player;
+        return axis == 0 ? p.x : axis == 1 ? p.y : p.z;
+    }
+
+    @Override
+    public double beliefDistance(final double x, final double y, final double z) {
+        if (!this.beliefOn || !this.beliefValid) {
+            return Double.NaN;
+        }
+        final double dx = this.belief.x - x;
+        final double dy = this.belief.y - y;
+        final double dz = this.belief.z - z;
+        return Math.sqrt(dx * dx + dy * dy + dz * dz);
+    }
+
+    @Override
+    public boolean snapBeliefOut(final net.minecraft.core.BlockPos pos, final net.minecraft.world.level.block.state.BlockState state, final double x,
+                                 final double y, final double z) {
+        if (!this.beliefOn || !this.beliefValid || !collides(this.belief.bb, pos, state)) {
+            return false;
+        }
+        this.sim.snapTo(this.belief, x, y, z);
+        return true;
+    }
+
+    // Entity.isColliding(pos, state): the block's collision shape there overlaps the box
+    static boolean collides(final gg.hcfrevival.revival.auth.sim.SimBox bb, final net.minecraft.core.BlockPos pos,
+                            final net.minecraft.world.level.block.state.BlockState state) {
+        final net.minecraft.world.phys.shapes.VoxelShape shape = state.getCollisionShape(net.minecraft.world.level.EmptyBlockGetter.INSTANCE, pos,
+            net.minecraft.world.phys.shapes.CollisionContext.empty());
+        if (shape.isEmpty()) {
+            return false;
+        }
+        return net.minecraft.world.phys.shapes.Shapes.joinIsNotEmpty(shape.move(pos.getX(), pos.getY(), pos.getZ()),
+            net.minecraft.world.phys.shapes.Shapes.create(bb.minX, bb.minY, bb.minZ, bb.maxX, bb.maxY, bb.maxZ),
+            net.minecraft.world.phys.shapes.BooleanOp.AND);
+    }
+
+    @Override
     public boolean correction(final int ticksAhead, final Input keys, final float yRot, final float xRot, final ClientView view, final WorldView world,
                               final double[] out) {
         return this.correction(ticksAhead, keys, yRot, xRot, view, world, out, null);
@@ -416,7 +474,12 @@ public final class PortSimulation implements Simulation {
             this.sync(truth, view);
             this.tickWithRockets(truth, world);
             this.sync(client, view);
-            this.tickWithRockets(client, world);
+            world.readAsClient(true); // the client's own world: the breaks it predicted that the server denied
+            try {
+                this.tickWithRockets(client, world);
+            } finally {
+                world.readAsClient(false);
+            }
         }
         out[0] = truth.x - client.x;
         out[1] = truth.y - client.y;
@@ -425,7 +488,12 @@ public final class PortSimulation implements Simulation {
         out[4] = truth.vy - client.vy;
         out[5] = truth.vz - client.vz;
         if (out.length >= 13) {
-            out[6] = insideShape(client.bb, world) ? 1.0 : 0.0;
+            world.readAsClient(true);
+            try {
+                out[6] = insideShape(client.bb, world) ? 1.0 : 0.0;
+            } finally {
+                world.readAsClient(false);
+            }
             out[7] = truth.x;
             out[8] = truth.y;
             out[9] = truth.z;
@@ -454,7 +522,15 @@ public final class PortSimulation implements Simulation {
     /** Whether the client's box would be inside a block's collision shape, where its own collision no longer stops it. */
     @Override
     public boolean beliefInsideShape(final WorldView world) {
-        return this.beliefValid && insideShape(this.belief.bb, world);
+        if (!this.beliefValid) {
+            return false;
+        }
+        world.readAsClient(true);
+        try {
+            return insideShape(this.belief.bb, world);
+        } finally {
+            world.readAsClient(false);
+        }
     }
 
     // A box overlapping a collision shape by more than the collision epsilon (Shapes.collide ignores less)
@@ -491,11 +567,19 @@ public final class PortSimulation implements Simulation {
     public void tick(final Input keys, final Input previousKeys, final float yRot, final float xRot, final int sprintCommand,
                      final int flyingCommand, final boolean fallFlyingCommand, final ClientView view, final WorldView world) {
         final SimPlayer p = this.player;
+        this.beliefHole = false;
         if (this.beliefOn && this.beliefValid) {
-            // The client's own state moves with its own inputs too (§15.5)
+            // The client's own state moves with its own inputs too (§15.5), in its own world (denied breaks it still has)
             this.sync(this.belief, view);
             this.input.set(keys, yRot, xRot);
-            this.tickWithRockets(this.belief, world);
+            world.takeHoleRead();
+            world.readAsClient(true);
+            try {
+                this.tickWithRockets(this.belief, world);
+            } finally {
+                world.readAsClient(false);
+                this.beliefHole = world.takeHoleRead();
+            }
         }
         this.sync(view);
         if (this.beliefOn) {
@@ -604,6 +688,11 @@ public final class PortSimulation implements Simulation {
     @Override
     public boolean usingItem() {
         return this.player.usingItem;
+    }
+
+    @Override
+    public net.minecraft.world.item.ItemStack useItem() {
+        return this.player.useItem;
     }
 
     // Client-view state the port reads, from ClientView

@@ -50,10 +50,10 @@ public final class DebugHud {
     }
 
     static void correction(final AuthPlayer auth, final int tick, final double dx, final double dy, final double dz,
-                           final double vx, final double vy, final double vz, final boolean relativeVelocity) {
-        LOGGER.info(String.format(Locale.ROOT, "[auth] correction %s tick %d dpos (%.6f, %.6f, %.6f) |%.6f| %s (%.6f, %.6f, %.6f) rtt %dms",
+                           final double vx, final double vy, final double vz, final boolean relativeVelocity, final int ahead) {
+        LOGGER.info(String.format(Locale.ROOT, "[auth] correction %s tick %d dpos (%.6f, %.6f, %.6f) |%.6f| %s (%.6f, %.6f, %.6f) rtt %dms ahead %d (%s)",
             auth.player().getScoreboardName(), tick, dx, dy, dz, Math.sqrt(dx * dx + dy * dy + dz * dz), relativeVelocity ? "dvel" : "vel",
-            vx, vy, vz, auth.transactions().lastRttNanos() / 1_000_000L));
+            vx, vy, vz, auth.transactions().lastRttNanos() / 1_000_000L, ahead, auth.forecastParts()));
     }
 
     static void diverged(final AuthPlayer auth, final int tick, final double x, final double y, final double z, final Simulation sim, final boolean claimOnGround) {
@@ -63,9 +63,9 @@ public final class DebugHud {
     }
 
     static void absoluteCorrection(final AuthPlayer auth, final int tick, final double x, final double y, final double z, final double vx, final double vy,
-                                   final double vz) {
-        LOGGER.info(String.format(Locale.ROOT, "[auth] absolute correction %s tick %d pos (%.6f, %.6f, %.6f) vel (%.6f, %.6f, %.6f) rtt %dms",
-            auth.player().getScoreboardName(), tick, x, y, z, vx, vy, vz, auth.transactions().rttBaseNanos() / 1_000_000L));
+                                   final double vz, final int ahead) {
+        LOGGER.info(String.format(Locale.ROOT, "[auth] absolute correction %s tick %d pos (%.6f, %.6f, %.6f) vel (%.6f, %.6f, %.6f) rtt %dms ahead %d (%s)",
+            auth.player().getScoreboardName(), tick, x, y, z, vx, vy, vz, auth.transactions().rttBaseNanos() / 1_000_000L, ahead, auth.forecastParts()));
     }
 
     static void grammar(final AuthPlayer auth, final int tick, final String rule, final net.minecraft.network.protocol.Packet<?> packet, final boolean dropped) {

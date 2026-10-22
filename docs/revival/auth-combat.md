@@ -78,8 +78,11 @@ HitCheck check = new HitValidator().validate(attacker, targetId, book, T, List<C
   simulated client tick stamped when it was simulated) gives the oldest step stamped at or after `now - cap`, never an
   older one; the box keeps the drawn sample's size and pose. That truth is the server's own, so it counts as exact, and
   `capped()` is true. The client never drew it there: a high-ping attacker has to lead (in melee, aim at the leading part
-  of the box it shows), and a backtrack or a held view gains nothing past the cap. Only a target with no step that new
-  (no path: a player outside authority, or one whose path stopped) is INVALID `REWIND`. Other players stay where the
+  of the box it shows), and a backtrack or a held view gains nothing past the cap. A path that stopped (no `TickEnd`,
+  refused or frozen windows) answers with its newest step while the target's `ServerPlayer` is still there and no server
+  teleport is pending: a lag switch or a freeze no longer makes a player unhittable (review X2-01, pvp-issues NW-2: "stays
+  hittable where it froze"). Only a target with no path (outside authority), or one that moved without a step (a teleport
+  pending or forced), is INVALID `REWIND`. Other players stay where the
   client drew them. `rewindMillis()` stays the age of the view. Neue's held-click landing (`NeueReach.authority`)
   measures its reach the same way past the cap.
 - Why `canPick` and not one answer: `ProjectileUtil.getEntityHitResult` depends on the client's entity iteration order

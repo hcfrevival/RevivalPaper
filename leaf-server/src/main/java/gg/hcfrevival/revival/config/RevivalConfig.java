@@ -24,7 +24,7 @@ import org.jspecify.annotations.Nullable;
  */
 public final class RevivalConfig {
 
-    public static final int CURRENT_VERSION = 5;
+    public static final int CURRENT_VERSION = 6;
 
     static final List<String> HEADER = List.of(
         "This is the main configuration file for RevivalPaper.",
@@ -43,12 +43,13 @@ public final class RevivalConfig {
         "server-config archives curated by Mental (github.com/owengregson/Mental, MIT, (c) 2024 Owen Gregson);",
         "their authenticity can't be verified.",
         "",
-        "Combat rule sets: classic (plain 1.7) and neue (Combo's: a 12 CPS click cap, a click buffer, DI, the tipper",
-        "and the parry) are built in. Pick one per world with legacy-combat.rules. Under combat-rules, a set named after a",
-        "preset overrides only the keys it sets; any other name starts from classic. Keys: max-cps, click-burst,",
+        "Combat rule sets: classic (plain 1.7), classic-capped (plain 1.7 with neue's 12 CPS click cap and 0.15 s click",
+        "buffer, nothing else) and neue (Combo's: the click cap and buffer, DI, the tipper and the parry) are built in.",
+        "Pick one per world with legacy-combat.rules. Under combat-rules, a set named after a preset overrides only the",
+        "keys it sets; any other name starts from classic. Keys: max-cps, click-burst,",
         "click-buffer-seconds, click-buffer-line-of-sight, influence-degrees, influence-projectiles, tipper-from,",
         "tipper-knock, sour-under, sour-knock, parry, parry-window-seconds, parry-block-hit-seconds, parry-rearm-seconds,",
-        "parry-rest-seconds, parry-projectiles, parry-jitter-ticks, riposte-seconds, stagger-seconds,",
+        "parry-rest-seconds, parry-projectiles, parry-jitter-ticks, riposte-seconds, stagger-seconds, stagger-jitter-ticks,",
         "stagger-recoil-horizontal, stagger-recoil-vertical, stagger-move-multiplier, stagger-sword-cooldown,",
         "stagger-lowers-block, and feedback.<tipper|sour|parry|parry-spark|stagger>-<sound|volume|pitch|particle|",
         "particle-count> ('' turns a sound or particle off). Seconds are rounded to whole ticks (0.05 s). Keep",
@@ -200,6 +201,10 @@ public final class RevivalConfig {
             if (version < 5) {
                 // 5: the tick clock drains a backlog now (torture F4), so a window that waited past 400 ms is refused
                 migrateDefault(reader, "authoritative.timer-queue-cap-ms", AuthoritativeSettings.TIMER_QUEUE_CAP_MS, 1000);
+            }
+            if (version < 6) {
+                // 6: the double-click alert flagged honest butterfly clickers (classic audit #12)
+                migrateDefault(reader, "authoritative.stats.double-click-ratio", AuthoritativeSettings.DOUBLE_CLICK_RATIO, 0.3);
             }
             reader.set("config-version", CURRENT_VERSION);
         }

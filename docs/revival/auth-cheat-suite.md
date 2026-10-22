@@ -152,6 +152,21 @@ that moved (83, within the budget of 91; refused windows run but move nothing, a
 
 82 of 82 blocked.
 
+## Rows added by the netcode, 2026-10-22 (88 of 88 with them)
+
+Run on the netcode batch after the merge (the NAS block-glitch fix, review round 2, cheat suite 2's H1/H2/L2), private
+live runner, sync tracker: 88 of 88 blocked, every honest phase clean. The suite's honest attacks now send their `Punch`
+(a vanilla client always does), and its client model starts an item use with the hands its view holds (H2).
+
+| Row | Verdict | Evidence |
+|---|---|---|
+| world: hold attack on a protected honey block underfoot, then walk off (honest) | blocked | the block stands; the truth never left its top; the client broke it 40 times and its own restore put it back 39 times; 0 corrections while it bobbed (40 claims held as its own hole, 40 restores modelled); 1 correction walking off; honest again 0 |
+| world: break a protected wall block and walk into the gap (honest) | blocked | the block stands, the truth stops at it, 0 corrections |
+| world: dig a protected glass pane and walk into the gap (honest) | blocked | the same through `STOP_DESTROY_BLOCK`, 0 corrections |
+| combat: hit a target whose link stopped 2 s ago, where it stopped (review X2-01) | control | landed, VALID at 2050 ms past a 202 ms cap |
+| teleport: a server teleport that reaches the client 1.2 s late, walking (review X2-03) | honest | the server player walks on 2.6 blocks from the forced teleport; the late landing rolls nothing back; accept matched, no violation |
+| (after the summary) players who quit under authority are released (review PT2-02) | pass | 0 held |
+
 ## Since the 21:45 run (51 of 70)
 
 Fixed by the netcode, each with its scenario above:

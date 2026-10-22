@@ -169,6 +169,7 @@ public final class RevivalLiveTests extends JavaPlugin implements Listener {
         new AuthCheatScenarios(this, this.server, this.level).register();
         // Neue off, then under enforce with the 450 ms rewind-cap control; runs the world peaceful without regeneration, then restores both
         new NeueLiveScenarios(this, this.server, this.level).register();
+        new AuthCheatScenarios2(this, this.server, this.level).register();
         this.next();
     }
 
@@ -513,6 +514,17 @@ public final class RevivalLiveTests extends JavaPlugin implements Listener {
     }
 
     void after(final int ticks, final String name, final Runnable action) {
+        // Dev runs: -Drevival.livetest.only=a,b keeps the steps naming a or b (and the cheat suite's own setup)
+        final String only = System.getProperty("revival.livetest.only");
+        if (only != null && !only.isBlank() && !name.startsWith("cheat suite:")) {
+            boolean wanted = false;
+            for (final String token : only.split(",")) {
+                wanted |= !token.isBlank() && name.contains(token.trim());
+            }
+            if (!wanted) {
+                return;
+            }
+        }
         this.steps.add(new Step(ticks, name, action));
     }
 

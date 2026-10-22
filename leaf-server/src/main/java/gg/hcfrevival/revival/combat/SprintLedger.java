@@ -9,6 +9,10 @@ import gg.hcfrevival.revival.config.KnockbackProfile;
  * leave the flag alone and this ledger tracks the arm instead: START_SPRINTING arms it, a landed legacy hit consumes
  * it, and only STOP then START re-arms it.
  * <p>
+ * Under authority (enforce) the simulation owns the ledger ({@link #simulated}): it starts and stops it from the client's
+ * real sprint, and sprint packets move nothing. A spoofed STOP_SPRINTING after each hit would otherwise clear the latch
+ * the held sprint key re-arms through, and every hit would get the armed knock without a w-tap (classic audit #2).
+ * <p>
  * Owned by the player's tick thread: sprint packets and hits are both handled there.
  */
 public final class SprintLedger {
@@ -16,8 +20,19 @@ public final class SprintLedger {
     private boolean sprinting;
     private boolean armed;
     private boolean armedOnGround;
+    private boolean simulated;
 
-    /** START_SPRINTING from the client. A repeat without a STOP in between doesn't re-arm. Returns whether it armed. */
+    /** The authoritative simulation owns the ledger (enforce) or the client's sprint packets do. */
+    public void simulated(final boolean simulated) {
+        this.simulated = simulated;
+    }
+
+    public boolean simulated() {
+        return this.simulated;
+    }
+
+    /** START_SPRINTING from the client, or the simulation's sprint start. A repeat without a stop in between doesn't
+     * re-arm. Returns whether it armed. */
     public boolean start(final boolean onGround) {
         if (this.sprinting) {
             return false;
@@ -28,8 +43,15 @@ public final class SprintLedger {
         return true;
     }
 
-    /** STOP_SPRINTING from the client. */
+    /** STOP_SPRINTING from the client: ignored while the simulation owns the ledger. */
     public void stop() {
+        if (!this.simulated) {
+            this.stopped();
+        }
+    }
+
+    /** The sprint stopped: the client's packet, or the simulation's own stop. */
+    public void stopped() {
         this.sprinting = false;
         this.armed = false;
     }

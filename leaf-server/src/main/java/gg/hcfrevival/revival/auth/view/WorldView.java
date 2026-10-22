@@ -26,6 +26,10 @@ import org.jspecify.annotations.Nullable;
  *   <li>{@code predictions}: blocks the client changed itself with sequence {@code s} ({@code BlockStatePredictionHandler}):
  *       a server update for a predicted position is only stored; at the {@code BlockChangedAck >= s} the block becomes
  *       the stored server state. Sequences must increase; predictions expire at the ack deadline.</li>
+ *   <li>{@code holes}: breaks the client predicted and the server denied (a protected block). The truth never has them;
+ *       only reads {@link #readAsClient as the client} (the belief, a correction's forecast, the crosshair) see the
+ *       client's block there until the ack restores it, snapping the client back if it is inside (NAS glitch
+ *       2026-10-22).</li>
  *   <li>the chunks the client holds (acked chunk data and forgets).</li>
  * </ul>
  * Reads: prediction, then sent, then pinned, then the live world. Only {@code BlockState}/{@code FluidState} come out of
@@ -40,7 +44,16 @@ public final class WorldView implements gg.hcfrevival.revival.auth.sim.SimWorld,
 
     /** Called when a prediction ends with a different block than the client predicted (it may have to snap back). */
     public interface RevertListener {
-        void onRevert(BlockPos pos, BlockState state, double playerX, double playerY, double playerZ);
+        /**
+         * {@code snap}: {@code syncBlockState} gets the player position (no teleport since the ack's sequence,
+         * {@code lastTeleportSequence < sequence}), so a client inside the block goes back there.
+         */
+        void onRevert(BlockPos pos, BlockState state, boolean snap, double playerX, double playerY, double playerZ);
+
+        /** A {@linkplain #holes() hole} ended: the client has {@code state} there again, and the same snap rule applies. */
+        default void onHoleClosed(final BlockPos pos, final BlockState state, final boolean snap, final double playerX, final double playerY,
+                                  final double playerZ) {
+        }
     }
 
     private static final class Prediction {
@@ -63,10 +76,36 @@ public final class WorldView implements gg.hcfrevival.revival.auth.sim.SimWorld,
         }
     }
 
+    // A break the client predicted that the server didn't make: the client has `client` there until the ack, then `server`
+    private static final class Hole {
+        int sequence;
+        final int window;
+        final BlockState client;
+        BlockState server;
+        final double playerX;
+        final double playerY;
+        final double playerZ;
+
+        Hole(final int sequence, final int window, final BlockState client, final BlockState server, final double playerX, final double playerY,
+             final double playerZ) {
+            this.sequence = sequence;
+            this.window = window;
+            this.client = client;
+            this.server = server;
+            this.playerX = playerX;
+            this.playerY = playerY;
+            this.playerZ = playerZ;
+        }
+    }
+
     private @Nullable ServerLevel level;
     private final Long2ObjectOpenHashMap<BlockState> sent = new Long2ObjectOpenHashMap<>();
     private final Long2ObjectOpenHashMap<BlockState> pinned = new Long2ObjectOpenHashMap<>();
     private final Long2ObjectOpenHashMap<Prediction> predictions = new Long2ObjectOpenHashMap<>();
+    private final Long2ObjectOpenHashMap<Hole> holes = new Long2ObjectOpenHashMap<>();
+    // Reads as the client (holes visible), and whether one of them read a hole since the last takeHoleRead
+    private boolean clientReads;
+    private boolean holeRead;
     private final LongOpenHashSet chunks = new LongOpenHashSet();
     private boolean chunksKnown;
     private boolean provisional;
@@ -112,6 +151,7 @@ public final class WorldView implements gg.hcfrevival.revival.auth.sim.SimWorld,
             this.sent.clear();
             this.pinned.clear();
             this.predictions.clear();
+            this.holes.clear();
             this.overlayFluids = 0;
             this.chunks.clear();
             // The prediction counter lives in the ClientLevel: a new one (another dimension) starts again at 1, and
@@ -143,6 +183,13 @@ public final class WorldView implements gg.hcfrevival.revival.auth.sim.SimWorld,
         }
         if (!this.chunkHeld(live, x >> 4, z >> 4)) {
             return net.minecraft.world.level.block.Blocks.VOID_AIR.defaultBlockState(); // EmptyLevelChunk: void air, no fluid
+        }
+        if (this.clientReads && !this.holes.isEmpty()) {
+            final Hole hole = this.holes.get(BlockPos.asLong(x, y, z));
+            if (hole != null) {
+                this.holeRead = true;
+                return hole.client;
+            }
         }
         if (!this.predictions.isEmpty() || !this.sent.isEmpty() || !this.pinned.isEmpty()) {
             final BlockState overlay = this.overlayState(BlockPos.asLong(x, y, z));
@@ -298,7 +345,45 @@ public final class WorldView implements gg.hcfrevival.revival.auth.sim.SimWorld,
         if (chunk == null || index < 0 || index >= chunk.getSectionsCount()) {
             return false;
         }
-        return chunk.getSection(index).hasFluid() || this.overlayHasFluid(chunkX, sectionY, chunkZ);
+        return chunk.getSection(index).hasFluid() || this.overlayHasFluid(chunkX, sectionY, chunkZ)
+            || this.clientReads && this.holeHasFluid(chunkX, sectionY, chunkZ);
+    }
+
+    // A broken waterlogged block leaves its water on the client
+    private boolean holeHasFluid(final int chunkX, final int sectionY, final int chunkZ) {
+        if (this.holes.isEmpty()) {
+            return false;
+        }
+        final ObjectIterator<Long2ObjectMap.Entry<Hole>> iterator = this.holes.long2ObjectEntrySet().fastIterator();
+        while (iterator.hasNext()) {
+            final Long2ObjectMap.Entry<Hole> entry = iterator.next();
+            final long key = entry.getLongKey();
+            if (BlockPos.getX(key) >> 4 == chunkX && BlockPos.getY(key) >> 4 == sectionY && BlockPos.getZ(key) >> 4 == chunkZ
+                && !entry.getValue().client.getFluidState().isEmpty()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Reads as the client from now until {@code false}: {@linkplain #holes() holes} show the client's block. The belief,
+     * a correction's forecast of the client and the crosshair pick read this way; the truth never does.
+     */
+    public void readAsClient(final boolean client) {
+        this.clientReads = client;
+    }
+
+    /** Whether a client read hit a hole since the last call (the belief's tick touched one); clears it. */
+    public boolean takeHoleRead() {
+        final boolean read = this.holeRead;
+        this.holeRead = false;
+        return read;
+    }
+
+    /** Denied breaks the client still has (its ack hasn't landed). */
+    public int holes() {
+        return this.holes.size();
     }
 
     private boolean overlayHasFluid(final int chunkX, final int sectionY, final int chunkZ) {
@@ -439,6 +524,12 @@ public final class WorldView implements gg.hcfrevival.revival.auth.sim.SimWorld,
             prediction.server = state; // ClientLevel.setServerVerifiedBlockState: stored, the predicted block stays
             return;
         }
+        if (!this.holes.isEmpty()) {
+            final Hole hole = this.holes.get(key);
+            if (hole != null) {
+                hole.server = state; // stored for the restore; the truth reads it now (it never had the hole)
+            }
+        }
         this.clientHas(key, state);
     }
 
@@ -473,6 +564,9 @@ public final class WorldView implements gg.hcfrevival.revival.auth.sim.SimWorld,
         if (!this.predictions.isEmpty()) {
             this.predictions.keySet().removeIf(key -> (BlockPos.getX(key) >> 4) == chunkX && (BlockPos.getZ(key) >> 4) == chunkZ);
         }
+        if (!this.holes.isEmpty()) {
+            this.holes.keySet().removeIf(key -> (BlockPos.getX(key) >> 4) == chunkX && (BlockPos.getZ(key) >> 4) == chunkZ);
+        }
     }
 
     /**
@@ -483,6 +577,17 @@ public final class WorldView implements gg.hcfrevival.revival.auth.sim.SimWorld,
      */
     public boolean predict(final BlockPos pos, final int sequence, final int window, final double playerX, final double playerY, final double playerZ,
                            final boolean admitted) {
+        return this.predict(pos, sequence, window, playerX, playerY, playerZ, admitted, null, playerX, playerY, playerZ);
+    }
+
+    /**
+     * As {@link #predict(BlockPos, int, int, double, double, double, boolean)}; {@code clientBroke}: the block the client
+     * left there if this action was a break it predicted ({@code MultiPlayerGameMode.destroyBlock}: its fluid, or air),
+     * else null. A break the server denied becomes a {@linkplain #holes() hole}, with the client's own position
+     * ({@code clientX..}) for the restore's snap.
+     */
+    public boolean predict(final BlockPos pos, final int sequence, final int window, final double playerX, final double playerY, final double playerZ,
+                           final boolean admitted, final @Nullable BlockState clientBroke, final double clientX, final double clientY, final double clientZ) {
         if (sequence < this.lastSequence || this.lastSequence != 0 && sequence - this.lastSequence > MAX_SEQUENCE_JUMP) {
             // Backwards, or so far ahead it would make every later honest sequence look backwards (review E10)
             this.sequenceViolations++;
@@ -497,7 +602,17 @@ public final class WorldView implements gg.hcfrevival.revival.auth.sim.SimWorld,
         final Prediction existing = this.predictions.get(key);
         final BlockState before = existing != null ? existing.server : this.blockStateWithoutPrediction(key, pos);
         if (existing == null && before == live) {
-            return true; // the server did not change it: nothing the truth would honor
+            // The server did not change it: nothing the truth would honor (§15.2). A break the client made anyway stays on
+            // the client until the ack: its belief walks or falls into it, then the restore snaps it back
+            if (clientBroke != null && clientBroke != before) {
+                final Hole hole = this.holes.get(key);
+                if (hole != null) {
+                    hole.sequence = sequence; // retainKnownServerState: the first server state and player position stay
+                } else {
+                    this.holes.put(key, new Hole(sequence, window, clientBroke, before, clientX, clientY, clientZ));
+                }
+            }
+            return true;
         }
         // BlockStatePredictionHandler.retainKnownServerState keeps the first server state recorded for a position
         this.predictions.put(key, new Prediction(sequence, window, live, before, playerX, playerY, playerZ));
@@ -523,26 +638,45 @@ public final class WorldView implements gg.hcfrevival.revival.auth.sim.SimWorld,
         this.endPredictions(Integer.MAX_VALUE, window, listener);
     }
 
+    // endPredictionsUpTo: syncBlockState(pos, server state, lastTeleportSequence < sequence ? playerPos : null). An expired
+    // one never saw its ack: judged by its own sequence, the least the ack can carry
     private void endPredictions(final int sequence, final int window, final RevertListener listener) {
-        if (this.predictions.isEmpty()) {
-            return;
+        if (!this.predictions.isEmpty()) {
+            final ObjectIterator<Long2ObjectMap.Entry<Prediction>> iterator = this.predictions.long2ObjectEntrySet().fastIterator();
+            while (iterator.hasNext()) {
+                final Long2ObjectMap.Entry<Prediction> entry = iterator.next();
+                final Prediction prediction = entry.getValue();
+                if (prediction.sequence > sequence || prediction.window > window) {
+                    continue;
+                }
+                final long key = entry.getLongKey(); // before remove(): a fast iterator's entry is reused by the shift after it
+                iterator.remove();
+                if (window != Integer.MAX_VALUE) {
+                    this.expired++;
+                }
+                this.clientHas(key, prediction.server);
+                if (prediction.server != prediction.predicted) {
+                    this.reverts++;
+                    final int acked = window != Integer.MAX_VALUE ? prediction.sequence : sequence;
+                    listener.onRevert(BlockPos.of(key), prediction.server, this.lastTeleportSequence < acked, prediction.playerX, prediction.playerY,
+                        prediction.playerZ);
+                }
+            }
         }
-        final ObjectIterator<Long2ObjectMap.Entry<Prediction>> iterator = this.predictions.long2ObjectEntrySet().fastIterator();
-        while (iterator.hasNext()) {
-            final Long2ObjectMap.Entry<Prediction> entry = iterator.next();
-            final Prediction prediction = entry.getValue();
-            if (prediction.sequence > sequence || prediction.window > window) {
-                continue;
-            }
-            iterator.remove();
-            if (window != Integer.MAX_VALUE) {
-                this.expired++;
-            }
-            final long key = entry.getLongKey();
-            this.clientHas(key, prediction.server);
-            if (prediction.server != prediction.predicted) {
-                this.reverts++;
-                listener.onRevert(BlockPos.of(key), prediction.server, prediction.playerX, prediction.playerY, prediction.playerZ);
+        if (!this.holes.isEmpty()) {
+            final ObjectIterator<Long2ObjectMap.Entry<Hole>> iterator = this.holes.long2ObjectEntrySet().fastIterator();
+            while (iterator.hasNext()) {
+                final Long2ObjectMap.Entry<Hole> entry = iterator.next();
+                final Hole hole = entry.getValue();
+                if (hole.sequence > sequence || hole.window > window) {
+                    continue;
+                }
+                final long key = entry.getLongKey(); // before remove(), as above
+                iterator.remove();
+                if (hole.server != hole.client) {
+                    final int acked = window != Integer.MAX_VALUE ? hole.sequence : sequence;
+                    listener.onHoleClosed(BlockPos.of(key), hole.server, this.lastTeleportSequence < acked, hole.playerX, hole.playerY, hole.playerZ);
+                }
             }
         }
     }
@@ -568,6 +702,7 @@ public final class WorldView implements gg.hcfrevival.revival.auth.sim.SimWorld,
         this.sent.clear();
         this.pinned.clear();
         this.predictions.clear();
+        this.holes.clear();
         this.overlayFluids = 0;
     }
 
@@ -581,6 +716,7 @@ public final class WorldView implements gg.hcfrevival.revival.auth.sim.SimWorld,
         }
         this.pinned.clear();
         this.predictions.clear();
+        this.holes.clear();
     }
 
     private void clearChunk(final int chunkX, final int chunkZ) {

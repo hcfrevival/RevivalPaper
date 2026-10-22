@@ -98,6 +98,8 @@ public final class SolidMirrors {
     /** One entity on the viewer's client. */
     static final class Solid {
         int id;
+        // Its slot in `all` (review PT2-07, X2-06: removal swaps the last copy in, O(1) instead of a list scan)
+        int index;
         int kind;
         /** A placeholder: the client holds this entity in a state the log never saw (before activation, a lost log). */
         boolean unknown;
@@ -201,6 +203,32 @@ public final class SolidMirrors {
     }
 
     /** Applies one packet about these entities, as the client's handler does (ClientPacketListener). */
+    /**
+     * As {@link #apply(Packet)}; {@code exact} false for an entry forced at its deadline (review R2C-06): the copy
+     * changes before the client's does, so it is untrusted and re-paired once acks catch up, like a remote player's
+     * mirror, instead of colliding as exact ticks early.
+     */
+    public void apply(final Packet<?> packet, final boolean exact) {
+        this.apply(packet);
+        if (exact) {
+            return;
+        }
+        final int id = switch (packet) {
+            case final ClientboundAddEntityPacket add -> add.getId();
+            case final ClientboundMoveEntityPacket move -> MirrorEvent.entityId(move);
+            case final ClientboundEntityPositionSyncPacket sync -> sync.id();
+            case final ClientboundTeleportEntityPacket teleport -> teleport.id();
+            case final ClientboundSetEntityDataPacket data -> data.id();
+            case final ClientboundUpdateAttributesPacket attributes -> attributes.getEntityId();
+            case final ClientboundSetPassengersPacket passengers -> passengers.getVehicle();
+            default -> -1;
+        };
+        final Solid s = id == -1 ? null : this.byId.get(id);
+        if (s != null) {
+            this.broke(s);
+        }
+    }
+
     public void apply(final Packet<?> packet) {
         switch (packet) {
             case final ClientboundAddEntityPacket add -> this.add(add);
@@ -225,6 +253,7 @@ public final class SolidMirrors {
         this.byId.clear();
         this.all.clear();
         this.repairs.clear();
+        this.movable = 0;
     }
 
     /**
@@ -266,7 +295,11 @@ public final class SolidMirrors {
         s.exact = false;
         s.repairQueued = true;
         this.byId.put(id, s);
+        s.index = this.all.size();
         this.all.add(s);
+        if (s.kind != SHULKER && s.kind != 0) {
+            this.movable++;
+        }
     }
 
     public int size() {
@@ -303,15 +336,30 @@ public final class SolidMirrors {
             this.setPos(s, packet.getX(), packet.getY(), packet.getZ());
         }
         this.byId.put(s.id, s);
+        s.index = this.all.size();
         this.all.add(s);
+        if (s.kind != SHULKER && s.kind != 0) {
+            this.movable++;
+        }
     }
 
     private void remove(final int id) {
         final Solid s = this.byId.remove(id);
-        if (s != null) {
-            this.all.remove(s);
+        if (s == null) {
+            return;
+        }
+        final Solid last = this.all.remove(this.all.size() - 1);
+        if (last != s) {
+            this.all.set(s.index, last); // order in `all` means nothing: collect sorts into the client's order
+            last.index = s.index;
+        }
+        if (s.kind != SHULKER && s.kind != 0) {
+            this.movable--;
         }
     }
+
+    // Boats and happy ghasts held: what an opening shulker lid can push (no scan of every copy for a lid with none)
+    private int movable;
 
     // ClientPacketListener.handleMoveEntity
     private void move(final ClientboundMoveEntityPacket packet) {
@@ -577,7 +625,7 @@ public final class SolidMirrors {
         // Every entity in the opening slab moves (Entity.move(SHULKER)): the player, and boats or ghasts this copy then
         // no longer follows
         final AABB slab = Shulker.getProgressDeltaAabb(scale, s.attachFace.getOpposite(), physicalOld, physical, new Vec3(s.x, s.y, s.z));
-        for (int i = 0, n = this.all.size(); i < n; i++) {
+        for (int i = 0, n = this.movable == 0 ? 0 : this.all.size(); i < n; i++) {
             final Solid other = this.all.get(i);
             if (other.kind != SHULKER && !other.unknown && slab.intersects(other.minX, other.minY, other.minZ, other.maxX, other.maxY, other.maxZ)) {
                 this.broke(other);

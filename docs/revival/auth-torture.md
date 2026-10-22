@@ -382,6 +382,44 @@ the forced-K1 run above (`k1`) and the live K scenarios (half a tick on localhos
 | K | K per viewer: a viewer's own ack jitter under `replication.low-jitter-ms` (25) for `step-switch-seconds` (5) gets `low-jitter-step-ticks` (1), above `high-jitter-ms` (35) for 5 s K2 again; a switch re-pairs the players fed to it (without the 5 s, a join's or a teleport's ack burst flapped K2/K1 two seconds apart). K1 only on a full 256-ack jitter window: a session's first acks under-read a jittery link (a 22 ms reading at RTT 150 jitter 30 put a viewer on K1, and its hits were judged past a cap sized from that reading). Live: "K per viewer" scenarios (K1 0.5 tick behind K2 on localhost, the mirror exact, no freeze). |
 | Load P0 | Once every forced entry has landed: one absolute resync if the client is off, and the viewer's mirrors re-paired then (periodic mirror and solid re-pairs wait while forced entries are outstanding). Activation seeds the sticky keys from `getLastClientInput()` and a grounded player's resting vy. |
 
+## NAS block-glitch fix (netcode, 2026-10-22, after the merge)
+
+From a real Lunar playtest on the NAS (RTT 31 ms): after breaking protected glass panes and honey under and next to
+itself, the player was corrected every 2 ticks for seconds wherever it ran, alternating absolute and relative, each
+accept a tick of motion off; only standing still stopped it. Reproduced here with the vanilla client at **RTT 60**
+(`r60j0`, new condition, with `r110j0`): the 2 s freeze's aftermath took 54 corrections at 60 ms and 37 at 110 ms
+(`runs/glitch-base60`), alternating every 2 ticks exactly as on the NAS.
+
+- **Corrections forecast to the wrong tick.** `n̂ = round(rttBase / 50)` is one tick short whenever the trip to the
+  client's next tick rounds down: RTT 50-74, 100-124 ..., or 30 ms behind a busy server tick (the NAS). Every accept was
+  one tick of motion off, the backstop (not rate-limited) chased it every other tick, and its absolute fallback used the
+  same forecast. Fix: `LandingLag` measures where pings land (pong window minus the window the client was in at the
+  flush, per flush kind, median of the last 16 within `landing-sample-ms`, none from a stall, a client freeze or a
+  catch-up), a correction is forecast `(window the client is in − window being run) + trip`, a correction waits while
+  windows are queued behind the one running (at most `max-banked-ticks`), the backstop counts against twice
+  `max-corrections-per-second`, and a within-threshold claim re-bases the belief on the truth (a belief left to its own
+  velocity drifted and carried a phantom jump into the next forecast).
+- **The honey.** A break the server denies stays a hole on the client until its ack; holding attack re-breaks it every
+  tick it is back, so the client sinks a little and vanilla's restore snaps it up again. Our correction cancelled that
+  snap (`onTeleport`), left the client inside the restored block, and it fell through. Fix: `WorldView` holes (the
+  belief and forecast read them, the truth never does), claims the belief explains in a hole are held, the restore's
+  snap is modelled (and the revert's block position, read after a fast iterator's `remove()`, fixed). Live: 40 re-breaks,
+  0 corrections.
+- **Sub-µm gaps** never count toward `correction-persist-ticks` (`correction-persist-min` 1e-6): no teleport every 20
+  ticks for a rounding gap. Such a gap now stays until a collision or a real correction removes it, so `exact%` in the
+  hitch set reads 64-99 % where every claim is within a µm.
+
+| `t_hitch_client_over` (2 s client freeze) | before (`glitch-base60`, `merge-hitch`) | after (`glitch-fix7-hitch`) |
+|---|---|---|
+| r30j0 | 4 | 4 |
+| r60j0 | 54 | 4 |
+| r110j0 | 37 | 4 |
+| r80j10 | 13 | 10 |
+| r150j30 | 20 | 16 |
+
+`t_hitch_client` (0.3/0.55/1.05 s) and `t_hitch_server` (0.36/0.76/1.26 s): 0 corrections before and after. Marathon
+(`glitch-fix7-marathon`): 0 corrections and 100 % exact in all seven conditions, as before.
+
 ## Failures: root cause, fix, owner
 
 Ordered by what a player feels. The owners: **netcode** (`auth/`, `net/`, `view/`, patches), **combat** (`CombatWiring`,

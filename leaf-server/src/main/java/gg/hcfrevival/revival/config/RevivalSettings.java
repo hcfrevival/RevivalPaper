@@ -17,7 +17,7 @@ import org.jspecify.annotations.Nullable;
  * @param knockbackAutosave whether {@code /revival kb} edits are written to revival.yml at once
  * @param swordBlocking the global {@code sword-blocking} section
  * @param authoritative the global {@code authoritative} section (server-authoritative movement and hits)
- * @param combatRules every combat rule set by name: the presets ({@code classic}, {@code neue}), overridden or joined by {@code combat-rules}
+ * @param combatRules every combat rule set by name: the presets ({@code classic}, {@code classic-capped}, {@code neue}), overridden or joined by {@code combat-rules}
  */
 public record RevivalSettings(
     int configVersion,

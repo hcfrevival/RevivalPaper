@@ -18,6 +18,11 @@ import gg.hcfrevival.revival.auth.AuthMode;
  * @param attackEyeOffsetCap while the client is off the truth (a correction decided, rate-limited or in flight), its
  *                           attacks are cast from its claim when that is within this many blocks of the truth on every
  *                           axis, else from the truth (review E3: a claim chose its own correction's size)
+ * @param attackEyeForecastTolerance ...and only for a gap the server caused (entries forced at their deadline, a window the
+ *                                   timer refused, a denied break, a revert snap) while every claim since the client was
+ *                                   last on the truth landed within this many blocks of the client's own state stepped
+ *                                   with its own inputs (the belief), with no block between the truth and the claim; a
+ *                                   gap the claim made up casts from the truth (classic audit #1)
  * @param correctionBudget summed small divergences past this send a correction
  * @param correctionBudgetDecay the budget is multiplied by this every client tick, so isolated float noise never adds up
  * @param maxCorrectionsPerSecond corrections sent to one player per second at most
@@ -25,6 +30,12 @@ import gg.hcfrevival.revival.auth.AuthMode;
  *                              the client is stuck off the truth, where a relative one can't reach it
  * @param correctionPersistTicks a claim off the truth by less than the threshold this many ticks in a row is corrected
  *                               anyway, so every client converges
+ * @param correctionPersistMin a claim off by less than this never counts toward {@code correction-persist-ticks}: a
+ *                             sub-µm gap is float noise a teleport can't remove, only add to (counted, never corrected)
+ * @param landingProbeMs between server ticks, a window flush that sent nothing gets a lone ping when this kind of flush
+ *                       wasn't measured for this long, so corrections know where they land (LandingLag)
+ * @param landingSampleMs corrections are forecast from the landings of pings that came back within this long; with
+ *                        none, from {@code ceil(rttBase / 50)}
  * @param maxRewindMs a sanity bound on the per-attacker rewind cap, {@code min(rttBase, rtt-ceiling-ms) + the attacker's
  *                    own display delay + jitter + rewind-slack-ms}; the ceiling on ping is {@code rtt-ceiling-ms}
  * @param rewindJitterFactor the jitter allowance in that cap: this times the attacker's ack-RTT spread (p90 − p10)
@@ -102,7 +113,9 @@ import gg.hcfrevival.revival.auth.AuthMode;
  * @param visibilityEffectReach anti-ESP: sounds and particles this close to a hidden player's box are its own and are not
  *                              sent either (steps, hits, eating, crits)
  * @param anomalyAlerts fire {@code AuthInputAnomalyEvent} when click or aim statistics pass their thresholds
- * @param anomalyDoubleClickRatio double-click alert: share of attack ticks with two or more attacks
+ * @param anomalyDoubleClickRatio double-click alert: share of attack ticks with two or more attacks. 1.0 (default): only a
+ *                                client that doubles every attack tick; 0.3 flagged honest butterfly clickers at 16-20 CPS
+ *                                (0.4-0.5) and caught no autoclicker (about 0) (classic audit #12)
  * @param anomalyMinAttackTicks double-click alert: attack ticks needed before it is judged
  * @param anomalyAimGcdMissRatio aim alert: share of turns that share no mouse step with the others
  * @param anomalyMinTurns aim alert: turns needed before it is judged
@@ -113,7 +126,8 @@ import gg.hcfrevival.revival.auth.AuthMode;
  * @param traceDirectory where {@code /revival auth trace} writes RVTR files, relative to the server folder
  * @param externalMoverBlockWindowTicks after a piston or shulker box event, nearby ticks may be pushed for this many
  *                                      client ticks (a piston moves for 2-3 ticks, a shulker box lid for 10)
- * @param externalMoverBlockRange how far from the piston or shulker box (a piston can push 12 blocks)
+ * @param externalMoverBlockRange how far along its facing a piston's push lane reaches (13 at most: its head and the 12
+ *                                blocks it can push; classic audit #4)
  * @param externalMoverBand in a tick a piston or shulker box may push, a claim this close to the truth on every axis is
  *                          adopted (a push moves a player at most about 0.51 a tick); the velocity stays the truth's
  * @param externalMoverDriftCap the most adopted push per axis within a {@code rebase-drift-window-ticks} window (a piston
@@ -138,11 +152,15 @@ public record AuthoritativeSettings(
     int rebaseDriftWindowTicks,
     double correctionThreshold,
     double attackEyeOffsetCap,
+    double attackEyeForecastTolerance,
     double correctionBudget,
     double correctionBudgetDecay,
     int maxCorrectionsPerSecond,
     int correctionRepeatLimit,
     int correctionPersistTicks,
+    double correctionPersistMin,
+    int landingProbeMs,
+    int landingSampleMs,
     int maxRewindMs,
     double rewindJitterFactor,
     int rewindSlackMs,
@@ -212,6 +230,7 @@ public record AuthoritativeSettings(
     public static final double EXTERNAL_MOVER_ENTITY_RANGE = 0.1;
     public static final int MIRROR_HISTORY_TICKS = 16;
     public static final int TIMER_QUEUE_CAP_MS = 400;
+    public static final double DOUBLE_CLICK_RATIO = 1.0;
 
     private static String apolloRules(final ConfigReader reader) {
         final String value = reader.getString(PATH + "client-profiles.apollo-rules", "follow").trim().toLowerCase(java.util.Locale.ROOT);
@@ -254,11 +273,15 @@ public record AuthoritativeSettings(
             Math.max(1, reader.getInt(PATH + "rebase-drift-window-ticks", 20)),
             Math.max(0.0, reader.getDouble(PATH + "correction-threshold", 1.0E-3)),
             Math.max(0.0, reader.getDouble(PATH + "attack-eye-offset-cap", 0.5)),
+            Math.max(0.0, reader.getDouble(PATH + "attack-eye-forecast-tolerance", 0.03)),
             Math.max(0.0, reader.getDouble(PATH + "correction-budget", 0.01)),
             Math.clamp(reader.getDouble(PATH + "correction-budget-decay", 0.95), 0.0, 1.0),
             Math.max(1, reader.getInt(PATH + "max-corrections-per-second", 5)),
             Math.max(1, reader.getInt(PATH + "correction-repeat-limit", 2)),
             Math.max(1, reader.getInt(PATH + "correction-persist-ticks", 20)),
+            Math.max(0.0, reader.getDouble(PATH + "correction-persist-min", 1.0E-6)),
+            Math.max(50, reader.getInt(PATH + "landing-probe-ms", 500)),
+            Math.max(100, reader.getInt(PATH + "landing-sample-ms", 2000)),
             Math.max(0, reader.getInt(PATH + "max-rewind-ms", MAX_REWIND_MS)),
             Math.max(0.0, reader.getDouble(PATH + "rewind-jitter-factor", 1.0)),
             Math.max(0, reader.getInt(PATH + "rewind-slack-ms", 150)),
@@ -301,7 +324,7 @@ public record AuthoritativeSettings(
             Math.max(1, reader.getInt(PATH + "visibility.max-checks-per-tick", 512)),
             Math.max(0.0, reader.getDouble(PATH + "visibility.effect-reach", 1.5)),
             reader.getBoolean(PATH + "stats.anomaly-alerts", true),
-            Math.clamp(reader.getDouble(PATH + "stats.double-click-ratio", 0.3), 0.0, 1.0),
+            Math.clamp(reader.getDouble(PATH + "stats.double-click-ratio", DOUBLE_CLICK_RATIO), 0.0, 1.0),
             Math.max(1, reader.getInt(PATH + "stats.double-click-min-attack-ticks", 40)),
             Math.clamp(reader.getDouble(PATH + "stats.aim-gcd-miss-ratio", 0.5), 0.0, 1.0),
             Math.max(1, reader.getInt(PATH + "stats.aim-min-turns", 200)),

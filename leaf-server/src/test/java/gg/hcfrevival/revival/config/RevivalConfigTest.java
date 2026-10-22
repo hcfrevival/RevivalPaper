@@ -125,6 +125,27 @@ class RevivalConfigTest {
     }
 
     @Test
+    void version5DoubleClickAlertStopsFlaggingButterflyClickers() throws Exception {
+        // Version 6 (classic audit #12): 0.3 flagged honest butterfly clickers and no autoclicker
+        Files.writeString(this.file.toPath(), """
+            config-version: 5
+            authoritative:
+              stats:
+                double-click-ratio: 0.3
+            """);
+        RevivalConfig.init(this.file);
+        assertEquals(1.0, RevivalConfig.settings().authoritative().anomalyDoubleClickRatio());
+        Files.writeString(this.file.toPath(), """
+            config-version: 5
+            authoritative:
+              stats:
+                double-click-ratio: 0.6
+            """);
+        RevivalConfig.init(this.file);
+        assertEquals(0.6, RevivalConfig.settings().authoritative().anomalyDoubleClickRatio(), "an owner's own value stays");
+    }
+
+    @Test
     void malformedFileStopsStartupAndIsNotOverwritten() throws Exception {
         Files.writeString(this.file.toPath(), BROKEN);
 

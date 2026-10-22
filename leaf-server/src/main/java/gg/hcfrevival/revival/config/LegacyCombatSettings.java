@@ -37,7 +37,8 @@ import org.jspecify.annotations.Nullable;
  * @param projectiles which projectiles hit and knock like 1.7.10
  * @param damageWindows separate damage windows for melee, projectile, mob and other damage
  * @param rulesName the {@code rules} (combat rule set) this world uses
- * @param rules that rule set: {@link CombatRules#CLASSIC} is plain 1.7, {@code neue} is Combo's (docs/revival/neue-combat.md)
+ * @param rules that rule set: {@link CombatRules#CLASSIC} is plain 1.7, {@code classic-capped} adds Neue's click cap and
+ *              buffer, {@code neue} is Combo's (docs/revival/neue-combat.md)
  */
 public record LegacyCombatSettings(
     Set<Identifier> weaponItems,
@@ -128,7 +129,7 @@ public record LegacyCombatSettings(
         String rulesName = reader.getWorldString(world, PATH + "rules", CombatRules.DEFAULT);
         CombatRules rules = combatRules.get(rulesName);
         if (rules == null) {
-            reader.problem(ConfigReader.worldPath(world, PATH + "rules"), rulesName, "classic, neue or a rule set under " + CombatRules.SECTION, CombatRules.DEFAULT);
+            reader.problem(ConfigReader.worldPath(world, PATH + "rules"), rulesName, String.join(", ", CombatRules.PRESETS.keySet()) + " or a rule set under " + CombatRules.SECTION, CombatRules.DEFAULT);
             rulesName = CombatRules.DEFAULT;
             rules = CombatRules.CLASSIC;
         }

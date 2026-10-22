@@ -30,4 +30,35 @@ class ArrivalStampsTest {
         }
         assertEquals(3L, stamps.take(Long.MAX_VALUE), "a later arrival than its own: less credit, never more");
     }
+
+    @Test
+    void windowsWaitingForTheMainThreadWidenTheCredit() {
+        // Torture r80j10: a 725 ms server hitch left 14 TickEnds queued; the hitched tick's flush, stamped 10 past the
+        // last window handled, was due as soon as they ran. A stall (nothing arriving) keeps X2-02's bound
+        final ArrivalStamps stamps = new ArrivalStamps();
+        assertEquals(10, stamps.creditBound(10), "nothing waiting: max-banked-ticks");
+        for (int i = 0; i < 14; i++) {
+            stamps.stamp(i);
+        }
+        assertEquals(24, stamps.creditBound(10), "fourteen sent and waiting");
+        stamps.take(Long.MAX_VALUE);
+        assertEquals(23, stamps.creditBound(10), "one handled");
+    }
+
+    @Test
+    void installsAgainAfterAnUninstall() {
+        // Review PT2-01 / R2C-01: authority off then on again re-adds the same handler; a non-sharable one threw
+        final io.netty.channel.embedded.EmbeddedChannel channel = new io.netty.channel.embedded.EmbeddedChannel();
+        channel.pipeline().addLast(net.minecraft.network.HandlerNames.PACKET_HANDLER, new io.netty.channel.ChannelInboundHandlerAdapter());
+        final ArrivalStamps stamps = new ArrivalStamps();
+        for (int round = 0; round < 3; round++) {
+            org.junit.jupiter.api.Assertions.assertTrue(stamps.install(channel), "install " + round);
+            channel.writeInbound(net.minecraft.network.protocol.game.ServerboundClientTickEndPacket.INSTANCE);
+            org.junit.jupiter.api.Assertions.assertTrue(stamps.take(Long.MAX_VALUE) < Long.MAX_VALUE, "stamped through the handler, round " + round);
+            stamps.uninstall();
+            stamps.uninstall(); // twice: a no-op
+            org.junit.jupiter.api.Assertions.assertNull(channel.pipeline().get(ArrivalStamps.HANDLER));
+        }
+        channel.finishAndReleaseAll();
+    }
 }

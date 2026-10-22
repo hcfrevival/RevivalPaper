@@ -9,8 +9,12 @@ RevivalLiveTests plugin and a random nonce. The plugin drives two fake players t
 handlers and logs REVIVAL_LIVE_PASS / REVIVAL_LIVE_FAIL lines carrying that nonce; this script fails unless
 REVIVAL_LIVE_DONE <nonce> appears and no failure does. The Mojang server jar and libraries Paperclip
 unpacks are cached in leaf-server/build/revival-live/ so later runs start offline.
+
+REVIVAL_LIVE_RULES=<rule set> runs both cheat suites on that rule set (classic when unset; classic-capped is the
+NAS world's).
 """
 
+import os
 import pathlib
 import secrets
 import shutil
@@ -59,7 +63,8 @@ def run(name: str, async_tracker: bool, server_jar: pathlib.Path, plugin: pathli
     with log.open("w") as stream:
         try:
             subprocess.run(
-                ["java", f"-Drevival.livetest.nonce={nonce}", "-Dpaper.disableMigrationDelay=true",
+                ["java", f"-Drevival.livetest.nonce={nonce}", f"-Drevival.livetest.rules={os.environ.get('REVIVAL_LIVE_RULES', '')}",
+                 "-Dpaper.disableMigrationDelay=true",
                  "-Dterminal.jline=false", "-Dterminal.ansi=false", "-Xms512M", "-Xmx2G",
                  "-jar", str(server_jar), "--nogui"],
                 cwd=server, stdin=subprocess.DEVNULL, stdout=stream, stderr=subprocess.STDOUT,

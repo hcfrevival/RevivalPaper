@@ -142,6 +142,9 @@ final class AuthLiveScenarios {
         this.tests.after(1, "auth: K per viewer: a viewer with steady acks moves to K1", this::k1Enabled);
         this.tests.after(320, "auth: K per viewer: the viewer is on K1 (torture K1), walking back", this::k1Walk);
         this.tests.after(60, "auth: K per viewer: one-tick steps, the mirror exact and a tick less behind", this::k1Checked);
+        this.tests.after(1, "auth: K per viewer: the walker is teleported out of exact-radius", () -> this.k1Away(40.0));
+        this.tests.after(20, "auth: K per viewer: and back in", () -> this.k1Away(-40.0));
+        this.tests.after(20, "auth: K per viewer: a walker coming into exact-radius is fed at the viewer's K1 (review PT2-04)", this::k1BackChecked);
         this.hitRun(true);
         this.hitRun(false);
         this.tests.after(1, "auth: a double-tap sprint sword hit and an axe hit deal the same damage and knock with authority on and off", this::hitCompare);
@@ -569,7 +572,7 @@ final class AuthLiveScenarios {
             if (k == 0) {
                 // Right click: the client starts blocking before it moves (MultiPlayerGameMode.useItem)
                 this.actions.add(new ServerboundUseItemPacket(InteractionHand.MAIN_HAND, 1, this.yaw, 0.0F));
-                this.clientModel.startUsingItem(InteractionHand.MAIN_HAND);
+                this.clientModel.startUsingItem(InteractionHand.MAIN_HAND, this.clientView);
             } else if (k == 8) {
                 // Number key 2 in handleKeybinds: this tick already moves with the empty hand (the use stops) ...
                 this.clientView.items.select(1);
@@ -809,7 +812,9 @@ final class AuthLiveScenarios {
         final long switches = viewerAuth.stats().pathStepSwitches() - this.switchesBefore;
         this.tests.check(viewerAuth.pathStepTicks(gg.hcfrevival.revival.Revival.settings().authoritative()) == 1 && switches == 1,
             "the viewer's own jitter is low (localhost): K1, one switch (" + switches + ")");
-        this.tests.check(gg.hcfrevival.revival.auth.PathWiring.feeds(this.auth, this.viewer.player), "re-paired onto the feed at K1");
+        // Real-client run N4: the switch continues the walker's path at K1, no re-pair (which froze it for two ticks)
+        this.tests.check(gg.hcfrevival.revival.auth.PathWiring.fedStepTicks(this.auth, this.viewer.player) == 1, "fed at K1 in place, no re-pair ("
+            + gg.hcfrevival.revival.auth.PathWiring.fedStepTicks(this.auth, this.viewer.player) + ")");
         this.viewerMark = this.viewer.received.size();
         this.walked = 0;
         this.yaw = 180.0F; // north, back towards where it started
@@ -826,6 +831,16 @@ final class AuthLiveScenarios {
         final double k1Lag = this.mirrorLag(1, 0.25, 3.0);
         this.tests.check(k1Lag <= this.k2Lag - 0.4, "K1 shows the walker sooner (half a tick here: localhost has no jitter to wait out): " + k1Lag + " ticks behind against " + this.k2Lag + " at K2");
         this.yaw = 0.0F;
+    }
+
+    private void k1Away(final double dx) {
+        final net.minecraft.server.level.ServerPlayer walker = this.auth.player();
+        walker.connection.teleport(walker.getX() + dx, walker.getY(), walker.getZ(), walker.getYRot(), walker.getXRot());
+    }
+
+    private void k1BackChecked() {
+        final int fedAt = gg.hcfrevival.revival.auth.PathWiring.fedStepTicks(this.auth, this.viewer.player);
+        this.tests.check(fedAt == 1, "fed again at K1 through the into-range branch, not the feed's default K2 (" + fedAt + ")");
     }
 
     // Moves of the walker since viewerMark are one-step K-tick paths; the mirror's lag behind the truth over the walk's
@@ -941,6 +956,7 @@ final class AuthLiveScenarios {
             if (k == attackAt) {
                 this.sprintAtSwing = this.clientModel.sprinting();
                 this.actions.add(new net.minecraft.network.protocol.game.ServerboundAttackPacket(this.viewer.player.getId()));
+                this.actions.add(new net.minecraft.network.protocol.game.ServerboundPunchPacket()); // startAttack swings
                 this.clientModel.clientAttack(true, this.clientView);
             } else if (k > attackAt) {
                 this.keys = Input.EMPTY;
@@ -1007,7 +1023,7 @@ final class AuthLiveScenarios {
             if (k == 0) {
                 // Right click: block with the sword
                 this.actions.add(new ServerboundUseItemPacket(InteractionHand.MAIN_HAND, 2, this.yaw, 0.0F));
-                this.clientModel.startUsingItem(InteractionHand.MAIN_HAND);
+                this.clientModel.startUsingItem(InteractionHand.MAIN_HAND, this.clientView);
             } else if (k >= 2 && k <= 4) {
                 // A vanilla client throws attack clicks away while it uses an item; this one sends them
                 this.actions.add(new net.minecraft.network.protocol.game.ServerboundAttackPacket(this.viewer.player.getId()));
@@ -1127,6 +1143,8 @@ final class AuthLiveScenarios {
     // §15.2: the client's chunks after a far teleport ------------------------------------------------------------------
 
     private double farFloorY;
+    private int farMark;
+    private long farOrigin;
 
     // pvp-issues PR-8 (NAS 2026-10-22: /tp to the gym dropped the player through the floor and out of the world): the
     // client applies a chunk only when it arrives and has void air where it has none, so the teleport must come after it
@@ -1137,6 +1155,8 @@ final class AuthLiveScenarios {
         this.preTick = tick -> {
         };
         this.farFloorY = this.client.player.getY();
+        this.farMark = this.client.received.size();
+        this.farOrigin = net.minecraft.world.level.ChunkPos.pack(Mth.floor(this.client.player.getX()) >> 4, Mth.floor(this.client.player.getZ()) >> 4);
         final int x = Mth.floor(this.client.player.getX()) + distance;
         final int z = Mth.floor(this.client.player.getZ());
         if (distance < 500) {
@@ -1148,6 +1168,21 @@ final class AuthLiveScenarios {
 
     private void farTeleportChecked() {
         final Simulation sim = this.auth.simulation();
+        // Real-client run N5: the origin's chunks are forgotten only after the (held) teleport, never under the client
+        int teleportAt = -1;
+        int forgetAt = -1;
+        for (int i = this.farMark; i < this.client.received.size(); i++) {
+            final net.minecraft.network.protocol.Packet<?> packet = this.client.received.get(i).packet();
+            if (teleportAt < 0 && packet instanceof final net.minecraft.network.protocol.game.ClientboundPlayerPositionPacket position
+                && !gg.hcfrevival.revival.auth.reconcile.Reconciler.ours(position.id())) {
+                teleportAt = i;
+            } else if (forgetAt < 0 && packet instanceof final net.minecraft.network.protocol.game.ClientboundForgetLevelChunkPacket forget
+                && net.minecraft.world.level.ChunkPos.pack(forget.pos().x(), forget.pos().z()) == this.farOrigin) {
+                forgetAt = i;
+            }
+        }
+        this.tests.check(teleportAt >= 0 && (forgetAt < 0 || forgetAt > teleportAt), "the origin's chunk is forgotten after the teleport, not before it "
+            + "(teleport at " + teleportAt + ", forget at " + forgetAt + ")");
         this.tests.check(this.auth.world().hasChunkAt(Mth.floor(sim.x()), Mth.floor(sim.z())), "the destination chunk reached the client");
         this.tests.check(sim.y() == this.farFloorY && this.clientModel.y() == this.farFloorY && this.client.player.isAlive(),
             "the player stands on the floor at the destination (truth y " + sim.y() + ", client y " + this.clientModel.y() + ", floor " + this.farFloorY
@@ -1787,6 +1822,11 @@ final class AuthLiveScenarios {
         @Override
         public void startUsingItem(final InteractionHand hand) {
             this.delegate.startUsingItem(hand);
+        }
+
+        @Override
+        public void startUsingItem(final InteractionHand hand, final ClientView view) {
+            this.delegate.startUsingItem(hand, view);
         }
 
         @Override

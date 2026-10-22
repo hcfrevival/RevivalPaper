@@ -69,8 +69,16 @@ public final class NeueState {
     private long staggerAck = NEVER;
     private boolean staggerAckable;
     private int staggerTicks;
+    private int staggerJitter;
     private int staggerRtt;
+    // Under authority, the real time (System.nanoTime, the clock TickClock budgets client windows with) before which the
+    // lockout holds whatever the client's windows say (L3), and when the recoil went out, which anchors it
+    private long staggerFloorNanos = NEVER;
+    private long staggerEarliestAckNanos = NEVER;
     private boolean slowed;
+    // The stagger's slow as its own packet (it can reach the client apart from the recoil), and the window that acked it
+    private @Nullable Object slowPacket;
+    private long slowAck = NEVER;
 
     // The held click (§5.2)
     private boolean pending;
@@ -223,9 +231,13 @@ public final class NeueState {
      * {@code packet} is the recoil, whose ack ({@link #motionApplied}) starts the clock; without one (a plugin cancelled
      * the velocity event), and outside authority, {@code rttTicks} (the round trip now, in whole ticks rounded up) stand
      * in for the ack. It is taken once, here: a round trip read again each tick would move the end of a stagger already
-     * running whenever a keep-alive or pong lands.
+     * running whenever a keep-alive or pong lands. {@code jitterTicks} is the slack on the real-time floor the ack sets;
+     * {@code sentNanos} is when the recoil went out ({@code System.nanoTime}) and {@code ackRttNanos} the round trip its
+     * ack is expected to take ({@link #ackRtt}), taken now, before the recoil's own ack can move it: together the
+     * earliest an honest ack could come, the floor's anchor.
      */
-    public void stagger(final long serverNow, final @Nullable Object packet, final int staggerTicks, final int rttTicks, final boolean slowed) {
+    public void stagger(final long serverNow, final @Nullable Object packet, final int staggerTicks, final int jitterTicks, final int rttTicks,
+                        final boolean slowed, final long sentNanos, final long ackRttNanos) {
         this.clearPending();
         this.staggers++;
         if (staggerTicks <= 0) {
@@ -237,27 +249,54 @@ public final class NeueState {
         this.staggerAckable = packet != null;
         this.staggerAck = NEVER;
         this.staggerTicks = staggerTicks;
+        this.staggerJitter = jitterTicks;
         this.staggerRtt = rttTicks;
+        this.staggerFloorNanos = NEVER;
+        this.staggerEarliestAckNanos = sentNanos == NEVER ? NEVER : sentNanos + Math.max(0L, ackRttNanos);
         this.slowed |= slowed;
+        this.slowPacket = null; // NeueCombat.stagger records the slow's own packet right after, when it sends one
+        this.slowAck = NEVER;
     }
 
-    /** A logged packet was applied to the truth at client tick {@code tick}: when it is the recoil, that tick is {@code T_s}. */
-    public boolean motionApplied(final Object packet, final long tick) {
+    /**
+     * A logged packet was applied to the truth at client tick {@code tick}: when it is the recoil, that tick is
+     * {@code T_s}, and the lockout also lasts until {@code anchor + (stagger − jitter) × periodNanos} of real time
+     * ({@code System.nanoTime}), so running the client's ticks fast can't shorten it (cheat suite 2, L3). The anchor is
+     * the earliest an honest ack could have come, {@code min(nowNanos, sent + ackRtt)}: an ack window that came in late
+     * (jitter, a retransmit, a slow frame) moves no floor, and a client can't move the send time.
+     */
+    public boolean motionApplied(final Object packet, final long tick, final long nowNanos, final long periodNanos) {
         if (packet != this.staggerPacket || this.staggerPacket == null) {
             return false;
         }
         this.staggerAck = tick;
+        final long anchor = this.staggerEarliestAckNanos == NEVER ? nowNanos : Math.min(nowNanos, this.staggerEarliestAckNanos);
+        this.staggerFloorNanos = anchor + Math.max(0, this.staggerTicks - this.staggerJitter) * periodNanos;
         this.staggerPacket = null;
         return true;
     }
 
     /**
-     * Whether an attack now is refused. Under authority ({@code clientClock}): every attack in windows up to
-     * {@code T_s + stagger − 1}, and all of them until {@code T_s} is known (clicks made before the client could see the
-     * parry are part of the recovery). Outside it: the round trip taken at the stagger stands in for the ack, so the
-     * first attack delivered is at server tick {@code S_parry + rtt + stagger}. Ends the stagger once it is over.
+     * The round trip a recoil's ack is expected to take, read when the recoil goes out: the connection's baseline (a p10
+     * that takes about 1.5 s to follow a ping that rose), or the last ack's round trip when that is longer. With the
+     * baseline alone a client whose ping just rose would have the floor start that much early, and running its windows
+     * fast would buy it the difference (200 ms set 1.3 s before the parry: 3 ticks).
      */
-    public boolean lockedOut(final boolean clientClock, final long tick, final long serverNow) {
+    public static long ackRtt(final long rttBaseNanos, final long lastRttNanos) {
+        return Math.max(rttBaseNanos, lastRttNanos);
+    }
+
+    /**
+     * Whether an attack now is refused. Under authority ({@code clientClock}): every attack in windows up to
+     * {@code T_s + stagger − 1}, all of them until {@code T_s} is known (clicks made before the client could see the
+     * parry are part of the recovery), and all of them until the real-time floor the ack set ({@code nowNanos} on the
+     * monotonic clock the client's windows are budgeted with, so server lag or a hitch never lengthens it), as the parry's
+     * age has one: a client that runs its windows fast gains at most the jitter and its recoil ack's round trip above the
+     * one expected when the recoil went out.
+     * Outside it: the round trip taken at the stagger stands in for the ack, so the first attack delivered is at server
+     * tick {@code S_parry + rtt + stagger}. Ends the stagger once it is over.
+     */
+    public boolean lockedOut(final boolean clientClock, final long tick, final long serverNow, final long nowNanos) {
         if (!this.staggered) {
             return false;
         }
@@ -265,7 +304,7 @@ public final class NeueState {
         if (serverNow - this.staggerServer > this.staggerTicks + LOCKOUT_CAP_TICKS) {
             locked = false;
         } else if (clientClock && this.staggerAckable) {
-            locked = this.staggerAck == NEVER || tick <= this.staggerAck + this.staggerTicks - 1;
+            locked = this.staggerAck == NEVER || tick <= this.staggerAck + this.staggerTicks - 1 || nowNanos < this.staggerFloorNanos;
         } else {
             locked = serverNow < this.staggerServer + this.staggerRtt + this.staggerTicks;
         }
@@ -275,9 +314,26 @@ public final class NeueState {
         return locked;
     }
 
+    /** The slow went out as {@code packet} (sent with the recoil); its ack, not the recoil's, starts its clock. */
+    public void slowSent(final Object packet) {
+        this.slowPacket = packet;
+        this.slowAck = NEVER;
+    }
+
+    /** A logged packet was applied at client tick {@code tick}: when it is the slow, the client is slowed from that tick. */
+    public boolean slowApplied(final Object packet, final long tick) {
+        if (packet != this.slowPacket || this.slowPacket == null) {
+            return false;
+        }
+        this.slowAck = tick;
+        this.slowPacket = null;
+        return true;
+    }
+
     /**
-     * Whether the stagger's slow comes off now: under authority when the window reaches {@code T_s + stagger − rtt}
-     * ({@code rttTicks} rounded), so the removal lands on the client near {@code T_s + stagger}; outside it after
+     * Whether the stagger's slow comes off now: under authority when the window reaches {@code start + stagger − rtt}
+     * ({@code start} is the window that acked the slow, or {@code T_s} when no slow packet of its own was recorded;
+     * {@code rttTicks} rounded), so the removal lands on the client near {@code start + stagger}; outside it after
      * {@code stagger} server ticks.
      */
     public boolean slowEnds(final boolean clientClock, final long tick, final long serverNow, final int rttTicks) {
@@ -288,7 +344,8 @@ public final class NeueState {
         if (serverNow - this.staggerServer > this.staggerTicks + LOCKOUT_CAP_TICKS) {
             ends = true;
         } else if (clientClock && this.staggerAckable) {
-            ends = this.staggerAck != NEVER && tick >= this.staggerAck + this.staggerTicks - rttTicks;
+            final long start = this.slowAck != NEVER ? this.slowAck : this.slowPacket == null ? this.staggerAck : NEVER;
+            ends = start != NEVER && tick >= start + this.staggerTicks - rttTicks;
         } else {
             ends = serverNow >= this.staggerServer + this.staggerTicks;
         }

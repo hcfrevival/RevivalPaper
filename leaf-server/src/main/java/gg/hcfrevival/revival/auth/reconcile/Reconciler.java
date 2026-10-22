@@ -72,7 +72,8 @@ public final class Reconciler {
         return CORRECT;
     }
 
-    private boolean mayCorrect(final int maxPerSecond, final long nowNanos) {
+    /** Whether another correction fits in this second ({@code max-corrections-per-second}). */
+    public boolean mayCorrect(final int maxPerSecond, final long nowNanos) {
         if (nowNanos - this.secondStartNanos >= 1_000_000_000L) {
             this.secondStartNanos = nowNanos;
             this.sentThisSecond = 0;

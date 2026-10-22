@@ -30,15 +30,26 @@ public final class ArrivalStamps {
     private int count;
     private @Nullable Channel installedOn;
 
-    private final ChannelHandler handler = new ChannelInboundHandlerAdapter() {
+    private final ChannelHandler handler = new Stamper(this);
+
+    // Sharable (review PT2-01, R2C-01): Netty refuses a second add of a non-sharable handler that was ever added and
+    // removed, so authority off and on again threw in activate() on every TickEnd. Its only state is the stamps, locked
+    @ChannelHandler.Sharable
+    private static final class Stamper extends ChannelInboundHandlerAdapter {
+        private final ArrivalStamps stamps;
+
+        Stamper(final ArrivalStamps stamps) {
+            this.stamps = stamps;
+        }
+
         @Override
         public void channelRead(final ChannelHandlerContext ctx, final Object msg) {
             if (msg instanceof ServerboundClientTickEndPacket) {
-                ArrivalStamps.this.stamp(System.nanoTime());
+                this.stamps.stamp(System.nanoTime());
             }
             ctx.fireChannelRead(msg);
         }
-    };
+    }
 
     synchronized void stamp(final long nanos) {
         if (this.count == RING) {
@@ -60,7 +71,21 @@ public final class ArrivalStamps {
         return Math.min(nanos, fallback);
     }
 
-    /** Puts the handler in front of the connection's own; false when the channel has no game pipeline. */
+    /**
+     * The most windows a flush may be stamped past the last one handled: {@code maxBanked} (review X2-02: what the client
+     * can catch up at once, so a stall never voids the ack deadline) plus every {@code TickEnd} that came off the wire and
+     * waits for the main thread. Those the client did send; a server hitch left them queued, and the hitched tick's own
+     * flush stamped short of them was due as soon as they ran (torture r80j10, a 725 ms hitch: one forced entry, six
+     * corrections). Any thread.
+     */
+    public synchronized int creditBound(final int maxBanked) {
+        return maxBanked + this.count;
+    }
+
+    /**
+     * Puts the handler in front of the connection's own; false when the channel has no game pipeline, or the pipeline
+     * refused it (a channel closing under us): the main thread's own time stands in, authority still starts.
+     */
     public boolean install(final Channel channel) {
         final ChannelPipeline pipeline = channel.pipeline();
         if (pipeline.get(HandlerNames.PACKET_HANDLER) == null) {
@@ -70,7 +95,11 @@ public final class ArrivalStamps {
         synchronized (this) {
             this.count = 0;
         }
-        pipeline.addBefore(HandlerNames.PACKET_HANDLER, HANDLER, this.handler);
+        try {
+            pipeline.addBefore(HandlerNames.PACKET_HANDLER, HANDLER, this.handler);
+        } catch (final RuntimeException e) {
+            return false; // ChannelPipelineException, NoSuchElementException: the pipeline changed on the event loop
+        }
         this.installedOn = channel;
         return true;
     }
@@ -81,9 +110,10 @@ public final class ArrivalStamps {
             return;
         }
         this.installedOn = null;
-        final ChannelPipeline pipeline = channel.pipeline();
-        if (pipeline.get(HANDLER) != null) {
-            pipeline.remove(HANDLER);
+        try {
+            channel.pipeline().remove(this.handler); // by instance: no get-then-remove race with a closing channel
+        } catch (final java.util.NoSuchElementException e) {
+            // already gone with the channel
         }
     }
 }

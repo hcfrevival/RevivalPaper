@@ -197,8 +197,9 @@ public final class PathWiring implements PathSink {
                 if (distance > enter || !viewer.revivalAuth.eligible()) {
                     continue;
                 }
-                // Into range: the client's codec base is the vanilla tracker's
-                fed = new Fed(target.feed.viewer(), viewer);
+                // Into range: the client's codec base is the vanilla tracker's; the viewer's own K (review PT2-04, R2C-09:
+                // the feed's default fed K1 viewers K2 for every target that walked in, the usual start of a fight)
+                fed = new Fed(target.feed.viewer(viewer.revivalAuth.pathStepTicks(settings)), viewer);
                 final Vec3 base = serverEntity.getPositionBase();
                 fed.viewer.spawned(base.x, base.y, base.z, serverEntity.getLastSentYRot(), serverEntity.getLastSentXRot(), player.onGround(),
                     Authority.clockMillis());
@@ -209,7 +210,10 @@ public final class PathWiring implements PathSink {
                 continue;
             }
             PathFeed.Result result = drainOne(fed, player.getId());
-            if (result == PathFeed.Result.RESPAWN || inexact(fed, player.getId()) && target.mayRepair(viewer, MinecraftServer.currentTick, settings)) {
+            // Review PT2-03: an inexact mirror waits while the viewer's acks lag (the re-pair would be forced too, inexact
+            // again, re-paired every interval); a respawn the client would snap doesn't
+            if (result == PathFeed.Result.RESPAWN || inexact(fed, player.getId()) && !viewer.revivalAuth.holdsRepairs()
+                && target.mayRepair(viewer, MinecraftServer.currentTick, settings)) {
                 // R6: a jump the client would snap; or the viewer's mirror of the target lost exactness (a lag spike past the
                 // ack deadline, a late pong), which only a spawn restores and without which no hit on it can be judged.
                 // Re-pair (onPaired puts a fresh viewer on the feed), then send again
@@ -278,6 +282,24 @@ public final class PathWiring implements PathSink {
     public static boolean feeds(final AuthPlayer target, final ServerPlayer viewer) {
         final Target state = target(target);
         return state != null && state.viewers.containsKey(viewer);
+    }
+
+    /** The K the target is fed to this viewer with, or -1 when it isn't fed to it. */
+    public static int fedStepTicks(final AuthPlayer target, final ServerPlayer viewer) {
+        final Target state = target(target);
+        final Fed fed = state == null ? null : state.viewers.get(viewer);
+        return fed == null ? -1 : fed.viewer.stepTicks();
+    }
+
+    /** Feeds the target to this viewer at K {@code stepTicks} from its next step on; false when it isn't fed to it. */
+    public static boolean setFedStepTicks(final AuthPlayer target, final ServerPlayer viewer, final int stepTicks) {
+        final Target state = target(target);
+        final Fed fed = state == null ? null : state.viewers.get(viewer);
+        if (fed == null) {
+            return false;
+        }
+        fed.viewer.setStepTicks(stepTicks);
+        return true;
     }
 
     /** The target's feed, or null before its first step. */

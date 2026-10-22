@@ -79,6 +79,7 @@ import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
 import org.bukkit.event.HandlerList;
 import org.bukkit.event.Listener;
+import org.bukkit.event.entity.EntityDamageByEntityEvent;
 import org.bukkit.scheduler.BukkitTask;
 
 /**
@@ -86,7 +87,8 @@ import org.bukkit.scheduler.BukkitTask;
  * real movement port as its client model) fight in a world switched to {@code legacy-combat.rules: neue} by editing
  * revival.yml and reloading, as an owner would. The whole set runs twice: with authority off (Neue's server-side path,
  * §11: server positions, the server clock) and under enforce (the judge's distance, the mirror landing, the parry clock
- * on client ticks, the lockout keyed to the recoil's ack). Then classic again, which must be 1.7 exactly.
+ * on client ticks, the lockout keyed to the recoil's ack). Then classic again, which must be 1.7 exactly, and
+ * {@code classic-capped}: 1.7 exactly but for Neue's click cap and click buffer.
  * <p>
  * The attacker stands with its back to a wall, so a recoil or a riposte can't throw it out of reach: every distance is
  * set by placement and the numbers are exact. The clients are ticked by a driver, one client tick per server tick, the
@@ -134,6 +136,9 @@ final class NeueLiveScenarios implements Listener {
     private int parryEvents;
     private boolean recordFirstAttack;
     private long firstAttackTick = Long.MIN_VALUE;
+    private long firstAttackServerTick = Long.MIN_VALUE;
+    // The honest control's lockout, parry to first delivered attack in server ticks, for the 3x-speed cheat (L3)
+    private long honestLockoutTicks = Long.MIN_VALUE;
     private boolean firstAttackCrit;
     private boolean knockSeen;
     private double knockFromX;
@@ -149,6 +154,20 @@ final class NeueLiveScenarios implements Listener {
     private float probeHealth;
     private int lastWindow;
     private int landedAfterWindow;
+
+    // The click-cap rounds: the attacker clicks in the client ticks this admits (counted from its start); with
+    // cancelVictimDamage the victim's damage is cancelled, so no damage window turns a click away and every attack past the
+    // cap reaches the damage event
+    private java.util.function.IntPredicate clicking;
+    private int clickCount;
+    private boolean cancelVictimDamage;
+    private int damageEvents;
+
+    // The early-click probe: the server tick the click into the window was made in, and the tick whose level phase opened
+    // the window (the driver read 11 at its start)
+    private boolean clickArmed;
+    private long clickServerTick = Long.MIN_VALUE;
+    private long openServerTick = Long.MIN_VALUE;
 
     // The parry round
     private long parryServerTick;
@@ -172,10 +191,16 @@ final class NeueLiveScenarios implements Listener {
 
     @EventHandler(priority = EventPriority.MONITOR)
     public void onAttack(final PrePlayerAttackEntityEvent event) {
+        if (this.clickArmed && this.attacker != null && event.getPlayer().getUniqueId().equals(this.attacker.player.getUUID())) {
+            this.clickArmed = false;
+            this.clickServerTick = MinecraftServer.currentTick;
+        }
         if (this.recordFirstAttack && this.attacker != null && event.getPlayer().getUniqueId().equals(this.attacker.player.getUUID())) {
             this.recordFirstAttack = false;
             this.spam = false;
             this.firstAttackTick = this.attackerTick();
+            this.firstAttackServerTick = MinecraftServer.currentTick;
+            this.attacker.rate = Math.min(this.attacker.rate, 1); // a timer cheat stops running ahead once it has its hit
             // Still falling from the riposte's knock, it is a 1.7 crit (under enforce the lockout ends mid-air)
             this.firstAttackCrit = LegacyAttack.canCriticalAttack(this.attacker.player, this.victim.player);
         }
@@ -189,6 +214,18 @@ final class NeueLiveScenarios implements Listener {
             this.knockFromZ = this.attacker.player.getZ();
             this.knockToX = this.victim.player.getX();
             this.knockToZ = this.victim.player.getZ();
+        }
+    }
+
+    // Every attack of the attacker's that reached the victim's damage event, cancelled or not
+    @EventHandler(priority = EventPriority.LOWEST)
+    public void onDamage(final EntityDamageByEntityEvent event) {
+        if (this.victim != null && event.getEntity().getUniqueId().equals(this.victim.player.getUUID())
+            && event.getDamager().getUniqueId().equals(this.attacker.player.getUUID())) {
+            this.damageEvents++;
+            if (this.cancelVictimDamage) {
+                event.setCancelled(true);
+            }
         }
     }
 
@@ -221,7 +258,7 @@ final class NeueLiveScenarios implements Listener {
         this.knock(m + "a point-blank hit is sour", 1.5, 0.36, 0, 1);
 
         // DI (§7)
-        this.influence(m + "DI bends the knock toward the victim's held keys");
+        this.influence(m + "DI bends the knock toward the victim's held keys", -15.0);
 
         // Click buffer (§5)
         this.buffer(m + "a click into the window lands on the tick it opens", 8, true);
@@ -229,13 +266,43 @@ final class NeueLiveScenarios implements Listener {
 
         // Parry, stagger, riposte (§8)
         this.parry(m + "a fresh block parries");
+        this.blockInTheParriedWindow(m + "a block pressed in the parried click's own window leaves no ghost block", false);
+        this.blockInTheParriedWindow(m + "a block pressed before the cooldown reached the client leaves no ghost block", true);
+        this.staggerSwapBlock(m + "staggered, another sword type can't block, so the riposte lands");
+        this.staggerPickedUpSword(m + "staggered, a sword picked up during the lockout can't block either");
+        if (mode.equals("off")) {
+            // A block up while staggered needs an attack sent while blocking, which the input grammar drops under enforce
+            this.staggerKeepsBlock(m + "staggered with the block still up (stagger-lowers-block false), it doesn't parry the riposte");
+        }
         this.blockHit(m + "a block-hit never parries");
+        this.blockHitNoPunch(m + "a block-hit whose click sent no Punch never parries");
 
         // Classic again: 1.7 exactly
         this.tests.after(30, m + "rules classic", () -> this.rules("classic"));
         this.knock(m + "classic: an edge-of-reach hit is 1.7's", 2.95, 0.4, 0, 0);
         this.buffer(m + "classic: a click into the window is lost", 8, false);
         this.classicBlock(m + "classic: a fresh block is a plain block");
+        this.classicCooldownRefusal(m + "classic: a sword or a pearl on cooldown is refused without a resync");
+
+        // Classic capped, the ruleset for now: 1.7 exactly but for the click cap and the click buffer
+        this.tests.after(30, m + "rules classic-capped", () -> this.rules("classic-capped"));
+        this.clicker(m + "classic-capped: an even 12 CPS clicker keeps every click", false);
+        this.clicker(m + "classic-capped: a locked 20 CPS clicker delivers at most 12 a second plus the burst", true);
+        this.bufferEarly(m + "classic-capped: a click 1 tick before the window opens lands on the opening tick", 1, true);
+        this.bufferEarly(m + "classic-capped: a click 2 ticks before the window opens lands on the opening tick", 2, true);
+        this.bufferEarly(m + "classic-capped: a click 3 ticks before the window opens lands on the opening tick", 3, true);
+        this.bufferEarly(m + "classic-capped: a click 4 ticks before the window opens expires", 4, false);
+        this.knock(m + "classic-capped: an edge-of-reach hit is 1.7's, no tipper", 2.95, 0.4, 0, 0);
+        this.knock(m + "classic-capped: a point-blank hit is 1.7's, no sour", 1.5, 0.4, 0, 0);
+        this.influence(m + "classic-capped: held keys don't bend the knock, no DI", 0.0);
+        this.classicBlock(m + "classic-capped: a hit on a fresh, rested block is a plain block, no parry or stagger");
+        this.classicCooldownRefusal(m + "classic-capped: a sword or a pearl on cooldown is refused without a resync");
+
+        // Last of the duel: a client that ran ahead leaves its windows waiting on the tick clock for a while (under
+        // enforce), which the rounds above don't want
+        this.tests.after(30, m + "rules neue (the timer cheat)", () -> this.rules("neue"));
+        this.staggerFast(m + "a client running the lockout 3x fast doesn't end it early");
+        this.tests.after(1, m + "rules classic (after the timer cheat)", () -> this.rules("classic"));
 
         if (mode.equals("enforce")) {
             this.pastTheCap(m + "past the rewind cap (450 ms)");
@@ -267,6 +334,7 @@ final class NeueLiveScenarios implements Listener {
         }
         team.setCollisionRule(net.minecraft.world.scores.Team.CollisionRule.NEVER);
         this.attacker = new Duelist("NeueAttacker", this.attackerSpot(0), 0.0F);
+        this.attacker.player.getInventory().setItem(1, new ItemStack(Items.IRON_SWORD)); // another sword type, for L4
         this.victim = new Duelist("NeueVictim", this.victimSpot(0, 2.5), 180.0F);
         this.server.server.getPluginManager().registerEvents(this, this.tests);
         this.driver = this.server.server.getScheduler().runTaskTimer(this.tests, this::drive, 1L, 1L);
@@ -297,16 +365,23 @@ final class NeueLiveScenarios implements Listener {
                 this.landedAfterWindow = this.lastWindow;
             } else {
                 this.lastWindow = this.victim.player.damageCooldownTime;
+                if (this.lastWindow == this.victim.player.invulnerableDuration / 2 + 1 && this.openServerTick == Long.MIN_VALUE) {
+                    this.openServerTick = MinecraftServer.currentTick; // this tick's level phase opens it
+                }
             }
         }
         this.victim.tick();
-        if (this.spam) {
-            // The crosshair kept on the victim: the recoil and the riposte's knock lift the attacker, and under enforce a
-            // level ray from up there passes over the victim's head (the judge would call it a miss, not the lockout)
-            this.attacker.aimAt(this.victim);
-            this.attacker.attack(this.victim);
+        for (int i = 0; i < this.attacker.rate; i++) {
+            if (this.spam) {
+                // The crosshair kept on the victim: the recoil and the riposte's knock lift the attacker, and under enforce
+                // a level ray from up there passes over the victim's head (the judge would call it a miss, not the lockout)
+                this.attacker.aimAt(this.victim);
+                this.attacker.attack(this.victim);
+            } else if (this.clicking != null && this.clicking.test(this.clickCount++)) {
+                this.attacker.attack(this.victim);
+            }
+            this.attacker.tick();
         }
-        this.attacker.tick();
         if (this.shooter != null) {
             this.shooter.tick();
         }
@@ -378,7 +453,7 @@ final class NeueLiveScenarios implements Listener {
 
     // DI ---------------------------------------------------------------------------------------------------------------
 
-    private void influence(final String name) {
+    private void influence(final String name, final double expectedBend) {
         this.tests.after(30, name + " (place)", () -> this.place(2.5));
         // The victim faces -Z (yaw 180) and holds A, its left, -X: from the tick before the click, so the click's window
         // reads it whichever of the two windows runs first
@@ -396,7 +471,7 @@ final class NeueLiveScenarios implements Listener {
             // Bent relative to straight away from the attacker, where the two stood when the knock was decided
             final double away = Math.toDegrees(Math.atan2(this.knockToX - this.knockFromX, this.knockToZ - this.knockFromZ));
             final double bend = Math.toDegrees(Math.atan2(knock.x, knock.z)) - away;
-            this.tests.check(Math.abs(bend + 15.0) < 0.1, name + ": bent " + bend + " degrees toward the held direction (expected -15): " + knock);
+            this.tests.check(Math.abs(bend - expectedBend) < 0.1, name + ": bent " + bend + " degrees toward the held direction (expected " + expectedBend + "): " + knock);
             this.tests.check(Math.abs(Math.hypot(knock.x, knock.z) - 0.4) < EPSILON && Math.abs(knock.y - 0.3608) < EPSILON, name + ": length and height kept: " + knock);
         });
     }
@@ -407,6 +482,16 @@ final class NeueLiveScenarios implements Listener {
     // fresh hit follows, in the server tick whose level phase opened the window: the window read 11 at the driver tick
     // before (one decrement from open). Otherwise nothing lands
     private void buffer(final String name, final int after, final boolean lands) {
+        this.buffer(name, after, lands, -1);
+    }
+
+    // The same with the click made `early` ticks before the window opens: `after` is 9 − early (the fresh hit's window opens
+    // in the tenth server tick after its step), and the round checks the tick it measured
+    private void bufferEarly(final String name, final int early, final boolean lands) {
+        this.buffer(name, 9 - early, lands, early);
+    }
+
+    private void buffer(final String name, final int after, final boolean lands, final int early) {
         final long[] before = new long[2];
         this.tests.after(30, name + " (place)", this::placeDuel);
         this.tests.after(15, name + " (fresh hit)", () -> this.attacker.attack(this.victim));
@@ -419,9 +504,17 @@ final class NeueLiveScenarios implements Listener {
             this.probeHealth = this.victim.player.getHealth();
             this.lastWindow = this.victim.player.damageCooldownTime;
             this.landedAfterWindow = Integer.MIN_VALUE;
+            this.clickArmed = true;
+            this.clickServerTick = Long.MIN_VALUE;
+            this.openServerTick = Long.MIN_VALUE;
         });
         this.tests.after(16, name, () -> {
             this.probing = false;
+            this.clickArmed = false;
+            if (early >= 0) {
+                this.tests.check(this.openServerTick - this.clickServerTick == early, name + ": the click was made " + early
+                    + " ticks before the window opened (made in server tick " + this.clickServerTick + ", opened in " + this.openServerTick + ")");
+            }
             final CombatRules rules = Revival.settings().legacyCombat(this.level.getWorld().getName()).rules();
             if (lands && rules.buffersClicks()) {
                 this.tests.check(this.victim.player.getHealth() == 4.0F, name + ": exactly one more fresh hit landed (health " + this.victim.player.getHealth() + ")");
@@ -475,8 +568,26 @@ final class NeueLiveScenarios implements Listener {
             final List<Vec3> recoil = this.motions(this.attacker, this.attackerMark);
             this.tests.check(recoil.size() == 1 && near(recoil.getFirst(), 0.0, 0.22, -0.45), name + ": stagger: thrown back (0, 0.22, -0.45): " + recoil);
             final List<ClientboundCooldownPacket> cooldowns = this.attacker.fake.receivedOfType(ClientboundCooldownPacket.class, this.attackerMark);
-            this.tests.check(cooldowns.size() == 1 && cooldowns.getFirst().duration() == 10 && cooldowns.getFirst().cooldownGroup().getPath().equals("diamond_sword"),
-                name + ": stagger: the sword's cooldown sweep for 10 ticks: " + cooldowns);
+            // One tick past the stagger: the server's cooldowns tick once in the parry's own tick, so the client sees 10 (N3)
+            this.tests.check(cooldowns.size() == 2 && cooldowns.stream().allMatch(c -> c.duration() == 11)
+                    && cooldowns.stream().anyMatch(c -> c.cooldownGroup().getPath().equals("diamond_sword"))
+                    && cooldowns.stream().anyMatch(c -> c.cooldownGroup().getPath().equals("iron_sword")),
+                name + ": stagger: the cooldown sweep on every sword it carries (diamond, iron), stagger + 1 ticks: " + cooldowns);
+            // N2: the slow rides the recoil's tick, not the dirty-attribute flush 0-3 ticks later
+            long recoilTick = Long.MIN_VALUE;
+            long slowTick = Long.MIN_VALUE;
+            for (int i = this.attackerMark; i < this.attacker.fake.received.size(); i++) {
+                final FakeClient.Received r = this.attacker.fake.received.get(i);
+                if (recoilTick == Long.MIN_VALUE && r.packet() instanceof final ClientboundSetEntityMotionPacket m && m.id() == this.attacker.player.getId()) {
+                    recoilTick = r.serverTick();
+                }
+                if (slowTick == Long.MIN_VALUE && r.packet() instanceof final ClientboundUpdateAttributesPacket a && a.getEntityId() == this.attacker.player.getId()
+                    && a.getValues().stream().anyMatch(v -> v.modifiers().stream().anyMatch(mod -> mod.id().equals(NeueCombat.STAGGER_SLOW)))) {
+                    slowTick = r.serverTick();
+                }
+            }
+            this.tests.check(slowTick != Long.MIN_VALUE && slowTick == recoilTick,
+                name + ": stagger: the slow went out in the recoil's tick (recoil " + recoilTick + ", slow " + slowTick + ")");
             this.tests.check(this.attacker.fake.receivedOfType(ClientboundSoundPacket.class, this.attackerMark).stream()
                 .anyMatch(sound -> sound.getSound().value().location().getPath().equals("item.shield.break")), name + ": stagger: the attacker hears the guard break");
             this.attacker.player.setHealth(20.0F);
@@ -512,6 +623,7 @@ final class NeueLiveScenarios implements Listener {
                     name + ": the first attack delivered was at server tick " + this.firstAttackTick + ", parried at " + this.parryServerTick
                         + " with a round trip of " + this.parryRttTicks + " ticks (expected +" + (this.parryRttTicks + 10) + ")");
             }
+            this.honestLockoutTicks = this.firstAttackServerTick - this.parryServerTick;
             final float landed = this.firstAttackCrit ? 8.0F : 12.0F;
             this.tests.check(this.victim.player.getHealth() == landed, name + ": that attack landed, " + (this.firstAttackCrit ? "a crit as it fell: 8 x 1.5 = 12" : "8")
                 + " (victim health " + this.victim.player.getHealth() + ")");
@@ -542,6 +654,236 @@ final class NeueLiveScenarios implements Listener {
         });
     }
 
+    // Cheat suite 2: L4, L3, L1 next to the honest controls above -------------------------------------------------------
+
+    /**
+     * L4: parried, the attacker takes an iron sword (another cooldown group) and blocks inside the lockout. The stagger put
+     * the cooldown on every sword it carries, so no block goes up (the server refuses the use, and under enforce the
+     * simulation never starts it), and the parrier's riposte lands as a crit instead of being parried.
+     */
+    private void staggerSwapBlock(final String name) {
+        this.tests.after(40, name + " (place)", this::placeDuel);
+        this.tests.after(15, name + " (block)", () -> this.victim.use());
+        this.tests.after(1, name + " (click)", () -> {
+            this.parryEvents = 0;
+            this.attackerMark = this.attacker.fake.received.size();
+            this.attacker.attack(this.victim);
+        });
+        this.tests.after(1, name + " (take the iron sword)", () -> {
+            this.tests.check(this.parryEvents == 1 && NeueCombat.lockedOut(this.attacker.player), name + ": parried and staggered (" + this.parryEvents + ")");
+            this.victim.release();
+            this.attacker.select(1);
+        });
+        this.tests.after(1, name + " (block with it)", () -> this.attacker.use()); // sent whatever the client's cooldown says
+        this.tests.after(1, name + " (riposte)", () -> {
+            this.tests.check(this.attacker.player.getMainHandItem().is(Items.IRON_SWORD), name + ": the iron sword is in hand");
+            this.tests.check(!this.attacker.player.isBlocking() && !this.attacker.player.isUsingItem(),
+                name + ": no block went up during the lockout (blocking " + this.attacker.player.isBlocking() + ")");
+            this.attacker.player.setHealth(20.0F);
+            this.attacker.player.damageCooldownTime = 0;
+            this.attacker.player.lastHurt = 0.0F;
+            this.victim.attack(this.attacker);
+        });
+        this.tests.after(2, name, () -> {
+            this.tests.check(this.parryEvents == 1 && !NeueCombat.state(this.victim.player).staggered(),
+                name + ": the riposte wasn't parried (parries " + this.parryEvents + ", parrier staggered " + NeueCombat.state(this.victim.player).staggered() + ")");
+            this.tests.check(this.attacker.player.getHealth() == 8.0F, name + ": the riposte landed as a crit, 8 x 1.5 = 12 (health " + this.attacker.player.getHealth() + ")");
+            this.attacker.select(0);
+            this.attacker.release();
+        });
+    }
+
+    /**
+     * L3: parried, the attacker runs its client 3 ticks per server tick and clicks in every one. The lockout lasts its
+     * windows after the recoil's ack and also its real time (less a tick of jitter), so its first attack is delivered at
+     * most a tick before the honest control's above.
+     */
+    private void staggerFast(final String name) {
+        this.tests.after(40, name + " (place)", this::placeDuel);
+        this.tests.after(15, name + " (block)", () -> this.victim.use());
+        this.tests.after(1, name + " (click)", () -> {
+            this.parryEvents = 0;
+            this.attacker.attack(this.victim);
+            this.parryServerTick = MinecraftServer.currentTick + 1;
+        });
+        this.tests.after(1, name + " (run fast)", () -> {
+            this.tests.check(this.parryEvents == 1, name + ": parried (" + this.parryEvents + ")");
+            this.victim.release();
+            this.firstAttackServerTick = Long.MIN_VALUE;
+            this.recordFirstAttack = true;
+            this.spam = true;
+            this.attacker.rate = 3;
+        });
+        this.tests.after(25, name, () -> {
+            this.spam = false;
+            this.recordFirstAttack = false;
+            this.attacker.rate = 1;
+            this.attacker.pitch = 0.0F;
+            final long ticks = this.firstAttackServerTick - this.parryServerTick;
+            final int jitter = CombatRules.NEUE.staggerJitterTicks();
+            this.tests.check(this.firstAttackServerTick != Long.MIN_VALUE && ticks >= this.honestLockoutTicks - jitter,
+                name + ": the first attack delivered " + ticks + " server ticks after the parry; the honest control's came after "
+                    + this.honestLockoutTicks + " (at most " + jitter + " sooner)");
+            this.tests.check(this.victim.player.getHealth() < 20.0F, name + ": and it landed (victim health " + this.victim.player.getHealth() + ")");
+        });
+    }
+
+    /**
+     * L1: the block-hit control above, with the swing's click sending its {@code Attack} and no {@code Punch}. Every click
+     * is a swing, so the block raised two ticks later still has no parry window.
+     */
+    private void blockHitNoPunch(final String name) {
+        this.tests.after(40, name + " (place)", this::placeDuel);
+        this.tests.after(15, name + " (swing without the Punch)", () -> this.victim.attackWithoutPunch(this.attacker));
+        this.tests.after(2, name + " (block)", () -> this.victim.use());
+        this.tests.after(1, name + " (click)", () -> {
+            this.parryEvents = 0;
+            this.attacker.aimAt(this.victim);
+            this.attacker.attack(this.victim);
+        });
+        this.tests.after(2, name, () -> {
+            this.tests.check(this.victim.player.isBlocking() && !NeueCombat.state(this.victim.player).mayParry(),
+                name + ": the block is up with no window (" + NeueCombat.state(this.victim.player).parryWindow() + ")");
+            this.tests.check(this.parryEvents == 0 && this.victim.player.getHealth() == 15.5F,
+                name + ": a plain 1.7 block, (8 + 1) x 0.5 = 4.5 (health " + this.victim.player.getHealth() + ")");
+            this.victim.release();
+            this.attacker.pitch = 0.0F;
+        });
+    }
+
+    /**
+     * Real-client run N1: a block the client raised before it could know the parry's cooldown (in the parried click's own
+     * window, attack then use, or one tick after it with the cooldown still on its way) is refused by the server's cooldown
+     * check. The block gate resyncs it, so within a round trip the client drops the block it predicted and the server (and,
+     * under enforce, the truth) agree there is none. Without the resync the client stayed blocking for its whole hold.
+     */
+    private void blockInTheParriedWindow(final String name, final boolean nextTick) {
+        this.tests.after(40, name + " (place)", this::placeDuel);
+        this.tests.after(15, name + " (block)", () -> this.victim.use());
+        this.tests.after(1, name + " (click" + (nextTick ? ")" : ", then block in the same tick)"), () -> {
+            this.parryEvents = 0;
+            this.attacker.attack(this.victim);
+            if (!nextTick) {
+                this.attacker.use(); // the client predicts it: the cooldown can't have reached it yet
+            }
+        });
+        if (nextTick) {
+            this.tests.after(1, name + " (block the tick after)", () -> this.attacker.useBeforeTheCooldownArrives());
+        }
+        this.tests.after(1, name + " (the client blocks)", () -> {
+            this.tests.check(this.parryEvents == 1, name + ": parried (" + this.parryEvents + ")");
+            this.tests.check(!this.attacker.player.isUsingItem(), name + ": the server refused the block");
+        });
+        // One round trip on this link (a tick): the resync has reached the client, which drops its block
+        this.tests.after(2, name, () -> {
+            this.tests.check(!this.attacker.player.isUsingItem() && !this.attacker.model.usingItem(),
+                name + ": the server and the client agree: no block (server " + this.attacker.player.isUsingItem() + ", client " + this.attacker.model.usingItem() + ")");
+            if (this.attacker.auth.ownsClientState()) {
+                this.tests.check(!this.attacker.auth.simulation().usingItem(), name + ": and the truth took the resync: no block");
+            }
+            this.tests.check(!NeueCombat.state(this.attacker.player).blocking(), name + ": no parry clock armed for the refused block");
+        });
+        this.tests.after(15, name + " (done)", () -> this.attacker.release());
+    }
+
+    /**
+     * Review 6, the use gate: a sword type the attacker didn't carry when it was parried missed the stagger's cooldowns,
+     * so the client predicts its block. {@code ServerPlayerGameMode.useItem}'s gate ({@code refusedBlock}) refuses it
+     * on the server and resyncs the use flags, so the client drops the block at once. Fails with the gate reverted: the
+     * server would block with it.
+     */
+    private void staggerPickedUpSword(final String name) {
+        this.tests.after(40, name + " (place)", this::placeDuel);
+        this.tests.after(15, name + " (block)", () -> this.victim.use());
+        this.tests.after(1, name + " (click)", () -> {
+            this.parryEvents = 0;
+            this.attacker.attack(this.victim);
+        });
+        this.tests.after(1, name + " (pick up a golden sword)", () -> {
+            this.tests.check(this.parryEvents == 1 && NeueCombat.lockedOut(this.attacker.player), name + ": parried and staggered (" + this.parryEvents + ")");
+            this.tests.check(this.attacker.player.getCooldowns().getRemainingCooldown(net.minecraft.resources.Identifier.withDefaultNamespace("golden_sword")) == 0,
+                name + ": the golden sword has no cooldown (it wasn't carried)");
+            this.victim.release();
+            this.attacker.player.getInventory().setItem(2, new ItemStack(Items.GOLDEN_SWORD));
+        });
+        this.tests.after(1, name + " (take it)", () -> this.attacker.select(2));
+        this.tests.after(1, name + " (block with it)", () -> {
+            this.attackerMark = this.attacker.fake.received.size();
+            this.attacker.use();
+        });
+        this.tests.after(1, name, () -> {
+            this.tests.check(NeueCombat.lockedOut(this.attacker.player), name + ": still inside the lockout");
+            this.tests.check(this.attacker.player.getMainHandItem().is(Items.GOLDEN_SWORD), name + ": the golden sword is in hand");
+            this.tests.check(!this.attacker.player.isUsingItem() && !this.attacker.player.isBlocking(),
+                name + ": the server refused the block (using " + this.attacker.player.isUsingItem() + ")");
+            this.tests.check(!NeueCombat.state(this.attacker.player).blocking(), name + ": no parry clock armed for the refused block");
+        });
+        // What the refusal sent, read a tick on: under authority a tick's packets go out in its bundle at the tick's end
+        this.tests.after(1, name + ": the resync", () -> {
+            this.tests.check(this.useFlagsSent(this.attacker, this.attackerMark), name + ": the use flags were resynced, so the client drops the block it predicted");
+            this.tests.check(!this.attacker.player.isUsingItem(), name + ": and the server still isn't blocking");
+        });
+        this.tests.after(14, name + " (done)", () -> {
+            this.attacker.select(0);
+            this.attacker.release();
+            this.attacker.player.getInventory().setItem(2, ItemStack.EMPTY);
+        });
+    }
+
+    /**
+     * Review 6, the parry guard: with {@code stagger-lowers-block: false} a parried attacker keeps a block it raised just
+     * before its click (sent while blocking, which only the grammar refuses under enforce), a fresh block with its whole
+     * window. The parrier's riposte meets that block inside its window: a staggered player never parries, so the riposte
+     * lands as a crit on a plain block. Fails with the guard in {@code NeueCombat.parried} reverted (a second parry).
+     */
+    private void staggerKeepsBlock(final String name) {
+        this.tests.after(40, name + " (rules)", () -> this.lowersBlock(false));
+        this.tests.after(1, name + " (place)", this::placeDuel);
+        this.tests.after(15, name + " (block)", () -> this.victim.use());
+        this.tests.after(1, name + " (block, then click)", () -> {
+            this.parryEvents = 0;
+            this.attacker.use(); // rested: a full window
+            this.attacker.attack(this.victim);
+        });
+        this.tests.after(1, name + " (riposte)", () -> {
+            this.tests.check(this.parryEvents == 1 && NeueCombat.lockedOut(this.attacker.player), name + ": parried and staggered (" + this.parryEvents + ")");
+            this.tests.check(this.attacker.player.isBlocking() && NeueCombat.state(this.attacker.player).mayParry(),
+                name + ": the staggered attacker's block is still up, with its window (" + NeueCombat.state(this.attacker.player).parryWindow() + ")");
+            this.victim.release();
+        });
+        this.tests.after(1, name + " (riposte click)", () -> {
+            this.attacker.player.setHealth(20.0F);
+            this.attacker.player.damageCooldownTime = 0;
+            this.attacker.player.lastHurt = 0.0F;
+            this.victim.attack(this.attacker);
+        });
+        this.tests.after(2, name, () -> {
+            this.tests.check(this.parryEvents == 1 && !NeueCombat.state(this.victim.player).staggered(),
+                name + ": the riposte wasn't parried (parries " + this.parryEvents + ", parrier staggered " + NeueCombat.state(this.victim.player).staggered() + ")");
+            this.tests.check(this.attacker.player.getHealth() == 13.5F,
+                name + ": the riposte crit landed on a plain block, (12 + 1) x 0.5 = 6.5 (health " + this.attacker.player.getHealth() + ")");
+            this.attacker.release();
+        });
+        this.tests.after(1, name + " (rules back)", () -> this.lowersBlock(true));
+    }
+
+    // combat-rules.neue.stagger-lowers-block, written and reloaded as an owner would; true removes the override
+    private void lowersBlock(final boolean lowers) {
+        try {
+            final File file = new File("revival.yml");
+            final YamlConfiguration yaml = YamlConfiguration.loadConfiguration(file);
+            // Back to the bare preset: no combat-rules.neue section at all, so the world's rules are CombatRules.NEUE itself
+            yaml.set(lowers ? "combat-rules.neue" : "combat-rules.neue.stagger-lowers-block", lowers ? null : false);
+            yaml.save(file);
+        } catch (final java.io.IOException failure) {
+            throw new IllegalStateException(failure);
+        }
+        RevivalConfig.reload();
+        final CombatRules rules = Revival.settings().legacyCombat(this.level.getWorld().getName()).rules();
+        this.tests.check(rules.parry() && rules.staggerLowersBlock() == lowers && (!lowers || rules.equals(CombatRules.NEUE)),
+            "neue with stagger-lowers-block " + lowers + " after /revival reload");
+    }
+
     private void classicBlock(final String name) {
         this.tests.after(40, name + " (place)", this::placeDuel);
         this.tests.after(15, name + " (block)", () -> this.victim.use());
@@ -555,6 +897,87 @@ final class NeueLiveScenarios implements Listener {
             this.tests.check(this.motions(this.attacker, this.attackerMark).isEmpty() && !NeueCombat.state(this.attacker.player).staggered(), name + ": no stagger");
             this.victim.release();
         });
+    }
+
+    /**
+     * The click cap ({@code classic-capped}): 2 seconds of clicks at the victim, whose damage is cancelled so no damage
+     * window turns one away. An even 12 CPS clicker (2, 2 and 1 ticks apart) keeps all 24 clicks; a locked 20 CPS clicker
+     * (every tick) is held to the cap's refill plus its burst, and gets no fewer than the refill gives.
+     */
+    private void clicker(final String name, final boolean locked) {
+        final int ticks = 40;
+        final int[] start = {0};
+        this.tests.after(40, name + " (place)", this::placeDuel);
+        this.tests.after(15, name + " (click for 2 s)", () -> {
+            this.cancelVictimDamage = true;
+            start[0] = this.damageEvents;
+            this.clickCount = 0;
+            this.clicking = locked ? t -> t < ticks : t -> t < ticks && (t % 5 == 0 || t % 5 == 2 || t % 5 == 4);
+        });
+        this.tests.after(ticks + 5, name, () -> {
+            this.clicking = null;
+            this.cancelVictimDamage = false;
+            final CombatRules rules = NeueCombat.rules(this.attacker.player);
+            final int delivered = this.damageEvents - start[0];
+            if (locked) {
+                final long most = (long) Math.floor(rules.clickBurst() + rules.clickRefill() * ticks) + 1;
+                final long least = (long) Math.floor(rules.clickRefill() * ticks) - 1;
+                this.tests.check(delivered >= least && delivered <= most, name + ": delivered " + delivered + " of " + ticks
+                    + " clicks (from " + least + " to " + most + ": 12 a second over 2 s, plus the burst)");
+            } else {
+                this.tests.check(delivered == 24, name + ": every click delivered (" + delivered + " of 24)");
+            }
+            this.tests.check(this.victim.player.getHealth() == 20.0F, name + ": the victim took nothing (health " + this.victim.player.getHealth() + ")");
+        });
+    }
+
+    /**
+     * Classic is vanilla's traffic: the use gate ({@code LegacySwordBlocking.refusedBlock}) acts only where the rules parry,
+     * so in a classic world a sword or an ender pearl on cooldown meets vanilla's own silent PASS. The client knows both
+     * cooldowns; an honest client still sends the use and predicts nothing. Fails with the gate's {@code parry()} check
+     * removed: the sword's refusal resyncs the use flags.
+     */
+    private void classicCooldownRefusal(final String name) {
+        this.tests.after(40, name + " (place)", this::placeDuel);
+        this.tests.after(15, name + " (cooldowns)", () -> {
+            final ServerPlayer player = this.attacker.player;
+            player.getInventory().setItem(3, new ItemStack(Items.ENDER_PEARL));
+            player.getCooldowns().addCooldown(player.getMainHandItem(), 40);
+            player.getCooldowns().addCooldown(new ItemStack(Items.ENDER_PEARL), 40);
+        });
+        this.tests.after(2, name + " (use the sword)", () -> {
+            this.tests.check(Boolean.FALSE.equals(this.attacker.view.predictsUse(this.attacker.view.items.hand(InteractionHand.MAIN_HAND))),
+                name + ": the client knows the sword's cooldown");
+            this.attackerMark = this.attacker.fake.received.size();
+            this.attacker.use();
+        });
+        // A tick for the use, a tick for the tick-end bundle under authority
+        this.tests.after(2, name + ": the sword", () -> {
+            this.tests.check(!this.attacker.player.isUsingItem(), name + ": the server refused the sword (using " + this.attacker.player.isUsingItem() + ")");
+            this.tests.check(!this.useFlagsSent(this.attacker, this.attackerMark), name + ": no resync for the sword");
+            this.attacker.select(3);
+        });
+        this.tests.after(2, name + " (use the pearl)", () -> {
+            this.attackerMark = this.attacker.fake.received.size();
+            this.attacker.use();
+        });
+        this.tests.after(2, name + ": the pearl", () -> {
+            final ServerPlayer player = this.attacker.player;
+            this.tests.check(player.getInventory().getItem(3).is(Items.ENDER_PEARL) && player.getInventory().getItem(3).getCount() == 1,
+                name + ": the server refused the pearl (" + player.getInventory().getItem(3) + ")");
+            this.tests.check(!this.useFlagsSent(this.attacker, this.attackerMark), name + ": no resync for the pearl");
+            this.attacker.select(0);
+            player.getInventory().setItem(3, ItemStack.EMPTY);
+            player.getCooldowns().removeCooldown(player.getCooldowns().getCooldownGroup(player.getMainHandItem()));
+            player.getCooldowns().removeCooldown(player.getCooldowns().getCooldownGroup(new ItemStack(Items.ENDER_PEARL)));
+        });
+    }
+
+    // Whether the server sent the duelist its own use flags (a resync) since the mark
+    private boolean useFlagsSent(final Duelist duelist, final int mark) {
+        return duelist.fake.receivedOfType(ClientboundSetEntityDataPacket.class, mark).stream()
+            .anyMatch(data -> data.id() == duelist.player.getId()
+                && data.packedItems().stream().anyMatch(value -> value.id() == gg.hcfrevival.revival.auth.view.ClientView.DATA_LIVING_ENTITY_FLAGS));
     }
 
     // The rewind cap's Overwatch rule (pvp-issues HR-2) -----------------------------------------------------------------
@@ -631,7 +1054,8 @@ final class NeueLiveScenarios implements Listener {
         }
         RevivalConfig.reload();
         final CombatRules rules = Revival.settings().legacyCombat(this.level.getWorld().getName()).rules();
-        this.tests.check(rules == (name.equals("neue") ? CombatRules.NEUE : CombatRules.CLASSIC), "legacy-combat.rules is " + name + " after /revival reload");
+        // Equal, not the same: a run on classic-capped writes its two keys under combat-rules, which reads as an equal copy
+        this.tests.check(rules.equals(CombatRules.PRESETS.get(name)), "legacy-combat.rules is " + name + " after /revival reload");
     }
 
     private NeueState state() {
@@ -912,6 +1336,9 @@ final class NeueLiveScenarios implements Listener {
         private Input previousKeys = NONE;
         float yaw;
         float pitch;
+        /** Client ticks per server tick: 1 is honest, more is a timer cheat. */
+        int rate = 1;
+        private boolean cooldownInFlight;
         private int seen;
         private int sequence;
         private final ClientView.EchoSink echo = new ClientView.EchoSink() {
@@ -954,6 +1381,17 @@ final class NeueLiveScenarios implements Listener {
             this.actions.add(new ServerboundPunchPacket());
         }
 
+        // A modified client: the Attack alone, no Punch after it
+        void attackWithoutPunch(final Duelist target) {
+            this.actions.add(new ServerboundAttackPacket(target.player.getId()));
+        }
+
+        // A hotbar key: the client selects at once and tells the server
+        void select(final int slot) {
+            this.view.items.select(slot);
+            this.actions.add(new net.minecraft.network.protocol.game.ServerboundSetCarriedItemPacket(slot));
+        }
+
         // Pitch to the middle of the target's box from the eye the next pick casts from (after the last tick); the yaw stays
         void aimAt(final Duelist target) {
             final double dx = target.player.getX() - this.model.x();
@@ -964,6 +1402,12 @@ final class NeueLiveScenarios implements Listener {
 
         void use() {
             this.actions.add(new ServerboundUseItemPacket(InteractionHand.MAIN_HAND, ++this.sequence, this.yaw, 0.0F));
+        }
+
+        // A block pressed before the stagger's cooldown reached this client (one RTT on a real link): it predicts the block
+        void useBeforeTheCooldownArrives() {
+            this.cooldownInFlight = true;
+            this.use();
         }
 
         void release() {
@@ -986,9 +1430,10 @@ final class NeueLiveScenarios implements Listener {
                 switch (action) {
                     case final ServerboundAttackPacket ignored -> this.model.clientAttack(true, this.view);
                     case final ServerboundUseItemPacket use -> {
-                        if (Boolean.TRUE.equals(this.view.predictsUse(this.view.items.hand(use.hand())))) {
-                            this.model.startUsingItem(use.hand());
+                        if (this.cooldownInFlight || Boolean.TRUE.equals(this.view.predictsUse(this.view.items.hand(use.hand())))) {
+                            this.model.startUsingItem(use.hand(), this.view);
                         }
+                        this.cooldownInFlight = false;
                     }
                     case final ServerboundPlayerActionPacket release when release.getAction() == ServerboundPlayerActionPacket.Action.RELEASE_USE_ITEM ->
                         this.model.releaseUsingItem();

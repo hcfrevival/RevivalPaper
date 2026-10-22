@@ -14,6 +14,18 @@ final class TestContext implements Transactions.Context {
     int serverTick;
     boolean coalesce;
     long stamp;
+    boolean main = true;
+    boolean ticking = true;
+
+    @Override
+    public boolean ticking() {
+        return this.ticking;
+    }
+
+    @Override
+    public boolean mainThread() {
+        return this.main;
+    }
 
     @Override
     public long stampMillis() {

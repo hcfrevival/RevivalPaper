@@ -30,6 +30,9 @@ class AuthoritativeSettingsTest {
         assertFalse(settings.honorDeniedPredictions());
         assertTrue(settings.heartbeatPing());
         assertEquals(2, settings.pathStepTicks());
+        assertEquals(1.0E-6, settings.correctionPersistMin(), "NAS glitch: no teleport for a sub-µm gap");
+        assertEquals(500, settings.landingProbeMs());
+        assertEquals(2000, settings.landingSampleMs());
     }
 
     @Test

@@ -96,6 +96,38 @@ it decides **when** the client saw what, and feeds the simulation and the mirror
      tick can explain the claim first (bounded branching). They forecast truth and belief to the apply tick; an accept
      with a residual is forecast again from where the client says it is; a correction that keeps coming back, or would
      land the client inside a block, goes out absolute (position and velocity).
+   - The apply tick is measured, not guessed (NAS glitch 2026-10-22, `LandingLag`): every ping is stamped at its flush
+     with the window the client is in and how it was flushed (windows run between server ticks flush as they end; the
+     server tick's bundle at its end), and its pong window gives that flush kind's trip. A correction is forecast
+     `(window the client is in - window being run) + the median trip of its flush kind over the last
+     landing-sample-ms`, else `ceil(rttBase / 50) - 1` trip; a scope that ran windows and sent nothing gets a lone probe
+     ping every `landing-probe-ms`. Pings flushed while no `TickEnd` came for two ticks (a stall, a client freeze) are not
+     measured. `round(rtt / 50)` put every correction one tick short at 60 ms (or at 30 ms behind a busy server tick), so
+     each accept was a tick of motion off and the backstop chased the client every other tick for as long as it moved.
+   - A correction waits while windows the client already sent are queued behind the one running (a catch-up), at most
+     `max-banked-ticks` windows in a row: the truth runs them, inputs and all, instead of a forecast across them. The
+     accept backstop counts against `max-corrections-per-second` like any correction.
+   - A claim off by less than `correction-persist-min` (1e-6, sub-µm) never counts toward `correction-persist-ticks`:
+     counted, never corrected (a teleport aborts a dig and cancels block-prediction snaps; a relative one can't remove a
+     rounding gap, only add one every 20 ticks).
+   - Breaks the client predicts and the server denies (a protected block) are holes in the client's world only
+     (`WorldView` holes): the belief, the forecast's client and the crosshair pick read them, the truth never does. A
+     claim the belief explains, in a gap that opened in a tick touching a hole after an exact claim, is held (no
+     correction); at the break's ack the client gets the block back and, with no teleport since and its box inside it,
+     snaps to where it broke it (`syncBlockState`), which the belief mirrors. A correction there would have cancelled
+     that snap (`onTeleport`) and left the client inside the restored block, falling through it. Honored predictions'
+     reverts follow the same teleport rule now, and snap at the right block (the revert read its position after the
+     fast iterator's `remove()`, which had already shifted another entry into the slot).
+   - A forced server teleport is finished for the truth at the force (review X2-03): no longer pending, the truth is
+     written and replicated from there, the next correction is absolute; its real pong re-applies nothing (one absolute
+     resync) and only starts awaiting the accept. Forced entries hold corrections, the catch-up resync and re-pairs for
+     one ack deadline after a forcing began, then one window acts and the hold starts over (X2-04: a 450 ms+ link, or
+     one holding its pongs, was otherwise never corrected again).
+   - Activation seeds the stream's rotation from the `ServerPlayer` (the client sends it only when it turns; cheat suite
+     2 H1) and resets the window stamps (R2C-04). A use click after a hotbar key in one tick uses the new item (H2). An
+     `Attack` is a click for the cadence detector whether or not its `Punch` came, and a window with more attacks than
+     punches is an input-grammar count (`attack-without-punch`, counted, never dropped; L2). Every attack the grammar
+     admits, and a `Punch` in a Neue lockout, records a Neue swing (L1).
    - Any exception from the port or the combat code (a tick, a drain entry, a correction, an attack's judge) falls back
      for that tick to the client's claim through vanilla's handler and re-seeds; it never kicks the player.
    - At activation the client's chunk list is seeded from Moonrise's per-player sent set, so a session that was already
@@ -118,11 +150,17 @@ it decides **when** the client saw what, and feeds the simulation and the mirror
 - Deadline: a ping sent after window `n` still unanswered `ceil(rttBase/50) + ack-jitter-ticks` paced windows later,
   or that many plus `max-banked-ticks` windows of any kind, has its entries force-applied (torture F3: a burst the
   client ticked before it could have had the packet doesn't count). A ping is stamped with the window the client is in
-  by real time (an upstream stall doesn't leave a stale stamp), never lower than the ping before it. A force-applied
+  by real time (an upstream stall doesn't leave a stale stamp), at most `max-banked-ticks` past the last `TickEnd` handled
+  plus the `TickEnd`s that came off the wire and wait for the main thread (review X2-02: a stall stamped further let the
+  client void its deadlines for as long as it had stalled; the waiting ones the client did send, and a server hitch's own
+  flush stamped short of them was due as soon as they ran), never lower than the ping before it. A ping as old as `max-unacked-ms` (net of time the server was behind its own schedule) is due whatever
+  the window counts say. A force-applied
   teleport, correction or knock is kept until its ping's real pong and handed back then (`LANDED`): a server teleport
   stays pending for the client until it lands (the truth takes it again there, its late accept is matched, never a
   violation; torture F2); a knock that lands makes the next correction one absolute resync. No correction is sent while
-  forced entries are outstanding (when it would land, and on what, is unknown). Corrections forecast the client with
+  forced entries are outstanding (when it would land, and on what, is unknown), nor in the window whose drain lands one
+  (its pong already cleared it, but the client applies it in that tick: torture r80down300w, a knock forced one window
+  before its pong was corrected as if the client would never have it, and five corrections chased the double). Corrections forecast the client with
   every knock still on its way to it (logged-unacked, torture F5), and an absolute one is held while any is. Once every forced entry has landed, the next correction is absolute and the viewer's mirrors are
   re-paired (load P0: never while its acks lag). Past `max-unacked-ms` the player is frozen (windows refused); three times that, kicked in
   enforce. `rttBase` (`RttBaseline`) is the 10th percentile of the last 256 ack round trips, or of the last 32 when
@@ -208,9 +246,12 @@ All under `authoritative.` (defaults in brackets):
 | `correction-threshold` [1e-3], `correction-budget` [0.01], `correction-budget-decay` [0.95] | small divergences go into a decaying budget |
 | `correction-persist-ticks` [20] | a claim off by less than the threshold this many ticks in a row is corrected anyway |
 | `correction-repeat-limit` [2] | the same correction (or accepts that keep needing one) this many times goes out absolute |
+| `correction-persist-min` [1e-6] | a claim off by less than this never counts toward the persist rule (counted as sub-µm) |
+| `landing-probe-ms` [500], `landing-sample-ms` [2000] | a between-ticks flush that sent nothing gets a lone ping when its kind wasn't measured this long; corrections use the landings of this long |
 | `max-corrections-per-second` [5] | |
 | `max-rewind-ms` [600], `rewind-jitter-factor` [1.0], `rewind-slack-ms` [150] | the per-attacker rewind cap (HR-2, one method for melee, Neue's landing and projectiles): `min(rttBase, rtt-ceiling-ms)` + the client's measured display delay + jitter (spread capped at the ceiling) + slack; `max-rewind-ms` is only a sanity bound. Past the cap a hit is judged at the target's truth at the capped age (`HitValidator`): a high-ping shooter leads moving players |
 | `attack-eye-offset-cap` [0.5] | off the truth, attacks are cast from the claim only within this per axis (review E3) |
+| `attack-eye-forecast-tolerance` [0.03] | ...and only for a gap the server caused (entries forced at their deadline, a refused window, a denied break, a revert snap) while every claim since the client was last on the truth landed within this of its belief, with no block between the truth and the claim; a made-up gap casts from the truth and counts as `eye offsets refused` (classic audit #1) |
 | `timer-drift-ms` [120], `timer-ack-settle-ms` [100], `max-banked-ticks` [10], `timer-queue-cap-ms` [400], `catch-up-gap-ms` [15] | the tick clock; pongs bind the timer for later frames, or after the settle (review timer-backlog); a burst's forfeited time is owed back (F4); catch-up windows don't count for deadlines (F3) |
 | `rtt-ceiling-ms` [250] | the ping lag compensation makes good, and what every slack (deadlines, visibility growth, correction lead) is sized from: `min(rttBase, this)` (review E5) |
 | `ack-jitter-ticks` [4], `max-unacked-ms` [1500] | ack deadline; past `max-unacked-ms` the player is frozen (NW-2: never kicked for a stall) |
@@ -221,11 +262,11 @@ All under `authoritative.` (defaults in brackets):
 | `vehicles` [`deny`] | `deny` refuses mounting under enforce; `vanilla` rides exempt (client-trusted) |
 | `honor-denied-predictions` [false], `max-attacks-per-client-tick` [1], `heartbeat-ping` [true], `bypass-audit` [true] | |
 | `replication.path-step-ticks` [2], `keep-alive` [true], `exact-radius` [24], `pre-roll` [true], `respawn-distance` [48], `path-buffer` [64], `repair-interval-ticks` [20] | K2 paths; a viewer whose mirror of a target went inexact gets it re-spawned at most this often |
-| `replication.low-jitter-step-ticks` [1], `low-jitter-ms` [25], `high-jitter-ms` [35], `step-switch-seconds` [5] | K per viewer (torture K1): a viewer whose own ack jitter (p90 − p10 of a full 256-ack window) stays under 25 ms for 5 s gets K1, over 35 ms for 5 s K2 again; a switch re-pairs the players fed to it |
+| `replication.low-jitter-step-ticks` [1], `low-jitter-ms` [25], `high-jitter-ms` [35], `step-switch-seconds` [5] | K per viewer (torture K1): a viewer whose own ack jitter (p90 − p10 of a full 256-ack window) stays under 25 ms for 5 s gets K1, over 35 ms for 5 s K2 again; a switch continues the paths fed to it at the new K from their next step (no re-pair) |
 | `mirror-history-ticks` [16] | lag compensation history per viewer-target pair; hits read their own tick's box and measure the rewind from its stamp, so 16 outlasts the 12-tick rewind cap (64 before config v4, migrated; review PT-16) |
-| `external-movers.block-window-ticks` [12], `block-range` [14], `band` [0.6], `drift-cap` [1.6], `entity-range` [0.1], `max-move` [1.0], `geyser-depth` [24] | pushes (pistons, shulker boxes, shulker lids) adopted within the band (drift-capped); a solid entity in contact whose client copy isn't exact, and geysers, exempt, vanilla's claim within `max-move` |
+| `external-movers.block-window-ticks` [12], `block-range` [14], `band` [0.6], `drift-cap` [1.6], `entity-range` [0.1], `max-move` [1.0], `geyser-depth` [24] | pushes (pistons, shulker boxes, shulker lids) while the truth's box is in what they move (a piston's lane, `block-range` long, a box's lid side): of a claim within the band only the part along the push, with its sign, at most 0.51 a tick and the push's travel (a piston 1.02, a lid 0.6), drift-capped (classic audit #4); a solid entity in contact whose client copy isn't exact, and geysers, exempt, vanilla's claim within `max-move` |
 | `visibility.enabled` [false], `always-visible-distance` [8], `check-interval-ticks` [2], `hide-after-checks` [2], `max-speed` [1.0], `max-checks-per-tick` [512], `effect-reach` [1.5] | anti-ESP; the check budget is server-wide |
-| `stats.anomaly-alerts` [true], `double-click-ratio` [0.3], `double-click-min-attack-ticks` [40], `aim-gcd-miss-ratio` [0.5], `aim-min-turns` [200], `click-streak-ticks` [100], `grammar-violations` [3], `pong-lag-ms` [150] | `AuthInputAnomalyEvent` thresholds; seconds of pongs behind the keep-alive (counted) |
+| `stats.anomaly-alerts` [true], `double-click-ratio` [1.0: 0.3 flagged butterfly clickers, classic audit #12; config v6 moves 0.3 up], `double-click-min-attack-ticks` [40], `aim-gcd-miss-ratio` [0.5], `aim-min-turns` [200], `click-streak-ticks` [100], `grammar-violations` [3], `pong-lag-ms` [150] | `AuthInputAnomalyEvent` thresholds; seconds of pongs behind the keep-alive (counted) |
 | `trace.directory` [`traces`], `debug.hud` [false], `debug.hud-interval-ticks` [5], `debug.log` [false] | |
 
 Knockback profiles take `motion-model: authoritative` (knock a player under authority from its simulated motion; others

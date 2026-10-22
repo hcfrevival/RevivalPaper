@@ -43,8 +43,11 @@ public final class Authority {
     private static volatile PathSink paths = PathWiring.INSTANCE;
     private static volatile Function<AuthPlayer, Simulation> simulations = player -> new PortSimulation(player.player());
 
-    // Players running in observe or enforce, for the world-change journal. Main thread only.
+    // Players running in observe or enforce, for the world-change journal, and by entity id for the judges. Main thread
+    // only. Review PT2-02: pruned of players who quit every server tick (no quit hook deactivates them), never by a read
     private static final ReferenceArrayList<AuthPlayer> ACTIVE = new ReferenceArrayList<>();
+    private static final java.util.List<AuthPlayer> ACTIVE_VIEW = java.util.Collections.unmodifiableList(ACTIVE);
+    private static final it.unimi.dsi.fastutil.ints.Int2ObjectOpenHashMap<AuthPlayer> ACTIVE_BY_ID = new it.unimi.dsi.fastutil.ints.Int2ObjectOpenHashMap<>();
 
     /** Before a player's chunk list is known (authority started mid-session), changes this close are pinned. */
     static final double JOURNAL_RANGE_SQR = 128.0 * 128.0;
@@ -206,6 +209,11 @@ public final class Authority {
 
     /** {@code ServerCommonPacketListenerImpl.suspendFlushing}: the server tick starts for this connection. */
     public static void onSuspendFlushing(final ServerCommonPacketListenerImpl listener) {
+        if (MinecraftServer.currentTick != pruneTick) {
+            // Once a server tick, whoever is online (review PT2-02: no quit hook deactivates a player under authority)
+            pruneTick = MinecraftServer.currentTick;
+            pruneDisconnected();
+        }
         if (listener instanceof final ServerGamePacketListenerImpl game) {
             game.player.revivalAuth.onSuspendFlushing();
         }
@@ -391,18 +399,46 @@ public final class Authority {
     }
 
     static void activated(final AuthPlayer player) {
-        if (!ACTIVE.contains(player)) {
+        pruneDisconnected();
+        final AuthPlayer before = ACTIVE_BY_ID.put(player.player().getId(), player);
+        if (before != player) {
+            if (before != null) {
+                ACTIVE.remove(before);
+            }
             ACTIVE.add(player);
         }
     }
 
     static void deactivated(final AuthPlayer player) {
+        if (ACTIVE_BY_ID.get(player.player().getId()) == player) {
+            ACTIVE_BY_ID.remove(player.player().getId());
+        }
         ACTIVE.remove(player);
+    }
+
+    private static int pruneTick = Integer.MIN_VALUE;
+
+    // Players who quit under authority (they never ran deactivate): their ServerPlayer and auth state go with them
+    static void pruneDisconnected() {
+        for (int i = ACTIVE.size() - 1; i >= 0; i--) {
+            final AuthPlayer auth = ACTIVE.get(i);
+            if (auth.player().hasDisconnected()) {
+                ACTIVE.remove(i);
+                if (ACTIVE_BY_ID.get(auth.player().getId()) == auth) {
+                    ACTIVE_BY_ID.remove(auth.player().getId());
+                }
+            }
+        }
     }
 
     /** Players currently under authority (observe or enforce). Main thread. */
     public static java.util.List<AuthPlayer> activePlayers() {
-        ACTIVE.removeIf(auth -> auth.player().hasDisconnected());
-        return java.util.Collections.unmodifiableList(ACTIVE);
+        return ACTIVE_VIEW;
+    }
+
+    /** The player under authority with this entity id, or null. Main thread. */
+    public static @Nullable AuthPlayer active(final int entityId) {
+        final AuthPlayer auth = ACTIVE_BY_ID.get(entityId);
+        return auth == null || auth.player().hasDisconnected() ? null : auth;
     }
 }

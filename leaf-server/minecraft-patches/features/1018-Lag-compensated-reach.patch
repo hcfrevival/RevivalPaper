@@ -1,0 +1,19 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: shaynelarocque <shaynelarocque@gmail.com>
+Date: Thu, 22 Oct 2026 16:02:55 -0400
+Subject: [PATCH] Lag-compensated reach
+
+
+diff --git a/net/minecraft/server/network/ServerGamePacketListenerImpl.java b/net/minecraft/server/network/ServerGamePacketListenerImpl.java
+index 71a011a6ba03031d0e4902e6178caac8125e36e8..500d67ab68e3d893aec42df5d545e35688e64f53 100644
+--- a/net/minecraft/server/network/ServerGamePacketListenerImpl.java
++++ b/net/minecraft/server/network/ServerGamePacketListenerImpl.java
+@@ -3124,7 +3124,7 @@ public class ServerGamePacketListenerImpl
+             if (target != null && level.getWorldBorder().isWithinBounds(target.blockPosition())) {
+                 AABB targetBounds = target.getBoundingBox();
+                 ItemStack mainHandItem = this.player.getMainHandItem();
+-                if (this.player.isWithinAttackRange(mainHandItem, targetBounds, io.papermc.paper.configuration.GlobalConfiguration.get().misc.clientInteractionLeniencyDistance.or(3.0))) { // Paper - configurable lenience
++                if (this.player.revivalAuth.judgedReach(target) || this.player.isWithinAttackRange(mainHandItem, targetBounds, io.papermc.paper.configuration.GlobalConfiguration.get().misc.clientInteractionLeniencyDistance.or(3.0))) { // Paper - configurable lenience // Revival - Lag-compensated reach
+                     if (!mainHandItem.has(DataComponents.PIERCING_WEAPON)) {
+                         if (target instanceof net.minecraft.world.entity.Mob mob) mob.ticksSinceLastInteraction = 0; // Purpur - Entity lifespan
+                         if (target instanceof ItemEntity

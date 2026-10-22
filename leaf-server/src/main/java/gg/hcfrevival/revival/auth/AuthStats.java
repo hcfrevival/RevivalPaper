@@ -105,6 +105,16 @@ public final class AuthStats {
     long correctionsHeld;
     long pathStepSwitches;
     long truthRewrites;
+    long landingFallbacks;
+    long correctionsMistimed;
+    long backstopsLimited;
+    long correctionsWaited;
+    long subMicronClaims;
+    long holeClaims;
+    long holeSnaps;
+    long eyeOffsetsRefused;
+    long groundedKnocks;
+    long knockJumps;
     long attacksOverCps;
     long pongsBehindKeepAlive;
     long teleportsHeld;
@@ -354,6 +364,66 @@ public final class AuthStats {
     /** Truth writes CraftBukkit's post-teleport {@code justTeleported} return skipped, written again at once. */
     public long truthRewrites() {
         return this.truthRewrites;
+    }
+
+    /** Corrections forecast from {@code ceil(rttBase / 50)}: no ping of their flush kind had come back lately (LandingLag). */
+    public long landingFallbacks() {
+        return this.landingFallbacks;
+    }
+
+    /** Corrections the client applied in another window than the one they were forecast to (LandingLag missed). */
+    public long correctionsMistimed() {
+        return this.correctionsMistimed;
+    }
+
+    /** Corrections left to the next claim while the client's windows were queued behind the running one (a catch-up). */
+    public long correctionsWaited() {
+        return this.correctionsWaited;
+    }
+
+    /** Accept backstops not sent: the second's corrections were spent (max-corrections-per-second). */
+    public long backstopsLimited() {
+        return this.backstopsLimited;
+    }
+
+    /** Claims off by less than {@code correction-persist-min} (sub-µm): counted, never corrected for persisting. */
+    public long subMicronClaims() {
+        return this.subMicronClaims;
+    }
+
+    /**
+     * Claims off the truth that the client's own denied block break explains (it walks or falls into the hole it predicted,
+     * until the restore): not corrected; the truth never has the hole.
+     */
+    public long holeClaims() {
+        return this.holeClaims;
+    }
+
+    /**
+     * Claims within {@code attack-eye-offset-cap} of the truth that the next attack wasn't cast from, because nothing the
+     * server sent explains the gap or a block stands in it (classic audit #1). An honest client only gets them while it
+     * stands in a block it broke that the server kept (the restored block is in the gap).
+     */
+    public long eyeOffsetsRefused() {
+        return this.eyeOffsetsRefused;
+    }
+
+    /** Knocks the client applied while on the ground (acked, not forced): the jump-reset share's base (classic audit #8). */
+    public long groundedKnocks() {
+        return this.groundedKnocks;
+    }
+
+    /**
+     * Of {@link #groundedKnocks}, those whose own window pressed jump: a jump reset in the very tick the knock lands. A
+     * human can't react inside that tick, only anticipate it; measured, not judged yet (no calibrated threshold).
+     */
+    public long knockJumps() {
+        return this.knockJumps;
+    }
+
+    /** Denied breaks whose restore snapped the client back where it broke the block (vanilla {@code syncBlockState}). */
+    public long holeSnaps() {
+        return this.holeSnaps;
     }
 
     /** Absolute corrections held back while a knock was on its way to the client (torture F5, load P0). */

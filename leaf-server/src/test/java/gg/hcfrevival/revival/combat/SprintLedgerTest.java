@@ -52,6 +52,24 @@ class SprintLedgerTest {
     }
 
     @Test
+    void underAuthorityStopPacketsMoveNothing() {
+        // Classic audit #2: a spoofed STOP_SPRINTING after each hit cleared the latch the held sprint re-arms through
+        final SprintLedger ledger = new SprintLedger();
+        ledger.simulated(true);
+        assertTrue(ledger.start(true)); // the simulation's sprint start
+        ledger.consume(); // a hit
+        ledger.stop(); // the cheat's STOP packet: ignored
+        assertFalse(ledger.start(true), "the held key's re-sprint after the hit doesn't arm");
+        assertEquals(0.0, ledger.level(true, LEGACY));
+        ledger.stopped(); // the simulation saw the sprint stop (a real w-tap)
+        assertTrue(ledger.start(true));
+        assertEquals(1.0, ledger.level(true, LEGACY));
+        ledger.simulated(false);
+        ledger.stop(); // authority off: the packet is the ledger's again
+        assertEquals(0.0, ledger.level(true, LEGACY));
+    }
+
+    @Test
     void stopDisarms() {
         final SprintLedger ledger = new SprintLedger();
         ledger.start(true);

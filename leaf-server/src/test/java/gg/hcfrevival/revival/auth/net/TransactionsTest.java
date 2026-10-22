@@ -364,4 +364,93 @@ class TransactionsTest {
         assertEquals(123_456L, out.sentMillis(0), "the step's stamp, not the send time");
         assertTrue(out.sentMillis(1) > 1_000_000_000_000L, "otherwise the send time");
     }
+
+    // NAS glitch 2026-10-22: a correction is forecast to where pings of its flush kind land, measured from the window the
+    // client was in at the flush to the window the pong comes in
+
+    private int newestPing() {
+        final Packet<?> last = this.connection.sent.getLast();
+        return last instanceof ClientboundPingPacket ping ? ping.getId() : pingId(contents(last).get(0));
+    }
+
+    @Test
+    void aFlushBetweenTicksLandsWhereItsPongComes() {
+        this.context.window = 10;
+        this.send(this.selfMotion(0.1)); // not coalesced: flushed at once
+        final Transactions.Acked out = new Transactions.Acked();
+        assertEquals(Transactions.ACKED, this.transactions.ack(this.newestPing(), 0, 12, out));
+        assertEquals(2, this.transactions.landingWindows(LandingLag.SCOPE, System.nanoTime(), 1_000_000_000L));
+        assertEquals(-1, this.transactions.landingWindows(LandingLag.TICK, System.nanoTime(), 1_000_000_000L));
+    }
+
+    @Test
+    void theTickBundleCountsFromTheWindowRunningAtTheTickEnd() {
+        this.context.coalesce = true;
+        this.context.window = 5;
+        this.transactions.send(this.connection, this.selfMotion(0.1), null, false, this.context); // opens the tick's bundle
+        this.context.window = 6; // a TickEnd came in during the same tick
+        this.transactions.endOfTick(this.connection, this.context, true);
+        final Transactions.Acked out = new Transactions.Acked();
+        assertEquals(Transactions.ACKED, this.transactions.ack(this.newestPing(), 0, 7, out));
+        assertEquals(1, this.transactions.landingWindows(LandingLag.TICK, System.nanoTime(), 1_000_000_000L));
+        assertEquals(-1, this.transactions.landingWindows(LandingLag.SCOPE, System.nanoTime(), 1_000_000_000L));
+    }
+
+    @Test
+    void theAsyncTrackersPingsSayNothingOfLanding() {
+        this.context.main = false;
+        this.send(this.selfMotion(0.1));
+        final Transactions.Acked out = new Transactions.Acked();
+        assertEquals(Transactions.ACKED, this.transactions.ack(this.newestPing(), 0, 9, out));
+        assertEquals(-1, this.transactions.landingWindows(LandingLag.SCOPE, System.nanoTime(), 1_000_000_000L));
+    }
+
+    @Test
+    void aProbeGoesOutOnlyWhenTheScopeSentNothing() {
+        this.context.window = 3;
+        this.transactions.flushOpen(this.connection, this.context, true);
+        assertEquals(1, this.connection.sent.size());
+        assertInstanceOf(ClientboundPingPacket.class, this.connection.sent.getFirst(), "a lone ping");
+        assertEquals(1, this.transactions.probes());
+        final Transactions.Acked out = new Transactions.Acked();
+        assertEquals(Transactions.ACKED, this.transactions.ack(this.newestPing(), 0, 3, out), "back within the window it went out in");
+        assertEquals(0, this.transactions.landingWindows(LandingLag.SCOPE, System.nanoTime(), 1_000_000_000L));
+        // A scope that gathered a bundle flushes it, its own ping measuring the landing
+        this.context.coalesce = true;
+        this.transactions.send(this.connection, this.selfMotion(0.2), null, false, this.context);
+        this.transactions.flushOpen(this.connection, this.context, true);
+        assertEquals(2, this.connection.sent.size());
+        assertEquals(1, this.transactions.probes());
+    }
+
+    @Test
+    void aPingFlushedInAStallIsNoLanding() {
+        // Its window was extrapolated (no TickEnd for a while): a client freeze would make it look like any landing
+        this.context.ticking = false;
+        this.send(this.selfMotion(0.1));
+        final Transactions.Acked out = new Transactions.Acked();
+        assertEquals(Transactions.ACKED, this.transactions.ack(this.newestPing(), 0, 9, out));
+        assertEquals(-1, this.transactions.landingWindows(LandingLag.SCOPE, System.nanoTime(), 1_000_000_000L));
+    }
+
+    @Test
+    void skippedPingsAreNotLandings() {
+        this.send(this.selfMotion(0.1));
+        this.send(this.selfMotion(0.2));
+        final Transactions.Acked out = new Transactions.Acked();
+        assertEquals(Transactions.SKIPPED, this.transactions.ack(this.newestPing(), 0, 4, out));
+        assertEquals(-1, this.transactions.landingWindows(LandingLag.SCOPE, System.nanoTime(), 1_000_000_000L));
+    }
+
+    @Test
+    void aPingTooOldIsDueWhateverTheWindowsSay() {
+        // Review X2-02: a client that stalled (stamps run ahead) or bunches its windows can't hold a pong past the wall
+        this.context.window = 50;
+        this.send(this.selfMotion(0.3));
+        final Transactions.Acked out = new Transactions.Acked();
+        final long now = System.nanoTime();
+        assertEquals(0, this.transactions.forceDue(51, 51, 5, 15, now, 1_000_000_000L, out), "young, and not past its windows");
+        assertEquals(1, this.transactions.forceDue(51, 51, 5, 15, now + 1_000_000_000L, 1_000_000_000L, out), "a second old: due");
+        assertEquals(1, out.size());
+    }
 }

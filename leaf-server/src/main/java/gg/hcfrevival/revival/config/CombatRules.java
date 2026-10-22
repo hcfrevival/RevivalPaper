@@ -8,9 +8,10 @@ import org.bukkit.configuration.ConfigurationSection;
 import org.jspecify.annotations.Nullable;
 
 /**
- * A combat rule set (docs/revival/neue-combat.md §2): {@link #CLASSIC} is plain 1.7 and changes nothing, {@link #NEUE}
- * is the rule set of Combo, the HCF team's own 1.7-PvP game ({@code Combo.Core/Combat/Rules.cs}): a click cap, a click
- * buffer, DI, the tipper and the parry. Rule sets work like knockback profiles: the presets are built in, a global
+ * A combat rule set (docs/revival/neue-combat.md §2): {@link #CLASSIC} is plain 1.7 and changes nothing,
+ * {@link #CLASSIC_CAPPED} is plain 1.7 with Neue's click cap and click buffer only, {@link #NEUE} is the rule set of
+ * Combo, the HCF team's own 1.7-PvP game ({@code Combo.Core/Combat/Rules.cs}): a click cap, a click buffer, DI, the
+ * tipper and the parry. Rule sets work like knockback profiles: the presets are built in, a global
  * {@code combat-rules} section overrides their keys or adds sets, and each world picks one with
  * {@code legacy-combat.rules}.
  * <p>
@@ -36,6 +37,12 @@ import org.jspecify.annotations.Nullable;
  * @param parryJitterTicks slack on the server-time floor of a block's age (§8.2): a stalled blocker gains at most this
  * @param riposteTicks after a parry the parrier's next hit within this long is a crit ({@code Combat.RiposteSeconds})
  * @param staggerTicks how long a parried attacker can't attack or block ({@code PlayerSim.StaggerSeconds})
+ * @param staggerJitterTicks slack on the stagger's real-time floor: under authority the lockout lasts its windows after the
+ *                           recoil's ack and at least {@code stagger − this} ticks of real time from the earliest an
+ *                           honest ack could have come (the recoil's send time plus the round trip expected then: the
+ *                           baseline, or the last ack's when the ping just rose), so a client that runs its ticks fast
+ *                           gains at most this much plus its recoil ack's round trip above that; an ack window that came
+ *                           in late doesn't move the floor, so it costs no honest click
  * @param staggerRecoilHorizontal the parried attacker is thrown back this fast ({@code Combat.RecoilHorizontal})
  * @param staggerRecoilVertical and up this fast ({@code Combat.RecoilVertical})
  * @param staggerMoveMultiplier movement speed while staggered ({@code PlayerSim.StaggerSlow}); 1 sends no slow at all
@@ -63,6 +70,7 @@ public record CombatRules(
     int parryJitterTicks,
     int riposteTicks,
     int staggerTicks,
+    int staggerJitterTicks,
     double staggerRecoilHorizontal,
     double staggerRecoilVertical,
     double staggerMoveMultiplier,
@@ -111,17 +119,26 @@ public record CombatRules(
 
     /** Plain 1.7: every Neue key is a no-op. */
     public static final CombatRules CLASSIC = new CombatRules(0.0, 2.0, 0, true, 0.0, false, 2.6, 1.0, 1.4, 1.0,
-        false, 3, 6, 7, 20, true, 2, 12, 10, 0.45, 0.22, 1.0, true, true, Feedback.DEFAULT);
+        false, 3, 6, 7, 20, true, 2, 12, 10, 1, 0.45, 0.22, 1.0, true, true, Feedback.DEFAULT);
+
+    /**
+     * Classic with Neue's click cap (12 a second, a burst of 2) and click buffer (0.15 s) and nothing else: no tipper, sour,
+     * DI, parry, stagger or riposte. It equals a {@code combat-rules.classic-capped} section of {@code max-cps: 12.0} and
+     * {@code click-buffer-seconds: 0.15}, which once started from classic, so a file that defines that set keeps working.
+     */
+    public static final CombatRules CLASSIC_CAPPED = new CombatRules(12.0, 2.0, 3, true, 0.0, false, 2.6, 1.0, 1.4, 1.0,
+        false, 3, 6, 7, 20, true, 2, 12, 10, 1, 0.45, 0.22, 1.0, true, true, Feedback.DEFAULT);
 
     /** Combo's {@code Rules.Neue}, without its moves and body hitboxes (§9: a vanilla client can't use them). */
     public static final CombatRules NEUE = new CombatRules(12.0, 2.0, 3, true, 15.0, true, 2.6, 1.1, 1.4, 0.9,
-        true, 3, 6, 7, 20, true, 2, 12, 10, 0.45, 0.22, 0.35, true, true, Feedback.DEFAULT);
+        true, 3, 6, 7, 20, true, 2, 12, 10, 1, 0.45, 0.22, 0.35, true, true, Feedback.DEFAULT);
 
     public static final Map<String, CombatRules> PRESETS;
 
     static {
         final Map<String, CombatRules> presets = new LinkedHashMap<>();
         presets.put(DEFAULT, CLASSIC);
+        presets.put("classic-capped", CLASSIC_CAPPED);
         presets.put("neue", NEUE);
         PRESETS = java.util.Collections.unmodifiableMap(presets);
     }
@@ -133,7 +150,7 @@ public record CombatRules(
         "max-cps", "click-burst", "click-buffer-seconds", "click-buffer-line-of-sight", "influence-degrees",
         "influence-projectiles", "tipper-from", "tipper-knock", "sour-under", "sour-knock", "parry", "parry-window-seconds",
         "parry-block-hit-seconds", "parry-rearm-seconds", "parry-rest-seconds", "parry-projectiles", "parry-jitter-ticks",
-        "riposte-seconds", "stagger-seconds", "stagger-recoil-horizontal", "stagger-recoil-vertical",
+        "riposte-seconds", "stagger-seconds", "stagger-jitter-ticks", "stagger-recoil-horizontal", "stagger-recoil-vertical",
         "stagger-move-multiplier", "stagger-sword-cooldown", "stagger-lowers-block", "feedback"
     );
 
@@ -204,6 +221,7 @@ public record CombatRules(
             (int) number(reader, path + "parry-jitter-ticks", base.parryJitterTicks(), 0.0, 20.0),
             seconds(reader, path + "riposte-seconds", base.riposteTicks()),
             seconds(reader, path + "stagger-seconds", base.staggerTicks()),
+            (int) number(reader, path + "stagger-jitter-ticks", base.staggerJitterTicks(), 0.0, 20.0),
             number(reader, path + "stagger-recoil-horizontal", base.staggerRecoilHorizontal(), 0.0, 3.9),
             number(reader, path + "stagger-recoil-vertical", base.staggerRecoilVertical(), 0.0, 3.9),
             number(reader, path + "stagger-move-multiplier", base.staggerMoveMultiplier(), 0.0, 1.0),

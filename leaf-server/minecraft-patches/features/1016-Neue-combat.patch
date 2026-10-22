@@ -4,6 +4,18 @@ Date: Thu, 22 Oct 2026 00:41:14 -0400
 Subject: [PATCH] Neue combat
 
 
+diff --git a/net/minecraft/server/level/ServerPlayerGameMode.java b/net/minecraft/server/level/ServerPlayerGameMode.java
+index d159acf35982ca4a5f874d79b851218f1c683d07..b2752d150d9350ebc9971652552ead93007431a0 100644
+--- a/net/minecraft/server/level/ServerPlayerGameMode.java
++++ b/net/minecraft/server/level/ServerPlayerGameMode.java
+@@ -482,6 +482,7 @@ public class ServerPlayerGameMode {
+             return InteractionResult.PASS;
+         }
+ 
++        if (gg.hcfrevival.revival.combat.LegacySwordBlocking.refusedBlock(player, itemStack)) { player.resyncUsingItem(player); return InteractionResult.PASS; } // Revival - Neue combat
+         if (player.getCooldowns().isOnCooldown(itemStack)) {
+             return InteractionResult.PASS;
+         }
 diff --git a/net/minecraft/server/network/ServerGamePacketListenerImpl.java b/net/minecraft/server/network/ServerGamePacketListenerImpl.java
 index f2f2157f83048c67ba8d96c448759fa914fe4063..71a011a6ba03031d0e4902e6178caac8125e36e8 100644
 --- a/net/minecraft/server/network/ServerGamePacketListenerImpl.java

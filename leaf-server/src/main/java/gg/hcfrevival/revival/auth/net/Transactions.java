@@ -91,6 +91,19 @@ public final class Transactions {
         /** {@code MinecraftServer.currentTick}. */
         int serverTick();
 
+        /** Whether this send is on the main thread (the async tracker's are not: their flushes say nothing of landing). */
+        default boolean mainThread() {
+            return true;
+        }
+
+        /**
+         * Whether the client's {@code TickEnd}s are coming in (one within the last two ticks): a ping flushed during a stall
+         * or a client freeze is stamped with a guessed window, so its landing is not measured.
+         */
+        default boolean ticking() {
+            return true;
+        }
+
         /** Whether this send happens on the main thread while the server tick holds this connection's flushes. */
         boolean coalesce();
 
@@ -120,6 +133,15 @@ public final class Transactions {
     private int[] pingServerTicks = new int[64];
     private int[] pingWindows = new int[64];
     private int[] pingPaced = new int[64];
+    // LandingLag: the window the client was in when each ping was flushed ({@link Context#windowTick}), and how it was
+    // flushed (UNSTAMPED until then, NOT_SAMPLED for the async tracker's); the oldest seq waiting for its flush, or MAX
+    private int[] pingFlushWindows = new int[64];
+    private byte[] pingFlushKinds = new byte[64];
+    private long firstUnstamped = Long.MAX_VALUE;
+    private long probes;
+    private final LandingLag landing = new LandingLag();
+    private static final byte UNSTAMPED = -2;
+    private static final byte NOT_SAMPLED = -1;
     // Stamps never go down (an extrapolated stamp can be ahead of the next window's own), so the FIFO stays in due order
     private int lastWindowStamp = Integer.MIN_VALUE;
     private int lastPacedStamp = Integer.MIN_VALUE;
@@ -282,6 +304,7 @@ public final class Transactions {
             }
             if (kind == OutboundClassifier.NONE) {
                 connection.send(packet, listener, flush);
+                this.flushed(flush, context);
                 return;
             }
             final TraceRecorder trace = context.trace();
@@ -297,6 +320,7 @@ public final class Transactions {
                     trace.ping(ping.getId());
                 }
                 connection.send(ping, null, flush);
+                this.flushed(flush, context);
                 return;
             }
             if (context.coalesce() && listener == null) {
@@ -313,6 +337,7 @@ public final class Transactions {
                 trace.state(packet);
             }
             connection.send(new ClientboundBundlePacket(List.of(ping, (Packet<? super ClientGamePacketListener>) packet)), listener, flush);
+            this.flushed(flush, context);
         }
     }
 
@@ -348,6 +373,7 @@ public final class Transactions {
         }
         if (!matters) {
             connection.send(bundle, listener, flush);
+            this.flushed(flush, context);
             return;
         }
         if (coalesce && listener == null && count + 1 < net.minecraft.network.protocol.BundlerInfo.BUNDLE_SIZE_LIMIT) {
@@ -386,6 +412,7 @@ public final class Transactions {
             this.tracePing(context, ping.getId());
             connection.send(ping, null, flush);
         }
+        this.flushed(flush, context);
     }
 
     private void openBundle(final Context context) {
@@ -485,17 +512,77 @@ public final class Transactions {
                 connection.send(ping, null, false);
             }
             this.pingedThisTick = false;
+            this.stampFlushed(LandingLag.TICK, context); // the flush resumes right after
         }
     }
 
     /**
      * Sends and flushes the bundle a coalescing scope outside the server tick gathered (review PT-02: windows replayed
-     * between ticks share one ping), if one is open.
+     * between ticks share one ping), if one is open. {@code probe}: when none was, a lone ping goes out instead, so the
+     * landing of this flush kind stays measured (LandingLag; the server tick's own ping measures the other).
      */
-    public void flushOpen(final Connection connection) {
+    public void flushOpen(final Connection connection, final Context context, final boolean probe) {
         synchronized (this) {
-            this.closeOpen(connection, null, true);
+            if (this.open != null) {
+                this.closeOpen(connection, context, true);
+            } else if (probe) {
+                final ClientboundPingPacket ping = this.newPing(context);
+                this.tracePing(context, ping.getId());
+                connection.send(ping, null, true);
+                this.probes++;
+            }
+            this.stampFlushed(LandingLag.SCOPE, context);
         }
+    }
+
+    private void flushed(final boolean flush, final Context context) {
+        if (flush) {
+            this.stampFlushed(LandingLag.SCOPE, context);
+        }
+    }
+
+    // The pings sent since the last flush went out now: stamped with the window the client is in and the flush kind
+    private void stampFlushed(final int kind, final Context context) {
+        if (this.firstUnstamped == Long.MAX_VALUE) {
+            return;
+        }
+        final int window = context.windowTick();
+        final byte stamp = context.ticking() ? (byte) kind : NOT_SAMPLED;
+        final int mask = this.pingIds.length - 1;
+        for (int i = this.pingCount - 1; i >= 0; i--) {
+            final int slot = (this.pingHead + i) & mask;
+            if (this.pingSeqs[slot] < this.firstUnstamped) {
+                break;
+            }
+            if (this.pingFlushKinds[slot] == UNSTAMPED) {
+                this.pingFlushKinds[slot] = stamp;
+                this.pingFlushWindows[slot] = window;
+            }
+        }
+        this.firstUnstamped = Long.MAX_VALUE;
+    }
+
+    /**
+     * The median landing of recent pings flushed by {@code kind} ({@link LandingLag#SCOPE} or {@link LandingLag#TICK}):
+     * a packet flushed now is applied before the tick of the window that many after the one the client is in. -1 when not
+     * measured.
+     */
+    public int landingWindows(final int kind, final long nowNanos, final long maxAgeNanos) {
+        synchronized (this) {
+            return this.landing.estimate(kind, nowNanos, maxAgeNanos);
+        }
+    }
+
+    /** When a ping flushed by {@code kind} last came back ({@code System.nanoTime}), or 0. */
+    public long lastLandingNanos(final int kind) {
+        synchronized (this) {
+            return this.landing.lastSampleNanos(kind);
+        }
+    }
+
+    /** Lone pings {@link #flushOpen} sent to measure landing. */
+    public long probes() {
+        return this.probes;
     }
 
     /** Sends the open bundle now (a packet that can't join it is next, or the open bundle is full). */
@@ -564,6 +651,14 @@ public final class Transactions {
         this.lastPacedStamp = Math.max(this.lastPacedStamp, context.pacedTick());
         this.pingWindows[slot] = this.lastWindowStamp;
         this.pingPaced[slot] = this.lastPacedStamp;
+        if (context.mainThread()) {
+            this.pingFlushKinds[slot] = UNSTAMPED;
+            if (this.firstUnstamped == Long.MAX_VALUE) {
+                this.firstUnstamped = this.pingSeqs[slot];
+            }
+        } else {
+            this.pingFlushKinds[slot] = NOT_SAMPLED;
+        }
         this.pingCount++;
         this.pingedThisTick = true;
         this.sent++;
@@ -679,6 +774,7 @@ public final class Transactions {
         this.entryHead = 0;
         this.pingCount = 0;
         this.pingHead = 0;
+        this.firstUnstamped = Long.MAX_VALUE;
         this.overflows++;
         this.lostSync = true;
     }
@@ -713,6 +809,8 @@ public final class Transactions {
         this.pingServerTicks = unwrap(this.pingServerTicks, this.pingHead, this.pingCount, grown);
         this.pingWindows = unwrap(this.pingWindows, this.pingHead, this.pingCount, grown);
         this.pingPaced = unwrap(this.pingPaced, this.pingHead, this.pingCount, grown);
+        this.pingFlushWindows = unwrap(this.pingFlushWindows, this.pingHead, this.pingCount, grown);
+        this.pingFlushKinds = unwrap(this.pingFlushKinds, this.pingHead, this.pingCount, grown);
         this.pingHead = 0;
     }
 
@@ -748,6 +846,14 @@ public final class Transactions {
         return out;
     }
 
+    private static byte[] unwrap(final byte[] ring, final int head, final int count, final int length) {
+        final byte[] out = new byte[length];
+        for (int i = 0; i < count; i++) {
+            out[i] = ring[(head + i) & (ring.length - 1)];
+        }
+        return out;
+    }
+
     private static long[] unwrap(final long[] ring, final int head, final int count, final int length) {
         final long[] out = new long[length];
         for (int i = 0; i < count; i++) {
@@ -774,6 +880,11 @@ public final class Transactions {
      * order.
      */
     public int ack(final int id, final int serverTick, final Acked out) {
+        return this.ack(id, serverTick, Integer.MIN_VALUE, out);
+    }
+
+    /** As {@link #ack(int, int, Acked)}; {@code pongWindow}: the client window the pong came in (samples LandingLag). */
+    public int ack(final int id, final int serverTick, final int pongWindow, final Acked out) {
         if (!ours(id)) {
             this.foreign++;
             return FOREIGN;
@@ -806,6 +917,8 @@ public final class Transactions {
             final long seq = this.pingSeqs[slot];
             final long sentNanos = this.pingSentNanos[slot];
             final int sentTick = this.pingServerTicks[slot];
+            final byte flushKind = this.pingFlushKinds[slot];
+            final int flushWindow = this.pingFlushWindows[slot];
             for (int i = 0; i <= found; i++) {
                 this.recentAcks[this.recentAckIndex] = this.pingIds[(this.pingHead + i) & mask];
                 this.recentAckIndex = (this.recentAckIndex + 1) % RECENT_ACKS;
@@ -826,6 +939,9 @@ public final class Transactions {
             this.lastRttNanos = now - sentNanos;
             this.lastRttTicks = serverTick - sentTick;
             this.rtt.sample(this.lastRttNanos); // rttBase: never the latest pong (§15.1)
+            if (found == 0 && flushKind >= 0 && pongWindow != Integer.MIN_VALUE) {
+                this.landing.sample(flushKind, pongWindow - flushWindow, now);
+            }
             if (found > 0) {
                 this.skipped += found;
                 this.violations++;
@@ -849,13 +965,23 @@ public final class Transactions {
      * windows can stretch, {@code windowDeadline} windows of any kind.
      */
     public int forceDue(final int window, final int pacedWindow, final int deadlineWindows, final int windowDeadline, final Acked out) {
+        return this.forceDue(window, pacedWindow, deadlineWindows, windowDeadline, 0L, Long.MAX_VALUE, out);
+    }
+
+    /**
+     * As above, and a ping sent {@code maxAgeNanos} or more before {@code nowNanos} is due whatever the window counts say
+     * (review X2-02: window stamps a client can outrun, by stalling or by bunching its windows, never hold a pong longer).
+     */
+    public int forceDue(final int window, final int pacedWindow, final int deadlineWindows, final int windowDeadline, final long nowNanos,
+                        final long maxAgeNanos, final Acked out) {
         synchronized (this) {
             final int mask = this.pingIds.length - 1;
             long seq = -1;
             int forced = 0;
             for (int i = 0; i < this.pingCount; i++) {
                 final int slot = (this.pingHead + i) & mask;
-                if (pacedWindow - this.pingPaced[slot] < deadlineWindows && window - this.pingWindows[slot] < windowDeadline) {
+                if (pacedWindow - this.pingPaced[slot] < deadlineWindows && window - this.pingWindows[slot] < windowDeadline
+                    && nowNanos - this.pingSentNanos[slot] < maxAgeNanos) {
                     break;
                 }
                 if (this.pingSeqs[slot] > this.releasedSeq) {
@@ -999,6 +1125,7 @@ public final class Transactions {
             this.entryHead = 0;
             this.pingCount = 0;
             this.pingHead = 0;
+            this.firstUnstamped = Long.MAX_VALUE;
             if (this.open != null) {
                 this.spare(this.open); // never sent
                 this.open = null;

@@ -107,24 +107,26 @@ public final class LegacyKnockback {
 
     /**
      * START_SPRINTING: arms the sprint ledger and fires {@link SprintArmEvent}. Under authority the simulation arms it
-     * instead ({@link #simulatedSprint}), so sprint packets alone can't re-arm a sprint knock.
+     * instead ({@link #simulatedSprint}), so sprint packets alone can't re-arm a sprint knock: not even in a window the
+     * timer refused, whose START still replays (classic audit #2).
      */
     public static void sprintStart(final ServerPlayer player) {
-        if (player.revivalAuth.ownsClientState()) {
+        if (player.revivalSprintLedger.simulated()) {
             return;
         }
         arm(player, player.onGround());
     }
 
     /**
-     * The simulation saw the client start or stop sprinting (enforce, design §7.2): the ledger follows the client's real
-     * sprint. {@code onGround} is the client's ground state when it decided, before that tick's move.
+     * The simulation saw the client's sprint change from one tick end to the next, as {@code sendIsSprintingIfNeeded}
+     * reports it (enforce, design §7.2): the ledger follows the client's real sprint. {@code onGround} is the client's
+     * ground state when it decided, before that tick's move.
      */
     public static void simulatedSprint(final ServerPlayer player, final boolean sprinting, final boolean onGround) {
         if (sprinting) {
             arm(player, onGround);
         } else {
-            player.revivalSprintLedger.stop();
+            player.revivalSprintLedger.stopped();
         }
     }
 

@@ -17,11 +17,15 @@ import net.minecraft.world.phys.AABB;
  * Movers outside the player's own tick in the client's level (design §15.6, auth-sim §6):
  * <ul>
  *   <li>{@link #PUSH}: a piston's moving blocks or a shulker box's lid, from the {@code BlockEvent} the client applied,
- *       for {@code external-movers.block-window-ticks} within {@code external-movers.block-range} of it; and a shulker's
- *       lid opening into the player's box ({@code Shulker.onPeekAmountChange} moves it with {@code Entity.move(SHULKER)}
- *       in the shulker's client tick, which the client's copy of it reports, {@link #lidPush}). The truth is still
- *       simulated; a claim within {@code external-movers.band} of it is adopted, up to {@code external-movers.drift-cap}
- *       per drift window (review E2: an exemption handed the tick to vanilla);</li>
+ *       for {@code external-movers.block-window-ticks}, while the truth's box (0.51 deep along the push, one tick of
+ *       piston travel) is in what it moves: the piston's lane (its head and the 12 blocks a push can move, one high
+ *       more for what stands on them), the box's own block and the block its lid opens into; and a shulker's lid opening
+ *       into the player's box ({@code Shulker.onPeekAmountChange} moves it with {@code Entity.move(SHULKER)} in the
+ *       shulker's client tick, which the client's copy of it reports, {@link #lidPush}). The truth is still simulated; of
+ *       a claim within {@code external-movers.band} of it only the part along the push is adopted, with its sign, at most
+ *       0.51 a tick and the push's travel in all (a piston 1.02, a lid 0.6), and up to {@code external-movers.drift-cap}
+ *       per drift window (review E2: an exemption handed the tick to vanilla; classic audit #4: any 0.6 claim near any
+ *       piston or shulker box was adopted, a self-made claim-wall climb);</li>
  *   <li>{@link #SOLID}: a boat, shulker or happy ghast touching the player's box whose client copy the port does not
  *       collide with exactly (a placeholder until a logged spawn, a copy that went inexact, a vehicle this client drove,
  *       a passenger), and a potent sulfur geyser under a player in water: the port's {@code EXTERNAL_MOVER} exemption,
@@ -42,23 +46,76 @@ final class ExternalMovers {
 
     private final ArrayList<Entity> found = new ArrayList<>(1);
     private final BlockPos.MutableBlockPos cursor = new BlockPos.MutableBlockPos();
-    private int blockTick = Integer.MIN_VALUE / 2;
     private int lidTick = Integer.MIN_VALUE / 2;
-    private double blockX;
-    private double blockY;
-    private double blockZ;
+
+    // The last EVENTS block events (a ring): when, what they move (an AABB), along which axis and sign, and how far in all
+    private static final int EVENTS = 4;
+    /** One tick of piston travel ({@code PistonMovingBlockEntity}: progress 0.5 a tick, and a push of up to 0.51). */
+    static final double TICK_TRAVEL = 0.51;
+    private final int[] eventTick = new int[EVENTS];
+    private final double[] eventBox = new double[EVENTS * 6];
+    private final int[] eventAxis = new int[EVENTS];
+    private final int[] eventSign = new int[EVENTS];
+    private final double[] eventRoom = new double[EVENTS];
+    private int nextEvent;
+    // The event near() matched, -1 for a shulker's lid (any axis), -2 for none
+    private int pushing = -2;
+
+    ExternalMovers() {
+        this.reset();
+    }
 
     /** {@link #near} results. */
     static final int NONE = 0;
     static final int PUSH = 1;
     static final int SOLID = 2;
 
-    /** A piston or shulker box {@code BlockEvent} the client applied before tick {@code tick}. */
-    void blockEvent(final int tick, final BlockPos pos) {
-        this.blockTick = tick;
-        this.blockX = pos.getX() + 0.5;
-        this.blockY = pos.getY() + 0.5;
-        this.blockZ = pos.getZ() + 0.5;
+    /**
+     * A piston or shulker box {@code BlockEvent} the client applied before tick {@code tick}: {@code b0}, {@code b1} as
+     * {@code PistonBaseBlock.triggerEvent} reads them (0 extend, 1 retract, 2 drop; the facing's 3D data value), and
+     * {@code state}, the box as the client's world holds it (its facing); {@code range}, {@code external-movers.block-range}:
+     * how far along its facing a piston's lane reaches (13 at most: the head and the 12 blocks it can push).
+     */
+    void blockEvent(final int tick, final BlockPos pos, final net.minecraft.world.level.block.Block block, final int b0, final int b1,
+                    final net.minecraft.world.level.block.state.BlockState state, final double range) {
+        final net.minecraft.core.Direction facing;
+        final double travel;
+        final int sign;
+        int near = 1;
+        int far;
+        if (block instanceof net.minecraft.world.level.block.piston.PistonBaseBlock) {
+            if (b0 != 0 && b0 != 1) {
+                return; // a drop moves nothing
+            }
+            facing = net.minecraft.core.Direction.from3DDataValue(b1);
+            travel = 1.02; // PistonMovingBlockEntity.moveCollidedEntities: each tick's progress plus 0.01, two ticks
+            sign = b0 == 0 ? 1 : -1; // a sticky retract pulls back toward the base
+            far = (int) Math.max(1.0, Math.min(net.minecraft.world.level.block.piston.PistonStructureResolver.MAX_PUSH_DEPTH + 1, Math.floor(range)));
+        } else if (state.getBlock() instanceof net.minecraft.world.level.block.ShulkerBoxBlock) {
+            facing = state.getValue(net.minecraft.world.level.block.ShulkerBoxBlock.FACING);
+            travel = 0.6; // ShulkerBoxBlockEntity.moveCollidedEntities: the lid's 0.5 plus 0.01 in each of its 10 ticks
+            sign = 1;
+            near = 0;
+            far = 1;
+        } else {
+            return;
+        }
+        final int e = this.nextEvent;
+        this.nextEvent = (e + 1) % EVENTS;
+        this.eventTick[e] = tick;
+        final int ax = facing.getAxis().ordinal();
+        this.eventAxis[e] = ax;
+        this.eventSign[e] = sign * facing.getAxisDirection().getStep();
+        this.eventRoom[e] = travel + 1.0E-6;
+        final BlockPos a = pos.relative(facing, near);
+        final BlockPos b = pos.relative(facing, far);
+        final int o = e * 6;
+        this.eventBox[o] = Math.min(a.getX(), b.getX());
+        this.eventBox[o + 1] = Math.min(a.getY(), b.getY());
+        this.eventBox[o + 2] = Math.min(a.getZ(), b.getZ());
+        this.eventBox[o + 3] = Math.max(a.getX(), b.getX()) + 1.0;
+        this.eventBox[o + 4] = Math.max(a.getY(), b.getY()) + (facing.getAxis() == net.minecraft.core.Direction.Axis.Y ? 1.0 : 2.0); // what stands on it
+        this.eventBox[o + 5] = Math.max(a.getZ(), b.getZ()) + 1.0;
     }
 
     /** A shulker's lid opened into the player's box in the client's entity ticks of tick {@code tick}. */
@@ -67,8 +124,44 @@ final class ExternalMovers {
     }
 
     void reset() {
-        this.blockTick = Integer.MIN_VALUE / 2;
         this.lidTick = Integer.MIN_VALUE / 2;
+        java.util.Arrays.fill(this.eventTick, Integer.MIN_VALUE / 2);
+        this.pushing = -2;
+    }
+
+    /**
+     * Of {@code (ox, oy, oz)}, a claim's offset from the truth in a {@link #PUSH} tick, the part the push explains into
+     * {@code out}: the component along the matched push with its sign, at most {@link #TICK_TRAVEL} and what is left of
+     * the push's travel; zero on the other axes. A shulker's lid ({@link #lidPush}) explains the whole offset. Returns
+     * whether there is any.
+     */
+    boolean adoptable(final double ox, final double oy, final double oz, final double[] out) {
+        out[0] = 0.0;
+        out[1] = 0.0;
+        out[2] = 0.0;
+        if (this.pushing == -1) {
+            out[0] = ox;
+            out[1] = oy;
+            out[2] = oz;
+            return ox != 0.0 || oy != 0.0 || oz != 0.0;
+        }
+        if (this.pushing < 0) {
+            return false;
+        }
+        final int ax = this.eventAxis[this.pushing];
+        final double along = ax == 0 ? ox : ax == 1 ? oy : oz;
+        if (along * this.eventSign[this.pushing] <= 0.0 || Math.abs(along) > Math.min(TICK_TRAVEL + 1.0E-6, this.eventRoom[this.pushing])) {
+            return false;
+        }
+        out[ax] = along;
+        return true;
+    }
+
+    /** The {@link #adoptable} part was adopted: it uses up the push's travel. */
+    void adopted(final double[] part) {
+        if (this.pushing >= 0) {
+            this.eventRoom[this.pushing] -= Math.abs(part[this.eventAxis[this.pushing]]);
+        }
     }
 
     /**
@@ -96,19 +189,36 @@ final class ExternalMovers {
         if (this.geyserBelow(box, world, settings.externalMoverGeyserDepth())) {
             return SOLID;
         }
+        this.pushing = -2;
         if (tick - this.lidTick >= 0 && tick - this.lidTick <= settings.externalMoverBlockWindowTicks()) {
+            this.pushing = -1;
             return PUSH;
         }
-        if (tick - this.blockTick <= settings.externalMoverBlockWindowTicks()) {
-            final double dx = x - this.blockX;
-            final double dy = y - this.blockY;
-            final double dz = z - this.blockZ;
-            final double range = settings.externalMoverBlockRange();
-            if (dx * dx + dy * dy + dz * dz <= range * range) {
-                return PUSH;
+        return this.lane(tick, box, settings.externalMoverBlockWindowTicks()) ? PUSH : NONE;
+    }
+
+    /** Whether {@code box} is in what a recent block event moves (the most recent such event becomes the push). */
+    boolean lane(final int tick, final AABB box, final int windowTicks) {
+        int best = -1;
+        for (int e = 0; e < EVENTS; e++) {
+            if (tick - this.eventTick[e] > windowTicks || tick < this.eventTick[e] || this.eventRoom[e] <= 0.0) {
+                continue;
+            }
+            final int o = e * 6;
+            final int ax = this.eventAxis[e];
+            final double reach = TICK_TRAVEL;
+            if (box.maxX + (ax == 0 ? reach : 0.0) > this.eventBox[o] && box.minX - (ax == 0 ? reach : 0.0) < this.eventBox[o + 3]
+                && box.maxY + (ax == 1 ? reach : 0.0) > this.eventBox[o + 1] && box.minY - (ax == 1 ? reach : 0.0) < this.eventBox[o + 4]
+                && box.maxZ + (ax == 2 ? reach : 0.0) > this.eventBox[o + 2] && box.minZ - (ax == 2 ? reach : 0.0) < this.eventBox[o + 5]
+                && (best < 0 || this.eventTick[e] > this.eventTick[best])) {
+                best = e;
             }
         }
-        return NONE;
+        if (best >= 0) {
+            this.pushing = best;
+            return true;
+        }
+        return false;
     }
 
     // LAUNCH_ENTITY_TICKER launches entities in the water column above potent sulfur (PotentSulfurBlockEntity)

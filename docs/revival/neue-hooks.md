@@ -95,6 +95,31 @@ swings. Marker: `... ServerGamePacketListenerImpl.java | gg.hcfrevival.revival.c
 Replaces the `} else {` line. Without it a held click whooshes "no damage" and then lands, and a parried hit whooshes
 under the parry sound. Decided: apply it (spec §15 open question 3).
 
+### U. The block gate — `ServerPlayerGameMode.useItem`, just before its cooldown check
+
+```java
+        if (gg.hcfrevival.revival.combat.LegacySwordBlocking.refusedBlock(player, itemStack)) { player.resyncUsingItem(player); return InteractionResult.PASS; } // Revival - Neue combat
+        if (player.getCooldowns().isOnCooldown(itemStack)) {
+            return InteractionResult.PASS;
+        }
+```
+
+`refusedBlock` is true for a legacy blocking weapon on cooldown, or any while Neue's stagger locks its holder out, and
+only where the world's rules parry: in a classic world it is always false, so the use falls through to vanilla's silent
+cooldown PASS and the world sends exactly the traffic it did before (AGENTS.md rule 5; the live round "classic: a sword
+or a pearl on cooldown is refused without a resync" checks it). Why there: the server's one entry for every use, so it covers legacy weapons whose use never reaches
+`LegacySwordBlocking.startBlocking` (spears, tridents, `BLOCKS_ATTACKS`), and it resyncs where vanilla's own cooldown
+check refuses without a word: a block pressed in the parried click's own window, or before the stagger's cooldown reached
+the client (real-client run N1), left the client blocking for its whole hold while the server never was. The resync
+(`LivingEntity.resyncUsingItem`, which marks USE server-meant under authority) drops it at the ack, as a guard break.
+`NeueCombat.useStarted` skips a refused block, so the parry clock isn't armed for it. Applied in the main tree (patch
+1016, marker listed).
+
+Not done: the reviewers' optional cooldown top-up on refusal (to stop a held right-click's retries flickering outside
+authority). With the default `stagger-sword-cooldown` the client's own cooldown ends at most a tick or two before the
+lockout, so a held right-click retries (every 4 ticks) at most once into it; with `stagger-sword-cooldown: false` the
+owner chose no cooldown cue, which a top-up would bring back.
+
 ## `AuthPlayer` calls (plain source, netcode)
 
 | Where | Call | Semantics |
@@ -112,10 +137,14 @@ under the parry sound. Decided: apply it (spec §15 open question 3).
 
 What the stagger sends (the netcode bundles it into one ack window): `ClientboundSetEntityMotionPacket` (the recoil,
 through `PlayerVelocityEvent`; a cancelled event sends none and the lockout falls back to the round trip),
-`ClientboundCooldownPacket` (`addCooldown(sword, stagger)`), the use-flag echo if the attacker was blocking
-(`stopUsingItem()`), the `hcfrevival:neue_stagger` `movement_speed` modifier (`ADD_MULTIPLIED_TOTAL`, −0.65 for Neue),
-and a private `item.shield.break` sound. The modifier comes off when the attacker's window reaches
-`T_s + stagger − round(rttBase / 50)` (checked each server tick).
+`ClientboundCooldownPacket`s (`addCooldown(group, stagger + 1)` on every blocking weapon's group the attacker carries,
+so the client's sweep runs a full `stagger` ticks after its own decrement in the ack window; real-client run N3), the
+use-flag echo if the attacker was blocking (`stopUsingItem()`), the `hcfrevival:neue_stagger` `movement_speed` modifier
+(`ADD_MULTIPLIED_TOTAL`, −0.65 for Neue) with its own `ClientboundUpdateAttributesPacket` sent right after it (N2: the
+attribute sync would otherwise go out at the end of the tick, after the bundle), and a private `item.shield.break`
+sound. The modifier comes off when the attacker's window reaches `T_slow + stagger − round(rttBase / 50)`, `T_slow`
+being the window that acked the slow's own packet (the recoil's `T_s` only if no slow packet went out; checked each
+server tick).
 
 ## Notes for the netcode side
 
@@ -131,6 +160,41 @@ and a private `item.shield.break` sound. The modifier comes off when the attacke
   fresh click: keep it 0 in Neue worlds (written in revival.yml's header).
 - **`RevivalConfig.CURRENT_VERSION` is 2** (combat-rules, legacy-combat.rules). The `authoritative.stats.click-*` keys
   of §12 are the netcode's; they need no further bump.
+
+## Cheat suite 2 (L1, L3, L4): what changed, and two requests
+
+Combat side, done (`combat/**`, `config/CombatRules`):
+
+- **L1, every click is a swing.** `NeueCombat.beforeAttack` now records the swing for every attack that reaches
+  `Player.attack`, including the netcode's own replays (it used to skip them, so an `Attack` without its `Punch` left no
+  swing on record and the block raised after it got a full window) and attacks the lockout refuses. A held click landing
+  is not a new click.
+- **L4, no block and no parry while staggered.** The stagger puts its cooldown on every blocking weapon the attacker
+  carries, each item type its own group (`NeueCombat.swordCooldowns`, never cutting a longer cooldown already on a group),
+  so the vanilla client refuses the block and the simulation's prediction (`ClientView.predictsUse`) agrees. Anything
+  that gets past that (a sword picked up during the lockout, a spear's kinetic use, a trident, `stagger-sword-cooldown:
+  false`) meets hook U below, which refuses the use and resyncs the use flags, so no ghost block stays up on the client.
+  `NeueCombat.useStarted` doesn't arm the parry clock for a refused block. `NeueCombat.parried` never parries for a
+  parrier who is locked out.
+- **L3, a real-time floor on the lockout.** Under authority the lockout lasts its windows (`T_s … T_s + stagger − 1`) and
+  also until `anchor + (stagger − stagger-jitter-ticks) × the client's tick period`, on `System.nanoTime` (the clock
+  `TickClock` budgets windows with, so server lag or a hitch never lengthens an honest lockout). The anchor is the earliest
+  an honest ack could have come, `min(ack processed, recoil sent + ackRtt)`, so an ack window that came in late (jitter,
+  a retransmit, a slow frame) costs no honest click. `ackRtt` is read when the recoil goes out, before its own ack can
+  move it: `max(transactions().rttBaseNanos(), transactions().lastRttNanos())`. The baseline alone (a p10 that takes
+  about 1.5 s to follow a rise) let cheat suite 2's 3x timer at 200 ms, its ping raised 1.3 s before the parry, attack
+  12 server ticks after it against the honest 15. New key `combat-rules.<set>.stagger-jitter-ticks` (1 in both
+  presets): a client running its ticks fast gains at most that tick plus its recoil ack's round trip above `ackRtt`.
+  The accessors it reads already exist; no new one is needed.
+
+Requests to the netcode (`AuthPlayer`, not applied):
+
+1. **L1, attacks that never reach `Player.attack`.** First thing in `runAttack`, for every `Attack` the grammar admits
+   (judged invalid, over the cap, locked out or delivered): `gg.hcfrevival.revival.combat.NeueCombat.swung(this.player);`.
+   And for a `Punch` in the lockout, which isn't replayed (so the `handlePunch` hook doesn't see it), call the same before
+   skipping it. Both are idempotent with the hooks for the same window.
+2. **L2 (yours, from the same report).** `this.cadence.onWindow(cadenceEligible, Math.max(this.punchesThisTick,
+   this.attacksThisTick))`, so a clicker that drops its `Punch` packets still reads as clicks.
 
 ## Decisions taken on the combat side
 
@@ -172,13 +236,14 @@ skipped in the async-tracker run, where authority refuses to start. Then classic
 It checks: tipper/plain/sour knocks of 0.44/0.40/0.36, a 15° DI bend from held A (relative to straight away, length and
 height kept), a held click landing in the server tick whose level phase opened the window and flagged buffered, a click
 made 4 or more ticks early expiring, a parry (event, no damage, window or flash, riposte ready, recoil (0, 0.22, −0.45),
-a 10-tick cooldown on the sword, the slow, the guard-break sound, locked out), the riposte crit (12 damage) used up, the
-first attack after the stagger delivered exactly at `T_s + 10` under enforce (`S_parry + rtt + 10` outside, the round
-trip taken at the parry), the slow off, no correction for the staggered client, a block-hit being a plain 4.5 block, and
-classic unchanged (0.40 at the edge, the click lost, a plain block, no stagger). Under enforce a third client, 450 ms away
-(every clientbound packet 9 ticks late), sees the victim sneaking across older than its rewind cap: aiming at the trailing
-edge of the box it shows is INVALID MISSED (the truth at the capped age is past the ray), aiming at its leading edge (a
-lead) lands (auth-combat.md §2.2).
+an 11-tick cooldown on each sword group (10 after the client's own decrement), the slow sent in the recoil's tick, the
+guard-break sound, locked out), the riposte crit (12 damage) used up, the first attack after the stagger delivered
+exactly at `T_s + 10` under enforce (`S_parry + rtt + 10` outside, the round trip taken at the parry), the slow off, no
+correction for the staggered client, a block-hit being a plain 4.5 block, and classic unchanged (0.40 at the edge, the
+click lost, a plain block, no stagger). Under enforce a third client, 450 ms away (every clientbound packet 9 ticks
+late), sees the victim sneaking across older than its rewind cap: aiming at the trailing edge of the box it shows is
+INVALID MISSED (the truth at the capped age is past the ray), aiming at its leading edge (a lead) lands (auth-combat.md
+§2.2).
 
 Determinism (2026-10-22). Health is the measure, so the set runs the world peaceful with no natural regeneration and puts
 both back: the async run's flat world spawned slimes that hit the parrier ("health 14, window 14"), and the sync run
@@ -187,3 +252,18 @@ click). Under enforce a tick's packets reach the client in its bundle at the tic
 sound are read a tick later, and the attacker keeps its crosshair on the victim while the recoil and the riposte's knock
 lift it (a level ray from mid-air passes over the victim's head, which the judge calls a miss, not the lockout); the first
 attack after the lockout lands as a 1.7 crit when it is still falling.
+
+## Netcode, classic first (2026-10-22): where the requests stand
+
+- **L1, the netcode's `NeueCombat.swung` calls in `runAttack`: parked.** Classic comes first and L1 only matters for the
+  parry window, so `AuthPlayer` calls no `swung`. The combat side's own L1 (`beforeAttack` records every attack that
+  reaches `Player.attack`) stands.
+- **L2: done** in `AuthPlayer`: `cadence.onWindow(cadenceEligible, max(punchesThisTick, attacksThisTick))`, and a window
+  with more attacks than punches is an `attack-without-punch` grammar count (`InputRules`, never a drop).
+- **R2C-07: done** in `AuthPlayer`: `NeueCombat.applied` runs when a SELF_MOTION lands (the client applies the recoil
+  then), never for a force-applied one.
+- **Request (cheat suite 2 H2), `NeueLiveScenarios`:** the reference model's use call,
+  `this.model.startUsingItem(use.hand())`, becomes `this.model.startUsingItem(use.hand(), this.view)`, so the model reads
+  the hands the view holds after the tick's hotbar key, as `AuthPlayer` now does. The one-argument form stays with its old
+  behaviour, so the file compiles either way; without the change a hotbar key and a right click in the same tick model the
+  hand from before the key.

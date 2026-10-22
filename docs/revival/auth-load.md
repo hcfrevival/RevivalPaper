@@ -180,8 +180,10 @@ be measured on its own.
 **Status (netcode, 2026-10-22 05:36 tree):** activation seeds a grounded player with the resting vy
 `(0 - gravity) * 0.98F`; corrections forecast the client with every knock still in flight to it and hold an absolute
 velocity while one is (so no correction overwrites a knock the client applies first); a forced knock that lands, and
-the moment every forced entry has landed, make the next correction one absolute resync. Not yet re-measured at N=50/100
-by this harness (NOTES.md asks for it); the torture rig's stall runs are in auth-torture.md (Fix status).
+the moment every forced entry has landed, make the next correction one absolute resync. The torture rig's stall runs
+are in auth-torture.md (Fix status). **Re-measured on 69b7b5f6** ([merged build re-run](#merged-build-re-run-2026-10-22-0930)):
+N=50 had 0 corrections. At N=100, loops still start after a stall of a few hundred ms (even the harness's full GC) and
+don't converge (5 bots at 5-10/s for a whole window).
 
 **What happens:** a player who diverges once while being hit is corrected about once per tick (20/s) for the rest of
 the session. All of their hits are rejected (`NOT_PRESENT`) while it lasts. 1 of 50 bots at N=50, 4 of 50 at ≈125 ms
@@ -219,7 +221,9 @@ one tick behind forever". They do not fix this, because the fallback is absolute
 **Status (netcode, 2026-10-22):** deadlines count paced windows (a catch-up burst doesn't force entries); after forced
 entries, one absolute resync per affected client and the viewer's mirrors re-paired once its acks are current;
 periodic mirror and solid-entity re-pairs wait while any forced entry is outstanding (a re-pair that is itself forced
-loops). Awaiting an N=100 re-run.
+loops). **Re-measured on 69b7b5f6** ([merged build re-run](#merged-build-re-run-2026-10-22-0930)). The join storm is
+fixed: 0 corrections for 12 s after the 100th join, mirrors 99 of 99, 92-97 % of hits VALID. Recovery from a stall of a
+few hundred ms at N=100 is not fixed.
 
 The cascade starts during warm-up, about 8 s after the last of 100 joins, while chunk sends and pairing for 100
 players load both sides. The sequence:
@@ -443,6 +447,218 @@ the truth. `TruthPathCheck` meets it once, crossing the cobweb after the join te
 `AuthPlayer.applyTruth` checks the player landed on the truth and writes it once more if not (`truthRewrites`; no second
 event, its `from` is the target by then). `TruthPathCheck` does the same on both paths, and the live scenario "the first
 moves after a teleport write the truth" checks it in play.
+
+## Merged build re-run (2026-10-22 09:30)
+
+The stall-robustness batch (2d7982f7) merged with the server-thread pass: 69b7b5f6, "Merge the server-thread performance
+pass".
+
+**Build:** `load/jars/revivalpaper-load-20261022-0928.jar` (sha256 `1d39a531…e8a45`). It was built with `createPaperclipJar`
+in a frozen APFS clone of 69b7b5f6 (`load/snap-69b7b5f6.noindex/`). In the clone, the working tree's uncommitted live-test
+files were reverted, and every applied Minecraft and Paper commit was diffed against its patch file. They match, apart from
+the line offsets in Paper's patches. The harness, flags and settings are the same as above: enforce, locator bar on,
+view/simulation distance 6/4, and a 150 s window with JFR after a 30 s warm-up.
+
+Runs:
+
+- `runs/merged-0930/{n20,n50}`: the N=20 and N=50 matrix.
+- `runs/merged-0930-n100/n100`: run A, N=100.
+- `runs/merged-0930-n100b/n100`: run B, N=100, cut at 75 s.
+- `runs/merged-0930-n100c/n100`: run C, N=100, cut at 66 s.
+- `runs/merged-0930-join100/n100`: no warm-up and no JFR, so the window opens at the 100th join.
+
+**The machine was not quiet.** Another agent ran torture-rig cycles in parallel the whole time. Each cycle was a real
+client, a server and the netem proxy, about 2 cores, with a gradle build between cycles. What overlapped what:
+
+- glitch-fix1 overlapped N=20 and N=50, and glitch-fix2 overlapped run A.
+- A gradle build followed by glitch-fix4 overlapped the join run.
+- Gradle builds cut run B at 75 s (load 12.2) and, with glitch-fix5, run C at 66 s (load 13.0).
+- Two more N=100 attempts were cut in warm-up by load over 12, once with macOS memory pressure (`ReportMemoryException`).
+
+The N=100 windows therefore contain machine hitches. They show in the plugin's MSPT, and in run A's JFR, `jdk.CPULoad`
+has the machine at 100 % at both of that run's hitches:
+
+| Run | Hitches |
+|---|---|
+| A | 441 ms at 8 s, 184 ms at 68 s |
+| join | 239 ms at 13 s, **2,332 ms** at 23 s (during the other agent's gradle build), 852 ms at 115 s |
+| B | 214 ms at 32 s |
+| C | 233, 172 and 116 ms at 22-26 s |
+
+In run A's JFR, the server thread shows neither a spike nor a gap during those ticks: the process was descheduled, and
+the server was not doing extra work. These hitches make useful stall tests, but MSPT and CPU at N=100 are noisier than in
+the tables above.
+
+### Summary
+
+- **N=20 and N=50: exact.** 0 corrections, every compared claim exact, and every hit VALID (5,466 and 17,447). That
+  includes no `INVALID MISSED`, where the pass build had 1-4 per run. 0 forced entries, and every mirror present.
+- **Finding 2's join-storm collapse is fixed.** With the window opened at the 100th join, there were 0 corrections for the
+  first 12 s. Run B converged within 9 s of the full GC that opens every JFR window. Mirrors are 99.0 of 99 in every
+  N=100 run (the 21:32 jar had 26 of 99), there are no late mirror events, and teleport-accept and reconciler violations
+  went from 847 (21:32) and 211 (pass) to 0-33. Hits at N=100 are 92-97 % VALID in the runs with a 30 s warm-up
+  (77.5 % after the 2.3 s hitch), against 0 % (21:32) and 90.7 % (pass).
+- **Not fixed: recovery from a stall of a few hundred ms or more at N=100.**
+  - After a 239 ms hitch, everything recovered in 8 s.
+  - The class histogram's full GC, which opens every JFR window, was enough in run C: one bot looped at exactly 20
+    corrections/s (one per tick) from 11 s on, with no machine hitch (MSPT max ≤ 12 ms until 22 s). Run B, with the
+    same GC, converged.
+  - After the 441 ms hitch (run A), **5 bots stayed in correction loops for the rest of the window**, at 5-10
+    corrections/s each.
+  - After the 2.3 s hitch (join run), 47 bots looped. The total decayed from 250/s to 70/s over two minutes and never
+    reached 0.
+  - The torture rig's result ("hitch ≤ 1 s: 0 corrections") was measured with one client. It doesn't hold at 100.
+- **Cost unchanged from the pass.** The server thread runs 0.09, 0.15 and 0.38-0.43 cores at N=20, 50 and 100. Auth
+  costs 109, 96 and 155-180 µs per player per tick. N=100 MSPT depends on the loops: 7.5 ms with none, 11.8 ms with 5
+  bots looping (below).
+- **Network.** 1.05-1.07 pongs per server tick at every N (21:32: 1.31-1.73). Bandwidth is 20, 54 and 139-141 KiB/s per
+  player.
+- **Forced entries at N=100: still 130k-233k per window (pass: 314k).** Run B forced 131,709 in 75 s (1,750/s on
+  average) and had 0 corrections from 10 s on. The harness can't yet tell whether they come in bursts or steadily. N=50
+  has none.
+
+### Server
+
+| N | build / run | TPS | MSPT mean / p99 / max | server thread (cores) | auth µs / player / tick | server Netty (cores) | server-thread alloc MB/s | GC pauses (count / total / max ms) |
+|---|---|---|---|---|---|---|---|---|
+| 20 | merged | 20.00 | 1.70 / 5.94 / 20.3 | 0.09 | 109 | 0.14 | 10.8 | 2 / 10.3 / 6.9 |
+| 20 | 21:32 | 20.00 | 1.27 / 5.16 / 10.1 | 0.08 | ≈ 120 | 0.17 | – | – / 3.0 / 1.6 |
+| 50 | merged | 20.00 | 2.70 / 6.53 / 23.6 | 0.15 | 96 | 0.47 | 32.0 | 11 / 22.0 / 3.7 |
+| 50 | pass | 20.00 | 2.21-2.53 | 0.14-0.17 | 98-109 | 0.50-0.61 | 33-36 | |
+| 50 | 21:32 | 20.00 | 2.15 / 2.97 / 11.1 | 0.16 | ≈ 112 | 0.68 | 60.0 | – / 56 / 12.8 |
+| 100 | merged A (5 bots looping) | 19.95 | 11.83 / 19.1 / 442 | 0.38 | 155 | 1.58 | 103 | 45 / 131 / 6.6 |
+| 100 | merged B (75 s, converged) | 20.00 | 7.54 / 22.2 / 214 | 0.43 | 178 | 2.39 | 132 | 23 / 56 / 4.6 |
+| 100 | merged C (66 s, 1 bot looping) | 19.24 | 8.97 / 22.2 / 233 | 0.43 | 180 | 2.31 | 139 | 18 / 81 / 9.9 |
+| 100 | pass | 20.00 | 5.97, 7.62 | 0.36-0.40 | 146-160 | 1.99-2.02 | 104-108 | |
+| 100 | 21:32 | 20.00 | 6.24 / 7.32 / 11.3 | 0.40 | ≈ 172 | 2.04 | 179.5 | – / 90 / 2.8 |
+
+The 21:32 µs values are derived: server-thread cores × auth share ÷ (N × 20). Run B's higher CPU came while the machine's
+load climbed from 5 to 12 (run C's from 4 to 13), so read 155-180 µs as one range.
+
+**N=100 MSPT tracks the loops, not the CPU.** A window whose tick clock has no budget waits for the server tick
+(`onServerTick → runReady`), so its work lands inside the tick:
+
+| Run | windows run from the server tick | MSPT mean |
+|---|---|---|
+| A | 29 % of the server thread | 11.8 ms |
+| B | 4.5 % | 7.5 ms |
+| C (1 bot looping) | 8.7 % | 9.0 ms |
+| pass | 9 % | |
+| N=50 | about 0 | |
+
+The join run shows the same thing in time: 6-8 ms before its 2.3 s hitch, 10-11 ms after it while 47 bots looped. Total
+server-thread CPU stays at 0.38-0.43 cores either way.
+
+Where the server thread goes is close to the pass's split:
+
+| | N=20 | N=50 | N=100 (A / B) |
+|---|---|---|---|
+| in auth | 48 % | 64 % | 81-83 % |
+| `applyTruth` (the one position write's vanilla waypoint and chunk-map update) | 13 % | 19 % | 29-31 % |
+| `sim` | 15 % | 17 % | 13 % |
+
+### Authority (bots are honest: expect 0 corrections, every hit VALID)
+
+| N | build / run | exact / compared | corrections | bots corrected | attacks | VALID | rejected | forced entries | mirrors / viewer |
+|---|---|---|---|---|---|---|---|---|---|
+| 20 | merged | 60,141 / 60,141 | 0 | 0 | 5,466 | 5,466 (100 %) | – | 0 | 19.0 of 19 |
+| 50 | merged | 150,300 / 150,300 | 0 | 0 | 17,447 | 17,447 (100 %) | – | 0 | 49.0 of 49 |
+| 100 | merged A | 280,078 / 282,325 | 8,125 | 53 | 35,414 | 32,696 (92.3 %) | MISSED 2,309, REWIND 182, OUT_OF_REACH 119, other 42 | 232,805 | 99.0 of 99 |
+| 100 | merged B (75 s) | 149,243 / 150,163 | 534 | 33 | 16,544 | 16,099 (97.3 %) | MISSED 320, REWIND 46, OUT_OF_REACH 8, other 10 | 131,709 | 99.0 of 99 |
+| 100 | merged C (66 s) | 125,137 / 126,516 | 2,191 | 37 | 15,396 | 14,608 (94.9 %) | MISSED 524, REWIND 161, OUT_OF_REACH 19, other 35 | 173,117 | 99.0 of 99 |
+| 100 | merged, from the 100th join | 249,946 / 251,115 | 16,018 | 47 | 35,873 | 27,790 (77.5 %) | MISSED 7,566, OUT_OF_REACH 247, REWIND 201, other 57 | 132,556 | 99.0 of 99 |
+| 100 | pass (`perf-final-0618`) | 271,300 / 273,266 | 8,585 | 73 | 34,508 | 31,299 (90.7 %) | MISSED 2,670, OUT_OF_REACH 159, REWIND 106, other 52 | 314,487 | 97.8 of 99 |
+| 100 | 21:32 | 102,985 / 106,430 | 181,895 | 77 | 58,717 | 0 | NOT_PRESENT 44,953, REWIND 115 | 140,363 | 26.0 of 99 |
+
+How to read the N=100 rows:
+
+- "Other" includes 9-40 attacks dropped with a VALID verdict (by a gate before the hit lands).
+- Over-cap multi-clicks (N=20, N=50, N=100 A and B) were 24, 88, 152 and 72, all dropped by
+  `max-attacks-per-client-tick`.
+- Pearl teleports (61, 120, 148) were applied exactly, with one `truthRewrites` each (the `justTeleported` fix).
+- The new counters at N=100:
+  - `forcedLanded` 28-81 and `correctionsHeld` 158-462.
+  - `absoluteCorrections` 228 (B) and 3,918-7,799 (with loops).
+  - `mirrorRepairs` 36-86.
+  - `pathStepSwitches` 208-399. N=20 and N=50 have 0 of all of these.
+- `MISSED` follows the loops: 320 (B), 2,309 (A), 7,566 (join). When a bot's own position is being corrected, its pick
+  and the server's rewind see different eyes.
+
+### Network, per player
+
+| N | down KiB/s | up KiB/s | clientbound packets/s | TrackedWaypoint/s | pings/s | serverbound packets/s | pongs per server tick | Paper limiter, peak 7 s rate |
+|---|---|---|---|---|---|---|---|---|
+| 20 | 19.9 | 0.98 | 1,033 | 131 | 21.2 | 75 | 1.06 | 86 / 500 |
+| 50 | 54.1 | 1.00 | 2,819 | 343 | 21.3 | 78 | 1.07 | 90 / 500 |
+| 100 (A / B) | 141.0 / 138.7 | 1.03 / 1.00 | 6,438 / 6,291 | 1,394 / 1,407 | 21.0 / 21.4 | 79 | 1.05 / 1.07 | 117 / 109 of 500 |
+| 21:32: 20, 50, 100 | 31.2, 83.6, 135.2 | 1.0-1.6 | 1,282, 3,466, 6,441 | 393, 1,025, 1,479 | 26-35 | 80-109 | 1.31-1.73 | 105-155 / 500 |
+
+At N=100 the locator bar is still the biggest O(N²) item: `TrackedWaypoint` is 1,400/s per player, and the vanilla
+waypoint update under `applyTruth` allocates 28 MB/s of `AzimuthWaypoint` alone. Finding 6 still applies. At N=50, the top
+auth allocation site is now `PathFeed.move:173`: the stall batch's shared step cache still builds one `List.of(DeltaStep)`
+per step it constructs (10 MB/s sampled).
+
+### Memory
+
+| | N=20 | N=50 | N=100 A | N=100 B |
+|---|---|---|---|---|
+| live heap after a full GC, change over the window | +2.6 MB | +3.8 MB | +21.9 MB | +14.5 MB |
+| auth.* classes, start → end | 1.01 → 1.03 MB | 3.60 → 3.58 MB | 10.73 → 10.90 MB | 10.69 → 10.64 MB |
+
+At N=100 the growth is `long[]` (+8.0 / +5.2 MB) and `Packet[]` (0.5 → 2.7 / 0.5 → 1.9 MB). The number of instances
+stays the same. These are `Transactions`' entry arrays (`entryPackets`, `entrySeqs`, `entryMillis`) growing to the
+outstanding-entries high-water mark: up to 2,061 / 1,180 / 3,872 entries outstanding on one connection. The pass build
+showed the same (+11-16 MB at N=100). This is not a leak, but those arrays never shrink back. Run C grew +42.8 MB:
+`long[]` +8.3 MB, plus 6.0 MB of `MoveEntityPacket.PosRot` and 4.6 MB of `List12` (its steps) still referenced at the
+end. That is the outbound log of the connection with 445 unacked pings, holding what it was sent. It is bounded by the
+log's memory cap, but it shows what one stuck connection costs.
+
+### The join storm (finding 2), second by second
+
+Corrections per second, all bots summed, from the plugin's series:
+
+| Window | What happens |
+|---|---|
+| From the 100th join (`join100`) | t 1-12: **0** (MSPT 6-8 ms; one 48 ms tick). t 13: 239 ms hitch → 59, 67, 52, 18, 13, 8, 14, then **0** at t 21-22. t 23: **2,332 ms** hitch → 194-249/s for 20 s, 144 at 60 s, 115 at 90 s, 85 at 120 s, 72 at 147 s (47 bots; 7 of them at about 1,200 corrections each) |
+| Run B (30 s warm-up; the window opens with the class-histogram full GC) | t 2-9: 127, 102, 120, 73, 61, 23, 8, 16 → **0 from t 10 to t 75** (one blip of 4 at t 18), through a 214 ms tick and the machine's load rising from 5 to 12 |
+| Run A (same, plus a 441 ms hitch at t 8) | t 2-7: 51-165 → t 10-13: 152-190 → about 38/s from t 48 → 184 ms hitch at t 68: 130 → **about 37/s flat from t 91 to t 150**, mostly 5 bots |
+| Run C (same as B; machine hitches at t 22-26) | t 2-10: 24-91 → **exactly 20/s from t 11 to t 21**, all LoadBot073 (MSPT max 8-9 ms) → hitches: 187, 167, 94 … → back to 20/s from t 47 to t 63 |
+| Pass build (`perf-final-0618`, same harness) | 195-390/s after the histogram GC, flat at about 97/s at the end (73 bots corrected) |
+
+So 100 joins no longer start a cascade, and a 239 ms hitch healed in about 8 s. What is left is a loop that can start
+at a stall of a few hundred ms and then does not converge: the histogram's full GC in C, 441 ms in A, 2.3 s in the join
+run. B, with the same GC as C, shows that it doesn't always start. The looping bots look the same in every run:
+
+- **Few claims compared.** In run A, LoadBot017/086/082/046/014 were compared in 76-215 of their ~3,000 windows. Bots
+  without a loop were compared in 2,100-2,960. In the join run, the 7 worst were compared in 526-576. In run C,
+  LoadBot073 was compared in 36 of ~1,300 windows, and one connection, probably LoadBot073's, had up to **445 pings
+  unacked** (about 21 s; 23-42 in the other runs). The bot logged no errors and kept receiving: it saw 602 of the 603
+  corrections.
+- **A steady correction rate.** In run A, 5-10 per second (1,442, 1,398, 939, 783 and 781 over the window). LoadBot073
+  in run C got one per tick. The expectation was about 1 per divergence.
+- **Their own hits rejected** (`MISSED`) in A and the join run.
+
+**Hypothesis (to check with `--set traceOnCorrection=true` on one of these bots).** Two things meet at N=100:
+
+- No correction is sent while forced entries are outstanding.
+- The one absolute resync waits until every forced entry has landed.
+
+If forced entries keep coming at run B's average of 1,750/s, a looping bot may never reach "all landed". Its
+corrections then stay held, or go out late against a moving target.
+
+**Forced entries at N=100, open question.** Outstanding pings peak at 23-42 on some connection (1-2 s of pings), so some
+acks run past the deadline (`ceil(slack RTT / 50 ms) + ack-jitter-ticks` paced windows, about 250-300 ms). The cause is
+either the server's Netty write path (1.6-2.4 cores) or the in-JVM bots' receive threads (1.3-2.2 cores on 4 threads).
+This harness can't separate the two. Per-bot forced counts and an ack-RTT p99 per connection in `Measure`, or bots in a
+second JVM, would settle it.
+
+**K per viewer at N=100.** There were 208-399 `pathStepSwitches` per window (386 in run C's 66 s): about 4 per viewer
+in 150 s, each one re-pairing every player fed to that viewer. N=20 and N=50 had 0. A switch needs 5 s of steady jitter
+on one side of the 25 ms K1 threshold. So at N=100 some viewers' p90 - p10 ack jitter keeps crossing it: mean ack RTT
+29-32 ms against an rttBase of 21-24 ms, with outstanding pings peaking at 23-445. Not investigated.
+
+**Not run this time:** N=100 with the locator bar off, and N=50 at ≈125 ms RTT (finding 3). Both are still asked for in
+NOTES.md.
 
 ## Reproduce
 

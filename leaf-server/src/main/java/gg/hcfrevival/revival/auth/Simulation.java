@@ -99,6 +99,15 @@ public interface Simulation {
     /** The client predicted item use in this tick's keybinds ({@code LocalPlayer.startUsingItem}). */
     void startUsingItem(InteractionHand hand);
 
+    /**
+     * As {@link #startUsingItem(InteractionHand)}, with the hands as {@code view} holds them now: a hotbar key earlier in
+     * the same keybinds already changed the item ({@code handleKeybinds} runs hotbar keys before use clicks; cheat suite 2
+     * H2: the old item was used, so the server never blocked with the sword just taken).
+     */
+    default void startUsingItem(final InteractionHand hand, final ClientView view) {
+        this.startUsingItem(hand);
+    }
+
     /** {@code RELEASE_USE_ITEM} in this tick's keybinds: use ends before this tick's movement. */
     void releaseUsingItem();
 
@@ -184,6 +193,30 @@ public interface Simulation {
     default void beliefCorrected(final PositionMoveRotation change, final Set<Relative> relatives) {
     }
 
+    /** Whether the belief's last tick read a block the client broke and the server kept ({@code WorldView} holes). */
+    default boolean beliefTouchedHole() {
+        return false;
+    }
+
+    /** The belief's position on axis 0..2 (x, y, z): where the client is; the truth's without a belief. */
+    default double beliefPos(final int axis) {
+        return axis == 0 ? this.x() : axis == 1 ? this.y() : this.z();
+    }
+
+    /** How far the belief is from {@code (x, y, z)}; NaN without one. */
+    default double beliefDistance(final double x, final double y, final double z) {
+        return Double.NaN;
+    }
+
+    /**
+     * A restore ({@code syncBlockState} with the player position) of {@code state} at {@code pos}: a belief inside it is put
+     * back at {@code (x, y, z)} ({@code absSnapTo}, velocity kept). Returns whether it was.
+     */
+    default boolean snapBeliefOut(final net.minecraft.core.BlockPos pos, final net.minecraft.world.level.block.state.BlockState state, final double x,
+                                  final double y, final double z) {
+        return false;
+    }
+
     // State after the last tick --------------------------------------------------------------------------------------
 
     double x();
@@ -236,6 +269,11 @@ public interface Simulation {
     /** {@code startedUsingItem} as the client holds it. */
     default boolean usingItem() {
         return false;
+    }
+
+    /** The stack the client is using while {@link #usingItem}. */
+    default net.minecraft.world.item.ItemStack useItem() {
+        return net.minecraft.world.item.ItemStack.EMPTY;
     }
 
     /**

@@ -7,6 +7,7 @@ import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import gg.hcfrevival.revival.RevivalTest;
+import java.lang.reflect.RecordComponent;
 import java.util.List;
 import net.minecraft.resources.Identifier;
 import org.bukkit.configuration.InvalidConfigurationException;
@@ -34,7 +35,7 @@ class CombatRulesTest {
 
         assertSame(CombatRules.CLASSIC, settings.legacyCombat().rules());
         assertEquals("classic", settings.legacyCombat().rulesName());
-        assertEquals(List.of("classic", "neue"), List.copyOf(settings.combatRules().keySet()));
+        assertEquals(List.of("classic", "classic-capped", "neue"), List.copyOf(settings.combatRules().keySet()));
         reader.config().options().copyDefaults(true);
         final YamlConfiguration saved = new YamlConfiguration();
         saved.loadFromString(reader.config().saveToString());
@@ -51,6 +52,71 @@ class CombatRulesTest {
         assertFalse(classic.capsClicks());
         assertFalse(classic.parry());
         assertEquals(1.0, classic.staggerMoveMultiplier());
+    }
+
+    @Test
+    void classicCappedIsClassicWithTheCapAndTheBufferOnly() throws ReflectiveOperationException {
+        final CombatRules capped = CombatRules.PRESETS.get("classic-capped");
+        assertSame(CombatRules.CLASSIC_CAPPED, capped);
+        assertEquals(12.0, capped.maxCps());
+        assertEquals(0.6, capped.clickRefill(), 1.0E-12);
+        assertEquals(2.0, capped.clickBurst());
+        assertEquals(3, capped.clickBufferTicks()); // 0.15 s
+        assertTrue(capped.clickBufferLineOfSight());
+        assertTrue(capped.capsClicks());
+        assertTrue(capped.buffersClicks());
+        assertEquals(1.0, capped.tipperKnock());
+        assertEquals(1.0, capped.sourKnock());
+        assertEquals(0.0, capped.influenceDegrees());
+        assertFalse(capped.shapesKnock());
+        assertFalse(capped.parry()); // so no stagger and no riposte either
+        assertEquals(1.0, capped.staggerMoveMultiplier());
+        // Every key but the two is classic's
+        for (final RecordComponent component : CombatRules.class.getRecordComponents()) {
+            final String name = component.getName();
+            if (!name.equals("maxCps") && !name.equals("clickBufferTicks")) {
+                assertEquals(component.getAccessor().invoke(CombatRules.CLASSIC), component.getAccessor().invoke(capped), name);
+            }
+        }
+    }
+
+    @Test
+    void theNasCustomClassicCappedSetResolvesToThePreset() throws InvalidConfigurationException {
+        // The NAS ran classic + cap + buffer as a custom set before the preset existed; its file must keep working unchanged,
+        // and the same two keys over classic under any other name (how that set resolved then) are the same rules
+        final ConfigReader reader = reader("""
+            combat-rules:
+              classic-capped:
+                max-cps: 12.0
+                click-buffer-seconds: 0.15
+              capped-over-classic:
+                max-cps: 12.0
+                click-buffer-seconds: 0.15
+            world-settings:
+              default:
+                legacy-combat:
+                  rules: classic-capped
+            """);
+        final RevivalSettings settings = RevivalConfig.read(reader);
+
+        assertEquals("classic-capped", settings.legacyCombat().rulesName());
+        assertEquals(CombatRules.CLASSIC_CAPPED, settings.legacyCombat().rules());
+        assertEquals(CombatRules.CLASSIC_CAPPED, settings.combatRules("capped-over-classic"));
+        assertTrue(reader.problems().isEmpty(), reader.problems().toString());
+    }
+
+    @Test
+    void aWorldPicksClassicCappedWithoutASection() throws InvalidConfigurationException {
+        final ConfigReader reader = reader("""
+            world-settings:
+              default:
+                legacy-combat:
+                  rules: classic-capped
+            """);
+        final RevivalSettings settings = RevivalConfig.read(reader);
+
+        assertSame(CombatRules.CLASSIC_CAPPED, settings.legacyCombat().rules());
+        assertTrue(reader.problems().isEmpty(), reader.problems().toString());
     }
 
     @Test
@@ -73,6 +139,7 @@ class CombatRulesTest {
         assertEquals(20, neue.parryRestTicks()); // 1.0 s
         assertEquals(12, neue.riposteTicks()); // 0.6 s
         assertEquals(10, neue.staggerTicks()); // 0.5 s
+        assertEquals(1, neue.staggerJitterTicks()); // the lockout's real-time floor allows one tick (cheat suite 2, L3)
         assertEquals(0.45, neue.staggerRecoilHorizontal());
         assertEquals(0.22, neue.staggerRecoilVertical());
         assertEquals(0.35, neue.staggerMoveMultiplier());

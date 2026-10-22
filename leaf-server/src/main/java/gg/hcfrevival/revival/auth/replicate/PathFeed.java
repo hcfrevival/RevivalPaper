@@ -150,6 +150,18 @@ public final class PathFeed {
         return this.stamps[found];
     }
 
+    /** The newest step: its position to {@code out[0..2]}, its stamp returned; {@code Long.MIN_VALUE} when there is none. */
+    public long newest(final double[] out) {
+        if (this.appended == 0L) {
+            return Long.MIN_VALUE;
+        }
+        final int slot = (int) ((this.appended - 1L) & this.mask);
+        out[0] = this.xs[slot];
+        out[1] = this.ys[slot];
+        out[2] = this.zs[slot];
+        return this.stamps[slot];
+    }
+
     /** Step packets built so far; every other move sent was a shared one ({@link #sharedMoves}). */
     public long builtMoves() {
         return this.cacheBuilt;
@@ -245,7 +257,7 @@ public final class PathFeed {
         private long keepAlives;
         private long respawns;
 
-        private final int stepTicks;
+        private int stepTicks;
 
         private Viewer(final int stepTicks) {
             this.stepTicks = stepTicks;
@@ -254,6 +266,15 @@ public final class PathFeed {
         /** This viewer's K: the tick offset of every step it is sent. */
         public int stepTicks() {
             return this.stepTicks;
+        }
+
+        /**
+         * A new K from the next step on (real-client run N4, review PT2-06): every step carries its own tick count, which
+         * the client's stepped interpolation and the viewer's mirror both take per step, so the path just continues at
+         * the new pace. A re-pair froze every remote player in view for two ticks at each switch.
+         */
+        public void setStepTicks(final int stepTicks) {
+            this.stepTicks = stepTicks;
         }
 
         /**

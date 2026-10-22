@@ -94,7 +94,7 @@ start, and writes any missing key back on later starts.
 | `randomize-protection` | `true` | Roll each hit's Protection between half and all of it, as 1.7.10 did. |
 | `hide-cooldown-indicator` | `true` | No cooldown bar while a legacy weapon is held. |
 | `max-attacks-per-tick` | `0` | Legacy attacks a player may land per tick; `0` is unlimited, as in 1.7.10. Keep it `0` with a click buffer. |
-| `rules` | `classic` | The combat rule set this world uses: `classic` (plain 1.7), `neue` or a set under `combat-rules` (see below). |
+| `rules` | `classic` | The combat rule set this world uses: `classic` (plain 1.7), `classic-capped`, `neue` or a set under `combat-rules` (see below). |
 
 ### `world-settings.<world>.legacy-combat.projectiles`
 
@@ -183,10 +183,13 @@ preset fixes keep reaching servers that never edited them.
 The presets other than `legacy-1.7`, `legacy-1.8` and `hcfr*` come from archived server configs as curated by
 [Mental](https://github.com/owengregson/Mental) (MIT); their authenticity can't be verified.
 
-### Combat rules (`classic`, `neue`)
+### Combat rules (`classic`, `classic-capped`, `neue`)
 
-A world picks a rule set with `legacy-combat.rules`. `classic` is plain 1.7 and changes nothing. `neue` is the rule
-set of Combo, the HCF team's own 1.7-PvP game ([neue-combat.md](docs/revival/neue-combat.md)):
+A world picks a rule set with `legacy-combat.rules`. `classic` is plain 1.7 and changes nothing. `classic-capped` is
+plain 1.7 with Neue's click cap and click buffer and nothing else: `classic` with `max-cps: 12.0` and
+`click-buffer-seconds: 0.15`, no tipper, sour, DI, parry, stagger or riposte (a `combat-rules.classic-capped` section
+written with those two keys gives the same rules). `neue` is the rule set of Combo, the HCF team's own 1.7-PvP game
+([neue-combat.md](docs/revival/neue-combat.md)):
 
 - **Click cap and buffer.** 12 attacks a second at most; a click the victim's damage window turns away waits 0.15 s
   and lands on the first tick the window opens, if you're still free to swing and in reach. No more CPS race.
@@ -214,6 +217,7 @@ sets you write are in the file. Durations are seconds, rounded to whole ticks.
 | `parry-projectiles`, `parry-jitter-ticks` | `true`, `2` | `true`, `2` | Rods, snowballs and eggs are parried too (no stagger); slack for a blocker's late packets. |
 | `riposte-seconds` | `0.6` | `0.6` | The parrier's crit window. |
 | `stagger-seconds`, `stagger-recoil-horizontal`, `stagger-recoil-vertical` | `0.5`, `0.45`, `0.22` | same | The parried attacker's lockout and recoil. |
+| `stagger-jitter-ticks` | `1` | `1` | Slack on the lockout's real-time floor: a client running its ticks fast ends it at most this early. |
 | `stagger-move-multiplier` | `1.0` | `0.35` | Movement while staggered; `1.0` sends no slow. |
 | `stagger-sword-cooldown`, `stagger-lowers-block` | `true`, `true` | same | The cooldown sweep on the sword; a raised block drops. |
 | `feedback.<event>-sound`, `-volume`, `-pitch`, `-particle`, `-particle-count` | | | Cues for `tipper`, `sour`, `parry`, `parry-spark` and `stagger`; `''` turns one off. |

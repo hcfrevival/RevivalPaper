@@ -230,4 +230,34 @@ class SolidMirrorsTest {
     private static ClientboundAddEntityPacket add(final int id, final EntityType<?> type, final double x, final double y, final double z) {
         return new ClientboundAddEntityPacket(id, new UUID(id, 1L), x, y, z, 0.0F, 0.0F, type, 0, Vec3.ZERO, 0.0);
     }
+
+    @Test
+    void removingFromTheMiddleKeepsEveryOtherCopy() {
+        // Review PT2-07 / X2-06: removal swaps the last copy into the slot
+        final SolidMirrors mirrors = new SolidMirrors();
+        mirrors.apply(add(1, EntityTypes.OAK_BOAT, 0.0, 64.0, 0.0));
+        mirrors.apply(add(2, EntityTypes.SHULKER, 4.3, 63.6, 8.9));
+        mirrors.apply(add(3, EntityTypes.OAK_BOAT, 10.0, 64.0, 0.0));
+        mirrors.apply(new net.minecraft.network.protocol.game.ClientboundRemoveEntitiesPacket(1));
+        assertEquals(2, mirrors.size());
+        final double[] box = new double[6];
+        assertTrue(mirrors.box(2, box) && mirrors.box(3, box), "the others stay");
+        mirrors.apply(new net.minecraft.network.protocol.game.ClientboundRemoveEntitiesPacket(3));
+        mirrors.apply(add(4, EntityTypes.OAK_BOAT, 20.0, 64.0, 0.0));
+        assertEquals(2, mirrors.size());
+        assertTrue(mirrors.box(2, box) && mirrors.box(4, box));
+    }
+
+    @Test
+    void aForcedPacketLeavesTheCopyUntrusted() {
+        // Review R2C-06: forced at its deadline, the copy changed before the client's did
+        final SolidMirrors mirrors = new SolidMirrors();
+        mirrors.apply(add(7, EntityTypes.OAK_BOAT, 0.0, 64.0, 0.0));
+        assertTrue(mirrors.exact(7));
+        mirrors.apply(new ClientboundEntityPositionSyncPacket(7, PositionPath.of(new Vec3(0.5, 64.0, 0.0)), 0.0F, 0.0F, true), false);
+        org.junit.jupiter.api.Assertions.assertFalse(mirrors.exact(7), "inexact until re-paired");
+        final it.unimi.dsi.fastutil.ints.IntArrayList repairs = new it.unimi.dsi.fastutil.ints.IntArrayList();
+        mirrors.takeRepairs(repairs);
+        assertEquals(1, repairs.size(), "queued for a re-pair");
+    }
 }

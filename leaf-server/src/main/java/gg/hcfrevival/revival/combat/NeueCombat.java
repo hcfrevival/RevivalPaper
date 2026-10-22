@@ -14,6 +14,7 @@ import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.network.protocol.Packet;
 import net.minecraft.network.protocol.game.ClientboundSetEntityMotionPacket;
 import net.minecraft.network.protocol.game.ClientboundSoundPacket;
+import net.minecraft.network.protocol.game.ClientboundUpdateAttributesPacket;
 import net.minecraft.network.protocol.game.ServerboundAttackPacket;
 import net.minecraft.resources.Identifier;
 import net.minecraft.server.MinecraftServer;
@@ -160,7 +161,9 @@ public final class NeueCombat {
 
     /** The simulation started using an item at client tick {@code tick}: a sword block's parry clock starts. */
     public static void useStarted(final ServerPlayer player, final ItemStack stack, final int tick) {
-        if (LegacySwordBlocking.isBlockingWeapon(stack)) {
+        // A block the server refused (LegacySwordBlocking.refusedBlock: on cooldown, or staggered) never went up there: arming
+        // it would stamp a block end later and eat the rest of the honest block after the lockout
+        if (LegacySwordBlocking.isBlockingWeapon(stack) && !LegacySwordBlocking.refusedBlock(player, stack)) {
             state(player).blockStarted(tick, now(), true, rules(player));
         }
     }
@@ -178,8 +181,12 @@ public final class NeueCombat {
 
     /** A logged packet was applied to the player's truth at client tick {@code tick} (acked, or forced at its deadline). */
     public static void applied(final ServerPlayer player, final Packet<?> packet, final int tick) {
-        if (packet instanceof ClientboundSetEntityMotionPacket) {
-            state(player).motionApplied(packet, tick);
+        if (packet instanceof ClientboundUpdateAttributesPacket) {
+            state(player).slowApplied(packet, tick); // the slow's own start on the client (N2)
+        } else if (packet instanceof ClientboundSetEntityMotionPacket) {
+            // Real time, on the clock the client's windows are budgeted with (TickClock); its tick period is the server's tick
+            // rate (ClientboundTickingStatePacket)
+            state(player).motionApplied(packet, tick, System.nanoTime(), player.revivalAuth.view().tickPeriodNanos());
         }
     }
 
@@ -190,7 +197,7 @@ public final class NeueCombat {
             return false;
         }
         final boolean authority = authority(player);
-        return state.lockedOut(authority, tick(player, authority), now());
+        return state.lockedOut(authority, tick(player, authority), now(), System.nanoTime());
     }
 
     // ------------------------------------------------------------------------------------------------------------------
@@ -210,6 +217,9 @@ public final class NeueCombat {
         final NeueState state = state(parrier);
         if (!state.mayParry() || !(source.getEntity() instanceof final ServerPlayer attacker) || attacker == parrier) {
             return false;
+        }
+        if (state.staggered() && lockedOut(parrier)) {
+            return false; // a staggered player can't block, so never parries (cheat suite 2, L4)
         }
         final RevivalSettings live = Revival.settings();
         final LegacyCombatSettings settings = live.legacyCombat(parrier.level().getWorld().getName());
@@ -283,6 +293,12 @@ public final class NeueCombat {
     static boolean beforeAttack(final ServerPlayer player, final @Nullable LegacyCombatSettings settings) {
         final NeueState state = state(player);
         final boolean entered = state.enter();
+        final boolean authority = authority(player);
+        if (!entered || !state.buffered()) {
+            // Every click swung on the client, delivered or not, with the Punch or without it (cheat suite 2, L1): a block
+            // raised soon after is a block-hit. A held click landing now is no new click
+            state.swung(tick(player, authority), authority);
+        }
         if (state.staggered() && lockedOut(player)) {
             if (entered) {
                 state.mark(NeueState.REFUSED);
@@ -293,8 +309,6 @@ public final class NeueCombat {
             return true;
         }
         final CombatRules rules = settings.rules();
-        final boolean authority = authority(player);
-        state.swung(tick(player, authority), authority); // an attack is a swing, also where no Punch hook reports one
         if (!rules.buffersClicks() && !rules.shapesKnock() && !rules.capsClicks()) {
             return true; // classic: nothing to track
         }
@@ -331,6 +345,7 @@ public final class NeueCombat {
                 final AttributeInstance speed = player.getAttribute(Attributes.MOVEMENT_SPEED);
                 if (speed != null) {
                     speed.removeModifier(STAGGER_SLOW);
+                    player.connection.send(new ClientboundUpdateAttributesPacket(player.getId(), java.util.List.of(speed))); // now, not at the next flush
                 }
             }
         }
@@ -455,22 +470,53 @@ public final class NeueCombat {
             }
         }
         final int ticks = rules.staggerTicks();
-        final ItemStack weapon = attacker.getMainHandItem();
-        if (rules.staggerSwordCooldown() && ticks > 0 && LegacyAttack.isLegacyWeapon(weapon, settings)) {
-            attacker.getCooldowns().addCooldown(weapon, ticks);
+        if (rules.staggerSwordCooldown() && ticks > 0) {
+            swordCooldowns(attacker, ticks + 1);
         }
         if (rules.staggerLowersBlock() && LegacySwordBlocking.isSwordBlocking(attacker)) {
             attacker.stopUsingItem();
         }
-        final boolean slow = rules.staggerMoveMultiplier() < 1.0 && ticks > 0;
-        state(attacker).stagger(now(), packet, ticks, rttTicks(attacker, authority(attacker)), slow);
-        if (slow) {
-            final AttributeInstance speed = attacker.getAttribute(Attributes.MOVEMENT_SPEED);
-            if (speed != null) {
-                speed.addOrUpdateTransientModifier(new AttributeModifier(STAGGER_SLOW, rules.staggerMoveMultiplier() - 1.0, AttributeModifier.Operation.ADD_MULTIPLIED_TOTAL));
-            }
+        final AttributeInstance speed = rules.staggerMoveMultiplier() < 1.0 && ticks > 0 ? attacker.getAttribute(Attributes.MOVEMENT_SPEED) : null;
+        final boolean authority = authority(attacker);
+        // The round trip the recoil's ack should take, read now: the ack itself mustn't move the floor it anchors
+        final long ackRtt = authority ? NeueState.ackRtt(attacker.revivalAuth.transactions().rttBaseNanos(), attacker.revivalAuth.transactions().lastRttNanos()) : 0L;
+        state(attacker).stagger(now(), packet, ticks, rules.staggerJitterTicks(), rttTicks(attacker, authority), speed != null, System.nanoTime(), ackRtt);
+        if (speed != null) {
+            speed.addOrUpdateTransientModifier(new AttributeModifier(STAGGER_SLOW, rules.staggerMoveMultiplier() - 1.0, AttributeModifier.Operation.ADD_MULTIPLIED_TOTAL));
+            // Sent now, in the parry's tick and so in the recoil's bundle: left to the dirty-attribute flush it lands 0-3 ticks
+            // later (real-client run N2). The flush still sends it again, unchanged. Its own ack times the removal
+            final ClientboundUpdateAttributesPacket slow = new ClientboundUpdateAttributesPacket(attacker.getId(), java.util.List.of(speed));
+            attacker.connection.send(slow);
+            state(attacker).slowSent(slow);
         }
         cue(attacker, attacker, rules.feedback().stagger(), attacker.getX(), attacker.getEyeY(), attacker.getZ(), 0.0);
+    }
+
+    /**
+     * The stagger's cooldown on every sword the attacker carries, not only the one in hand: each item type is its own
+     * cooldown group, so another sword type swapped in would block (cheat suite 2, L4). The vanilla client draws the sweep
+     * and refuses the block itself, so its prediction, and the simulation's, stay exact. A sword brought into the
+     * inventory during the stagger is refused by {@link LegacySwordBlocking#refusedBlock} instead. The cooldown runs one
+     * tick past the stagger: the server's own cooldowns tick once in the parry's tick, so a cooldown of exactly the
+     * stagger would end, and send its end, a tick early on the client's timeline (a 9-tick sweep, real-client run N3).
+     */
+    private static void swordCooldowns(final ServerPlayer attacker, final int ticks) {
+        final net.minecraft.world.entity.player.Inventory inventory = attacker.getInventory();
+        final net.minecraft.world.item.ItemCooldowns cooldowns = attacker.getCooldowns();
+        final java.util.List<Identifier> groups = new java.util.ArrayList<>(4); // a stagger is rare; the inventory is 41 slots
+        for (int slot = 0, size = inventory.getContainerSize(); slot < size; slot++) {
+            final ItemStack stack = inventory.getItem(slot);
+            if (stack.isEmpty() || !LegacySwordBlocking.isBlockingWeapon(stack)) {
+                continue;
+            }
+            final Identifier group = cooldowns.getCooldownGroup(stack);
+            if (!groups.contains(group)) {
+                groups.add(group);
+                if (cooldowns.getRemainingCooldown(group) < ticks) {
+                    cooldowns.addCooldown(group, ticks); // never cut a longer cooldown (a plugin's ability on that sword)
+                }
+            }
+        }
     }
 
     // ------------------------------------------------------------------------------------------------------------------

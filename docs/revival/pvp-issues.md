@@ -177,6 +177,8 @@ is.
 
 ### HR-4 Reach, hitbox expand, through-wall hits, killaura without aim — Solved {#hr-4}
 
+> **Classic audit #1 (2026-10-22):** "Solved" missed a residue of review E3: the attack eye followed any claim within 0.5 per axis, 0.5-0.7 blocks of free reach and hits through panes and doors. Fixed: the eye offset is only for a gap the server caused, matching the belief, with no block in it ([auth-classic-audit.md](auth-classic-audit.md)).
+
 - **Players:** 3.1-3.3 "legit reach" debates, hitbox mods, killaura ([2], [8]).
 - **Cause:** client cheats. Server checks on stale positions need tolerance, and a 1.7/1.8 client's 0.1 pick margin
   makes cross-version tolerance worse ([2]).
@@ -415,6 +417,8 @@ is.
 
 ### SP-1 Sprint state is stale or desynced at the hit — Solved {#sp-1}
 
+> **Classic audit #2 (2026-10-22):** under enforce the ledger still took STOP_SPRINTING packets, so a spoofed STOP re-armed a held sprint. Fixed: the simulation owns the ledger and follows the tick-end change ([auth-classic-audit.md](auth-classic-audit.md)).
+
 - **Players:** "my w-tap didn't register", sprint resets that don't count on high ping ([6], [12]).
 - **Cause:** server and protocol. The server took the sprint knock from its own sprint flag (the last sprint packet)
   instead of the sprint the client attacked with. A modern client also re-sprints after a hit without a packet when
@@ -444,6 +448,8 @@ is.
 - **Proof (exists):** rig scenarios with sprinting (0 corrections); cheat rows 69-70 on the next run (§13).
 
 ### SP-3 Keep-sprint and sprint-packet spoofing — Partial {#sp-3}
+
+> **Classic audit #2 (2026-10-22):** sprint-packet spoofing now has cheat rows (a STOP in a click's window, STOP then START with a click), blocked, with an honest w-tap control ([auth-classic-audit.md](auth-classic-audit.md)).
 
 - **Players:** KeepSprint cheats keep full speed after hitting ([8]: Grim #2849). "Auto w-tap" cheats send
   STOP/START sprint around every attack to always get the sprint knock.
@@ -531,7 +537,7 @@ is.
   - Two clicks within one client tick share one `hitResult` and the envelope drops the second, so a bounce inside a
     tick gains nothing.
   - A bounce across a tick boundary is a real extra click (an aim sample).
-  - `InputStats` records the double-click ratio (`stats.double-click-ratio` 0.3).
+  - `InputStats` records the double-click ratio (`stats.double-click-ratio`, 1.0 since config v6: at 0.3 it flagged honest butterfly clickers, classic audit #12).
 - **Fix:** none needed beyond IN-1's cap. Hardware bounce and butterfly clicking are not separable at 50 ms
   resolution, and the cap makes the question moot.
 - **Proof:** `ClickBucketTest` covers it. Document in a player FAQ that double-clicks gain nothing past 12 CPS under
@@ -569,6 +575,8 @@ is.
   rotation streams from a known aim-assist client in a private test.
 
 ### IN-5 Pot, refill and soup macros; inventory-move — Partial {#in-5}
+
+> **Classic audit #3 (2026-10-22):** built: a hotbar change after the tick's first attack or use is refused (`slot-after-action`), an off-hand use behind a main-hand item that starts using is dropped, and a `UseItem` is aimed along the tick's rotation ([auth-classic-audit.md](auth-classic-audit.md)).
 
 - **Players:** auto-pot, refill macros, inventory moves while running ([8]; Hypixel bans macros).
 - **Cause:** input and client.
@@ -883,6 +891,8 @@ is.
 - **Proof (exists):** 0 corrections in 100 real-client scenarios on localhost. Latency is NW-1.
 
 ### MV-5 Exempt states trust the client — Partial {#mv-5}
+
+> **Classic audit #4 (2026-10-22):** the piston and shulker-box band was built (review E2) but matched any 0.6 claim within 14 blocks of any event. Fixed: only inside what the event moves, only along the push, at most its travel ([auth-classic-audit.md](auth-classic-audit.md)).
 
 - **Players:** none, unless a cheater stands next to a piston, a shulker, a boat or a geyser.
 - **Cause:** sim scope. These movers need client state the server can't mirror exactly.

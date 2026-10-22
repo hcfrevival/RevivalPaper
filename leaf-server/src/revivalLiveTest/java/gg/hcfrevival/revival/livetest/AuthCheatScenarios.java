@@ -9,6 +9,7 @@ import gg.hcfrevival.revival.auth.CombatWiring;
 import gg.hcfrevival.revival.auth.PortSimulation;
 import gg.hcfrevival.revival.auth.Simulation;
 import gg.hcfrevival.revival.auth.combat.RemoteMirror;
+import gg.hcfrevival.revival.auth.input.InputRules;
 import gg.hcfrevival.revival.auth.net.ClientStream;
 import gg.hcfrevival.revival.auth.net.Transactions;
 import gg.hcfrevival.revival.auth.net.Wire;
@@ -185,6 +186,8 @@ final class AuthCheatScenarios {
             return; // the async-tracker run: authority refuses (AuthLiveScenarios checks that), nothing to attack
         }
         this.step(1, "cheat suite: setup", this::setup);
+        // The rule set the netcode is proven on (LiveRules: classic-capped on the NAS, plain classic the control)
+        this.step(1, "cheat suite: rules " + LiveRules.MAIN, () -> this.rules(LiveRules.MAIN));
 
         // Joins (load-test regression 2026-10-22: truths fell through the floor of a crowd joining together)
         this.crowdJoin(5, 0.0, "5 players join 2 ticks apart on a floor, then walk");
@@ -258,17 +261,32 @@ final class AuthCheatScenarios {
 
         // Combat
         this.combatReach();
+        this.claimReach(); // classic audit #1: an eye offset the server didn't cause
         this.combatTeleportPending();
         this.combatBacktrack();
         this.combatForcedPoison();
         this.combatLatePongPoison();
+        this.hitStoppedTarget(); // review X2-01: a target that stopped sending stays hittable where it stopped
+        this.heldTeleportPong(); // review X2-03: a server teleport whose pong misses the deadline
+        this.heldKnockPong(0); // torture r80down300w: a knock whose pong comes just past its deadline
+        this.heldKnockPong(1);
+        this.heldKnockPong(2);
         this.combatLatency(1);
         this.combatLatency(3);
         this.combatLatency(5);
         this.combatLatencyMoving(6);
+        this.combatChaseAway(6); // classic audit #7: Paper's range check after a VALID hit
         this.combatFakeLag();
         this.combatAutoblock();
         this.combatContainerClose();
+        // Classic audit #4: a piston explains only what it moves, along its push, as far as it travels
+        this.pistonCase("piston: pushed along its lane, the claims adopted (control)", 0);
+        this.pistonCase("piston: a piston 10 blocks off toggled, the claims rise 0.55 a tick (a claim-wall climb)", 1);
+        this.pistonCase("piston: in the lane, the claims rise 0.55 a tick instead of moving with the push", 2);
+        // Classic audit #3: use packets carry no rotation or hand of their own
+        this.silentPot();
+        this.offhandPot(true);
+        this.offhandPot(false);
         this.inventoryMove();
         this.mountDenied();
         this.vehiclesStep("vanilla");
@@ -279,12 +297,41 @@ final class AuthCheatScenarios {
         this.phantomPlace();
         this.predictionSpam();
         this.protectedBreak();
+        // NAS glitch 2026-10-22: an honest client breaking protected blocks it stands on or walks into
+        this.honeyUnderfoot();
+        this.protectedWallHonest(false);
+        this.protectedWallHonest(true);
 
         // Self echo
         this.sprintEcho("self-echo: STOP_SPRINTING before acking the sprint attribute sync", false);
         this.sprintEcho("self-echo: sprint dropped without STOP_SPRINTING, attribute sync acked late", true);
 
+        // Sprint knock (classic audit #2, #5): the ledger follows the simulated sprint; packets and a zero-tick block move nothing
+        this.sprintLedger("sprint knock: an honest w-tap re-arms it (control)", 0);
+        this.sprintLedger("sprint knock: a spoofed STOP_SPRINTING in a click's window, sprint key held", 1);
+        this.sprintLedger("sprint knock: STOP_SPRINTING, then START_SPRINTING with a click (SuperKB)", 2);
+        this.sprintLedger("sprint knock: an honest block-hit, the release a tick later, re-arms it (control)", 3);
+        this.sprintLedger("sprint knock: a use and its release in one window (a block for no tick)", 4);
+
         this.step(1, "cheat suite: summary", this::summary);
+        this.step(3, "cheat suite: players who quit are released", () -> {
+            // Review PT2-02: every cheater joined and quit under authority, and no quit hook deactivates them
+            long leaked = 0;
+            for (final AuthPlayer active : gg.hcfrevival.revival.auth.Authority.activePlayers()) {
+                if (active.player().hasDisconnected()) {
+                    leaked++;
+                }
+            }
+            this.tests.check(leaked == 0, "cheat suite: players who quit under authority are no longer held (" + leaked + " held, "
+                + gg.hcfrevival.revival.auth.Authority.activePlayers().size() + " active)");
+        });
+        this.step(1, "cheat suite: rules classic again", () -> this.rules(gg.hcfrevival.revival.config.CombatRules.DEFAULT));
+    }
+
+    private void rules(final String name) {
+        final gg.hcfrevival.revival.config.CombatRules rules = LiveRules.apply(this.level, name);
+        this.tests.check(LiveRules.is(rules, name), "cheat suite: legacy-combat.rules is " + name + " after /revival reload (max-cps "
+            + rules.maxCps() + ", click buffer " + rules.clickBufferTicks() + " ticks, parry " + rules.parry() + ")");
     }
 
     // =================================================================================================================
@@ -1478,6 +1525,7 @@ final class AuthCheatScenarios {
     private void attack(final Cheater x, final int count) {
         for (int i = 0; i < count; i++) {
             x.actions.add(new ServerboundAttackPacket(this.v.player.getId()));
+            x.actions.add(new net.minecraft.network.protocol.game.ServerboundPunchPacket()); // startAttack swings after it
         }
     }
 
@@ -1545,7 +1593,202 @@ final class AuthCheatScenarios {
         this.step(1, id + ": done", this::leaveAll);
     }
 
+    // Classic audit #1: the attack's eye follows a claim off the truth only for a gap the server caused (a forced knock, a
+    // refused window, a denied break). A claim that leads the truth toward the target on its own, at once or creeping
+    // inside the belief's forecast, casts from the truth; so does one that puts the eye past a pane
+    private void claimReach() {
+        this.claimLead("combat: claims 0.49 toward a target 3.3 from the true eye before the swing", false);
+        this.claimLead("combat: creeps 0.025 a tick toward a target 3.3 from the true eye, then swings", true);
+        this.claimThroughPane();
+    }
+
+    private void claimLead(final String id, final boolean creep) {
+        this.combatJoin(id);
+        final double[] z0 = new double[1];
+        final long[] refused = new long[1];
+        this.step(1, id + ": place", () -> {
+            this.open(id);
+            this.place(0.0, 3.6); // its near face 3.3 from the true eye, 2.81 from a claim 0.49 ahead
+            z0[0] = this.c.auth.simulation().z();
+            final int[] k = {0};
+            this.c.forcePosition = true;
+            this.c.cheat = x -> {
+                k[0]++;
+                x.model.setVelocity(0.0, x.model.vy(), 0.0);
+                x.model.rebase(x.model.x(), x.model.y(), z0[0] + (creep ? Math.min(0.49, 0.025 * k[0]) : 0.49));
+            };
+        });
+        this.step(creep ? 24 : 12, id + ": attack", () -> {
+            this.base = this.snap(this.c);
+            this.attacksBase = this.attacksOf(this.c);
+            refused[0] = this.c.auth.stats().eyeOffsetsRefused();
+            this.c.yaw = 0.0F;
+            this.c.pitch = 0.0F;
+            this.attack(this.c, 1);
+        });
+        this.judge(3, id, () -> {
+            final Snap d = this.delta(this.c);
+            final int landed = this.attacksOf(this.c) - this.attacksBase;
+            this.expect(landed == 0, "refused: landed " + landed + " (judged valid " + d.attacksAccepted() + ", invalid " + d.attacksRejected()
+                + ") with the claim " + f(this.c.claimZ - z0[0]) + " ahead, verdict " + this.c.auth.lastHitVerdict());
+            this.note("eye offsets refused " + (this.c.auth.stats().eyeOffsetsRefused() - refused[0]) + ", corrections " + d.corrections());
+            this.c.cheat = null;
+        });
+        this.honestAfter(id, NONE, 0);
+        this.finish(id);
+    }
+
+    private void claimThroughPane() {
+        final String id = "combat: claims 0.49 through a glass pane it touches, target 1.5 behind the pane";
+        this.combatJoin(id);
+        final double[] z0 = new double[1];
+        this.step(1, id + ": the pane; walk up to it", () -> {
+            this.open(id);
+            final BlockState pane = Blocks.GLASS_PANE.defaultBlockState().setValue(net.minecraft.world.level.block.CrossCollisionBlock.EAST, true)
+                .setValue(net.minecraft.world.level.block.CrossCollisionBlock.WEST, true);
+            this.wall(2, 3, pane); // its faces at oz + 2.4375 and 2.5625
+            this.place(0.0, 2.0625 + 1.5 + 0.3); // 1.5 behind the far face
+            this.c.forcePosition = true;
+            this.c.keys = FORWARD;
+        });
+        this.step(20, id + ": against the pane", () -> {
+            this.c.keys = NONE;
+            z0[0] = this.c.auth.simulation().z();
+            this.tests.check(Math.abs(z0[0] - (this.oz + 2.4375 - 0.3)) <= 1.0E-6, this.scenario + ": the attacker touches the pane (z "
+                + f(z0[0] - this.oz) + ")");
+            this.c.cheat = x -> {
+                x.model.setVelocity(0.0, x.model.vy(), 0.0);
+                x.model.rebase(x.model.x(), x.model.y(), z0[0] + 0.49); // the eye 0.065 past the far face
+            };
+        });
+        this.step(12, id + ": attack", () -> {
+            this.base = this.snap(this.c);
+            this.attacksBase = this.attacksOf(this.c);
+            this.c.yaw = 0.0F;
+            this.c.pitch = 0.0F;
+            this.attack(this.c, 1);
+        });
+        this.judge(3, id, () -> {
+            final Snap d = this.delta(this.c);
+            final int landed = this.attacksOf(this.c) - this.attacksBase;
+            this.expect(landed == 0, "no hit through the pane: landed " + landed + " (judged valid " + d.attacksAccepted() + ", invalid "
+                + d.attacksRejected() + "), verdict " + this.c.auth.lastHitVerdict());
+            this.c.cheat = null;
+        });
+        this.honestAfter(id, NONE, 0);
+        this.finish(id);
+    }
+
     // pvp-issues HR-2: honest hits at a long round trip land; a stale view with prompt pongs doesn't
+    // Review X2-01 / R2C-03: the victim's link stops (nothing in or out) for 2 s, past max-unacked-ms; its last path step
+    // ages past the attacker's rewind cap, and the judge asks the truth at the capped age: still the newest step
+    private void hitStoppedTarget() {
+        final String id = "combat: hit a target whose link stopped 2 s ago, where it stopped";
+        this.combatJoin(id);
+        this.step(1, id + ": its link stops", () -> {
+            this.v.stall = true;
+            this.v.blink = true;
+        });
+        this.step(40, id + ": attack", () -> {
+            this.open(id);
+            this.base = this.snap(this.c);
+            this.attacksBase = this.attacksOf(this.c);
+            this.c.yaw = 0.0F;
+            this.c.pitch = 0.0F;
+            this.attack(this.c, 1);
+        });
+        this.step(3, id + ": judge", () -> {
+            final Snap d = this.delta(this.c);
+            final int landed = this.attacksOf(this.c) - this.attacksBase;
+            this.label = "CONTROL";
+            this.honestExpect(landed == 1 && d.attacksAccepted() == 1, "hittable where it stopped: landed " + landed + ", verdict "
+                + this.c.auth.lastHitVerdict() + ", rewind " + this.c.auth.lastHitRewindMillis() + " ms past the cap " + this.c.auth.lastRewindCap() + " ms");
+            this.v.releaseHeld();
+            this.v.flush();
+            this.record();
+        });
+        this.step(1, id + ": done", this::leaveAll);
+    }
+
+    // Review X2-03 / X2-05: a server teleport reaches a client that holds its pongs past the deadline while walking. The
+    // truth takes it at the force and walks on from there (written, replicated); the late landing re-applies nothing
+    private void heldTeleportPong() {
+        final String id = "teleport: a server teleport that reaches the client 1.2 s late, walking";
+        this.begin(id, () -> {
+        });
+        final double[] forced = new double[3];
+        final double[] before = new double[1];
+        this.arm(id, () -> {
+            this.label = "HONEST";
+            this.c.latencyTicks = 24; // the teleport, its ping and everything after it arrive 24 ticks late
+            this.c.yaw = 0.0F;
+            this.c.keys = FORWARD;
+            this.c.forcePosition = true;
+            this.c.player.connection.teleport(this.ox + 0.5, this.gy, this.oz + 0.5, 0.0F, 0.0F); // back to the start
+            before[0] = this.c.auth.stats().forcedLanded();
+        });
+        this.step(1, id + ": the link is quick again (what was sent still arrives in order)", () -> this.c.latencyTicks = 0);
+        this.step(11, id + ": forced", () -> {
+            forced[0] = this.c.player.getX();
+            forced[1] = this.c.player.getY();
+            forced[2] = this.c.player.getZ();
+        });
+        this.step(12, id + ": still held", () -> {
+            this.honestExpect(this.c.player.getZ() > forced[2] + 0.5, "the ServerPlayer walks on from the forced teleport before the client has it (z +"
+                + f(this.c.player.getZ() - forced[2]) + ")");
+            forced[2] = this.c.player.getZ();
+        });
+        this.step(10, id + ": landed", () -> {
+            this.honestExpect(this.c.auth.stats().forcedLanded() > before[0], "the teleport landed late (" + (this.c.auth.stats().forcedLanded() - before[0]) + ")");
+            this.honestExpect(this.c.player.getZ() >= forced[2] - 1.0E-9, "the landing rolled nothing back (z " + f(this.c.player.getZ() - forced[2]) + " since the release)");
+            this.c.keys = NONE;
+        });
+        this.judge(20, id, () -> {
+            final Snap d = this.delta(this.c);
+            this.honestExpect(!this.c.kicked, "not kicked");
+            this.honestExpect(d.violations() == 0, "no violation (accept matched): " + d.violations());
+        });
+        this.honestAfter(id, NONE, 0);
+        this.finish(id);
+    }
+
+    // Torture r80down300w (2026-10-22): a knock forced at its deadline whose real pong came in the next window. The pong
+    // took it off the forced and in-flight sets before that window's drain landed it, so the correction resolved first
+    // forecast the client without it; the client applied both, and five corrections chased the double. The delay is the
+    // deadline plus 0, 1 or 2 ticks, so one of them lands the pong in the window right after the forcing
+    private void heldKnockPong(final int extra) {
+        final String id = "knock: a knock that reaches the client " + extra + " ticks past its deadline, walking";
+        this.begin(id, () -> {
+        });
+        final long[] before = new long[2];
+        final int[] delay = new int[1];
+        this.arm(id, () -> {
+            this.label = "HONEST";
+            this.c.yaw = 0.0F;
+            this.c.keys = FORWARD;
+            before[0] = this.c.auth.stats().forcedLanded();
+            before[1] = this.c.auth.stats().forcedEntries();
+            delay[0] = this.deadline(this.c) + extra;
+            this.c.latencyTicks = delay[0]; // the knock, its ping and what follows arrive that late
+            this.knock(this.c, 0.0, 0.42, 0.6);
+        });
+        this.step(1, id + ": the link is quick again (what was sent still arrives in order)", () -> this.c.latencyTicks = 0);
+        this.step(30, id + ": landed", () -> { // the deadline is a few windows on a local link
+            this.note("delay " + delay[0] + " ticks; forced " + (this.c.auth.stats().forcedEntries() - before[1]) + ", landed "
+                + (this.c.auth.stats().forcedLanded() - before[0]));
+            this.c.keys = NONE;
+        });
+        this.judge(20, id, () -> {
+            final Snap d = this.delta(this.c);
+            this.honestExpect(!this.c.kicked, "not kicked");
+            this.honestExpect(d.corrections() <= 1, "at most one correction for the late knock: " + d.corrections() + " (" + d.exact() + "/" + d.compared()
+                + " claims exact)");
+            this.honestExpect(d.violations() == 0, "no violation: " + d.violations());
+        });
+        this.honestAfter(id, NONE, 0);
+        this.finish(id);
+    }
+
     private void combatLatency(final int ticks) {
         final String id = "combat: an honest hit at " + ticks * 50 + " ms of latency";
         this.combatJoin(id);
@@ -1613,6 +1856,56 @@ final class AuthCheatScenarios {
         });
         this.step(1, id + ": verdict", () -> {
             this.v.keys = NONE;
+            this.record();
+            this.leaveAll();
+        });
+    }
+
+    // Classic audit #7: a VALID hit on a target running straight away. Paper's range check after the judge (handleAttack)
+    // measured the target's newest server box from the attacker's eye now; at 300 ms with Speed IV the target is past its
+    // 3 + 3 blocks by then, and the hit vanished after its VALID
+    private void combatChaseAway(final int ticks) {
+        final String id = "combat: an honest hit at " + ticks * 50 + " ms of latency on a target running straight away with Speed IV";
+        this.combatJoin(id);
+        this.step(1, id + ": latency", () -> this.c.latencyTicks = ticks);
+        this.step(50, id + ": the round trip settles", () -> {
+        });
+        this.step(1, id + ": the target takes its place", () -> {
+            this.open(id);
+            this.label = "CONTROL";
+            this.place(0.0, 2.9); // its near face 2.6 from the attacker's eye
+            this.v.player.addEffect(new net.minecraft.world.effect.MobEffectInstance(net.minecraft.world.effect.MobEffects.SPEED, 400, 3));
+        });
+        this.step(30, id + ": the target runs straight away", () -> {
+            this.v.yaw = 0.0F; // facing +z, away from the attacker
+            this.v.keys = FORWARD_SPRINT;
+        });
+        final double[] gap = new double[1];
+        this.step(8, id + ": aim at what the attacker's client shows, attack", () -> {
+            this.base = this.snap(this.c);
+            this.attacksBase = this.attacksOf(this.c);
+            final gg.hcfrevival.revival.auth.combat.RemoteMirror shown = CombatWiring.book(this.c.auth).mirror(this.v.player.getId());
+            final Simulation s = this.c.auth.simulation();
+            if (shown != null) {
+                final double dx = shown.x() - s.x();
+                final double dy = shown.y() + shown.height() * 0.5 - (s.y() + s.eyeHeight());
+                final double dz = shown.z() - s.z();
+                this.c.yaw = (float) Math.toDegrees(Math.atan2(-dx, dz));
+                this.c.pitch = (float) -Math.toDegrees(Math.atan2(dy, Math.sqrt(dx * dx + dz * dz)));
+            }
+            this.attack(this.c, 1);
+        });
+        this.judge(4, id, () -> {
+            final Snap d = this.delta(this.c);
+            final int landed = this.attacksOf(this.c) - this.attacksBase;
+            gap[0] = this.v.player.getZ() - 0.3 - this.c.player.getZ();
+            this.honestExpect(landed == 1 && d.attacksAccepted() == 1, "an honest hit lands: landed " + landed + " (judged valid " + d.attacksAccepted()
+                + ", invalid " + d.attacksRejected() + "; rewind " + this.c.auth.lastHitRewindMillis() + " ms, cap " + this.c.auth.lastRewindCap()
+                + " ms, verdict " + this.c.auth.lastHitVerdict() + "); the target's server box was " + f(gap[0]) + " away by the judge");
+        });
+        this.step(1, id + ": verdict", () -> {
+            this.v.keys = NONE;
+            this.v.player.removeEffect(net.minecraft.world.effect.MobEffects.SPEED);
             this.record();
             this.leaveAll();
         });
@@ -2019,9 +2312,335 @@ final class AuthCheatScenarios {
         this.finish(id);
     }
 
+    // NAS glitch 2026-10-22 (Lunar, RTT 31 ms): holding attack on a protected honey block underfoot, the client predicts it
+    // gone every tick it is back, sinks into it, and vanilla's restore puts it back up. Corrected instead, it lost that
+    // snap (onTeleport), stayed inside the restored block and fell through; the corrections never converged
+    private void honeyUnderfoot() {
+        final String id = "world: hold attack on a protected honey block underfoot, then walk off (honest)";
+        final BlockPos[] under = {null};
+        final Snap[] held = {null};
+        final int[] counters = new int[4];
+        this.begin(id, () -> {
+            under[0] = new BlockPos(this.ox, this.gy - 1, this.oz);
+            this.set(under[0].getX(), under[0].getY(), under[0].getZ(), Blocks.HONEY_BLOCK.defaultBlockState());
+            this.set(under[0].getX(), under[0].getY() - 1, under[0].getZ(), Blocks.AIR.defaultBlockState()); // a pit to fall through
+        });
+        this.arm(id, () -> {
+            this.protectedBlocks.add(under[0].asLong());
+            counters[0] = (int) this.c.auth.stats().holeClaims();
+            counters[1] = (int) this.c.auth.stats().holeSnaps();
+            this.c.predictBreaks = true;
+            this.c.pitch = 90.0F; // looking straight down at it
+            this.c.keys = NONE;
+            this.c.forcePosition = true;
+            this.c.before = x -> {
+                // Minecraft.continueAttack -> startDestroyBlock: an instant break every tick the block is there again
+                if (!x.world.blockState(under[0]).isAir()) {
+                    x.actions.add(new ServerboundPlayerActionPacket(ServerboundPlayerActionPacket.Action.START_DESTROY_BLOCK, under[0], Direction.UP, ++x.sequence));
+                }
+            };
+        });
+        this.step(40, id + ": attack held 2 s", () -> {
+            held[0] = this.delta(this.c);
+            counters[2] = this.c.predictedBreaks;
+            counters[3] = this.c.restoreSnaps;
+            this.c.before = null; // attack released
+            this.c.pitch = 0.0F;
+            this.c.keys = FORWARD; // and off the block
+        });
+        this.judge(30, id, () -> {
+            final Snap d = this.delta(this.c);
+            final AuthStats stats = this.c.auth.stats();
+            final double top = this.gy - 1 + 15.0 / 16.0;
+            this.expect(this.level.getBlockState(under[0]).is(Blocks.HONEY_BLOCK), "the block stands");
+            this.expect(this.track.truthMinY >= top - EPS, "the truth never left its top (y min " + f(this.track.truthMinY - top) + ")");
+            this.honestExpect(counters[2] >= 10 && counters[3] >= 5, "the client broke it " + counters[2] + " times and was put back on it "
+                + counters[3] + " times by its own restore");
+            this.honestExpect(held[0].corrections() == 0, "no correction while it bobbed in its own hole: " + held[0].corrections()
+                + " (claims in the hole " + (stats.holeClaims() - counters[0]) + ", restores modelled " + (stats.holeSnaps() - counters[1]) + ")");
+            this.honestExpect(d.corrections() <= 1, "walking off after it: " + (d.corrections() - held[0].corrections()) + " corrections more");
+        });
+        this.honestAfter(id, NONE, 0);
+        this.finish(id);
+    }
+
+    // The same for a wall (the NAS glass panes): broken on the client, walked into, restored around the player. dig: a
+    // glass pane dug for its STOP_DESTROY_BLOCK; else TNT, broken by START_DESTROY_BLOCK at once
+    private void protectedWallHonest(final boolean dig) {
+        final String id = dig ? "world: dig a protected glass pane and walk into the gap (honest)"
+            : "world: break a protected wall block and walk into the gap (honest)";
+        final BlockState block = dig ? Blocks.GLASS_PANE.defaultBlockState() : Blocks.TNT.defaultBlockState();
+        final int[] digTicks = {0};
+        this.begin(id, () -> this.wall(1, 1, block)); // one high: the gap is a way through
+        this.arm(id, () -> {
+            final BlockPos low = new BlockPos(this.ox, this.gy, this.oz + 1);
+            this.protectedBlocks.add(low.asLong());
+            this.protectedBlocks.add(low.above().asLong());
+            this.c.predictBreaks = true;
+            this.c.pitch = dig ? 45.0F : 60.0F; // the crosshair on it (a pane's face is 7/16 into its block)
+            this.c.keys = NONE;
+            this.c.forcePosition = true;
+            this.c.before = x -> {
+                final int t = digTicks[0]++;
+                if (!dig && t == 0) {
+                    x.actions.add(new ServerboundPlayerActionPacket(ServerboundPlayerActionPacket.Action.START_DESTROY_BLOCK, low, Direction.NORTH, ++x.sequence));
+                }
+                if (dig && t == 0) {
+                    x.actions.add(new ServerboundPlayerActionPacket(ServerboundPlayerActionPacket.Action.START_DESTROY_BLOCK, low, Direction.NORTH, ++x.sequence));
+                }
+                if (dig && t == 10) {
+                    x.actions.add(new ServerboundPlayerActionPacket(ServerboundPlayerActionPacket.Action.STOP_DESTROY_BLOCK, low, Direction.NORTH, ++x.sequence));
+                }
+                if (t == (dig ? 10 : 0)) {
+                    x.keys = FORWARD; // into the gap it sees
+                }
+            };
+        });
+        this.judge(40, id, () -> {
+            final Snap d = this.delta(this.c);
+            final double face = this.oz + 1 + (dig ? 7.0 / 16.0 : 0.0); // a pane's post
+            this.expect(this.level.getBlockState(new BlockPos(this.ox, this.gy, this.oz + 1)).is(block.getBlock()), "the block stands");
+            this.expect(this.track.truthMaxZ <= face - 0.3 + EPS, "the truth stops at it (z " + f(this.track.truthMaxZ - (face - 0.3)) + ")");
+            this.honestExpect(this.c.predictedBreaks >= 1, "the client broke it on its side (" + this.c.predictedBreaks + "), restores that put it back "
+                + this.c.restoreSnaps);
+            this.honestExpect(d.corrections() <= 1, "corrections " + d.corrections() + " (at most one for the gap it walked into)");
+        });
+        this.honestAfter(id, NONE, 0);
+        this.finish(id);
+    }
+
     // =================================================================================================================
     // Self echo
     // =================================================================================================================
+
+    // kind 0: a piston behind the player (facing +z) extends, and the client moves with it as vanilla does (0.51 a tick,
+    // two ticks: the band adopts it, no correction); 1: a piston 10 blocks off extends while the client claims 0.55 up a
+    // tick; 2: the piston behind it extends while it claims 0.55 up instead of along the push
+    private void pistonCase(final String id, final int kind) {
+        final Direction facing = kind == 1 ? Direction.EAST : Direction.SOUTH;
+        // Placed when the arena is (the suite's origin is only known then), the power beside it off the lane: a server
+        // piston refuses an extend event it has no signal for (triggerEvent)
+        final BlockPos[] at = new BlockPos[2];
+        this.begin(id, () -> {
+            at[0] = kind == 1 ? new BlockPos(this.ox + 3, this.gy, this.oz + 10) : new BlockPos(this.ox, this.gy, this.oz - 1);
+            at[1] = at[0].relative(kind == 1 ? Direction.NORTH : Direction.WEST);
+            this.set(at[0].getX(), at[0].getY(), at[0].getZ(),
+                Blocks.PISTON.defaultBlockState().setValue(net.minecraft.world.level.block.piston.PistonBaseBlock.FACING, facing));
+            this.set(at[1].getX(), at[1].getY(), at[1].getZ(), Blocks.REDSTONE_BLOCK.defaultBlockState());
+        });
+        final double[] start = new double[3];
+        this.arm(id, () -> {
+            this.c.forcePosition = true;
+            start[0] = this.c.auth.simulation().x();
+            start[1] = this.c.auth.simulation().y();
+            start[2] = this.c.auth.simulation().z();
+            final int seen = this.c.blockEvents;
+            final int[] k = {-1};
+            this.c.cheat = x -> {
+                if (k[0] < 0 && x.blockEvents > seen) {
+                    k[0] = 0; // the event reached the client this tick: it moves from the next
+                    return;
+                }
+                if (k[0] < 0 || k[0] >= 3) {
+                    return;
+                }
+                final int t = k[0]++;
+                x.model.setVelocity(0.0, 0.0, 0.0);
+                if (kind == 0) {
+                    if (t < 2) {
+                        x.model.rebase(x.model.x(), x.model.y(), x.model.z() + 0.51);
+                    }
+                } else {
+                    x.model.rebase(x.model.x(), x.model.y() + 0.55, x.model.z());
+                }
+            };
+            this.level.blockEvent(at[0], Blocks.PISTON, 0, facing.get3DDataValue());
+        });
+        this.judge(20, id, () -> {
+            final Snap d = this.delta(this.c);
+            final Simulation s = this.c.auth.simulation();
+            this.note("the client handled " + this.c.blockEvents + " block events");
+            if (kind == 0) {
+                this.label = "CONTROL";
+                this.honestExpect(d.corrections() == 0 && Math.abs(s.z() - start[2] - 1.02) <= 1.0E-6, "pushed 1.02 with the piston, adopted: z +"
+                    + f(s.z() - start[2]) + ", corrections " + d.corrections() + ", pushes adopted " + this.c.auth.stats().pushesAdopted());
+            } else {
+                this.expect(this.track.truthMaxY <= start[1] + 1.0E-9, "the truth never rose (max y +" + f(this.track.truthMaxY - start[1]) + ")");
+                this.expect(d.corrections() > 0, "corrections " + d.corrections());
+            }
+            this.c.cheat = null;
+        });
+        this.honestAfter(id, NONE, 0);
+        this.step(1, id + ": no piston", () -> {
+            this.set(at[1].getX(), at[1].getY(), at[1].getZ(), Blocks.AIR.defaultBlockState());
+            this.set(at[0].getX(), at[0].getY(), at[0].getZ(), Blocks.AIR.defaultBlockState());
+            final BlockPos head = at[0].relative(facing);
+            this.set(head.getX(), head.getY(), head.getZ(), Blocks.AIR.defaultBlockState());
+        });
+        this.finish(id);
+    }
+
+    private static ItemStack splashHealing() {
+        return net.minecraft.world.item.alchemy.PotionContents.createItemStack(Items.SPLASH_POTION, net.minecraft.world.item.alchemy.Potions.HEALING);
+    }
+
+    private java.util.List<net.minecraft.world.entity.projectile.throwableitemprojectile.ThrownSplashPotion> potions(final Cheater x) {
+        return this.level.getEntitiesOfClass(net.minecraft.world.entity.projectile.throwableitemprojectile.ThrownSplashPotion.class,
+            x.player.getBoundingBox().inflate(6.0));
+    }
+
+    // Silent auto-pot: in one window the pot's slot, a throw at the feet (pitch 90) under level claims, the sword's slot
+    // again. The throw flies along the tick's rotation (the one the claims, the judge and every viewer saw), and the
+    // sword can't come back in the tick the pot was thrown
+    private void silentPot() {
+        final String id = "use: a pot thrown at the feet under level claims, the sword back in the same tick (silent auto-pot)";
+        this.begin(id, () -> {
+        });
+        this.step(1, id + ": a sword in slot 1, a pot in slot 2", () -> {
+            this.c.player.getInventory().setItem(0, new ItemStack(Items.DIAMOND_SWORD));
+            this.c.player.getInventory().setItem(1, splashHealing());
+            this.c.player.inventoryMenu.broadcastChanges();
+        });
+        final long[] before = new long[2];
+        this.step(5, id + ": the cheat", () -> {
+            this.base = this.snap(this.c);
+            before[0] = this.c.auth.inputRules().count(InputRules.USE_ROTATION);
+            before[1] = this.c.auth.inputRules().count(InputRules.SLOT_AFTER_ACTION);
+            this.c.yaw = 0.0F;
+            this.c.pitch = 0.0F;
+            this.c.forcePosition = true;
+            this.c.noUsePrediction = true; // a splash pot is thrown, not used
+            this.c.actions.add(new ServerboundSetCarriedItemPacket(1));
+            this.c.actions.add(new ServerboundUseItemPacket(InteractionHand.MAIN_HAND, 1, 0.0F, 90.0F));
+            this.c.actions.add(new ServerboundSetCarriedItemPacket(0));
+        });
+        this.judge(2, id, () -> {
+            final var thrown = this.potions(this.c);
+            final double vy = thrown.isEmpty() ? Double.NaN : thrown.getFirst().getDeltaMovement().y;
+            this.expect(!thrown.isEmpty() && vy > 0.0, "the pot flew along the tick's level aim, not at the feet (" + thrown.size() + " thrown, vy "
+                + f(vy) + ")");
+            final long rotation = this.c.auth.inputRules().count(InputRules.USE_ROTATION) - before[0];
+            final long slot = this.c.auth.inputRules().count(InputRules.SLOT_AFTER_ACTION) - before[1];
+            this.expect(rotation == 1, "use-rotation counted " + rotation);
+            this.expect(slot == 1 && this.c.player.getInventory().getSelectedSlot() == 1, "the sword's slot was refused in the throw's tick (counted "
+                + slot + ", server slot " + (this.c.player.getInventory().getSelectedSlot() + 1) + ")");
+            thrown.forEach(net.minecraft.world.entity.Entity::discard);
+            this.c.noUsePrediction = false;
+        });
+        this.honestAfter(id, NONE, 0);
+        this.finish(id);
+    }
+
+    // An off-hand pot while the main hand holds a sword, whose block consumes the click first: no throw. With the main hand
+    // empty the off hand's use is honest (control)
+    private void offhandPot(final boolean sword) {
+        final String id = sword ? "use: an off-hand pot thrown while a sword is in the main hand"
+            : "use: an off-hand pot thrown with an empty main hand (control)";
+        this.begin(id, () -> {
+        });
+        this.step(1, id + ": the hands", () -> {
+            this.c.player.getInventory().setItem(0, sword ? new ItemStack(Items.DIAMOND_SWORD) : ItemStack.EMPTY);
+            this.c.player.getInventory().setItem(net.minecraft.world.entity.player.Inventory.SLOT_OFFHAND, splashHealing());
+            this.c.player.inventoryMenu.broadcastChanges();
+        });
+        final long[] before = new long[1];
+        this.step(5, id + ": throw it", () -> {
+            this.base = this.snap(this.c);
+            before[0] = this.c.auth.inputRules().count(InputRules.OFFHAND_AFTER_MAIN);
+            this.c.pitch = 0.0F;
+            this.c.forcePosition = true;
+            this.c.noUsePrediction = true;
+            this.c.actions.add(new ServerboundUseItemPacket(InteractionHand.OFF_HAND, 1, this.c.yaw, 0.0F));
+        });
+        this.judge(2, id, () -> {
+            final var thrown = this.potions(this.c);
+            final long counted = this.c.auth.inputRules().count(InputRules.OFFHAND_AFTER_MAIN) - before[0];
+            if (sword) {
+                this.expect(thrown.isEmpty() && counted == 1, "no throw (" + thrown.size() + " thrown), offhand-after-main counted " + counted);
+            } else {
+                this.label = "CONTROL";
+                this.honestExpect(thrown.size() == 1 && counted == 0, "thrown " + thrown.size() + ", offhand-after-main counted " + counted);
+            }
+            thrown.forEach(net.minecraft.world.entity.Entity::discard);
+            this.c.noUsePrediction = false;
+        });
+        this.honestAfter(id, NONE, 0);
+        this.finish(id);
+    }
+
+    private void sprintLedger(final String id, final int kind) {
+        this.combatJoin(id);
+        this.step(1, id + ": a sword, the victim aside, sprint", () -> {
+            this.open(id);
+            this.give(this.c, new ItemStack(Items.DIAMOND_SWORD));
+            this.place(3.0, 1.0);
+            this.c.forcePosition = true;
+            this.c.keys = FORWARD_SPRINT;
+        });
+        final long[] released = new long[1];
+        this.step(8, id + ": a hit used the arm", () -> {
+            this.tests.check(this.c.auth.simulation().sprinting(), this.scenario + ": the attacker sprints");
+            this.tests.check(this.c.player.revivalSprintLedger.armed(false), this.scenario + ": its sprint start armed the knock");
+            this.c.player.revivalSprintLedger.consume(); // as a landed sprint hit does
+            released[0] = this.c.auth.inputRules().count(InputRules.RELEASE_WITHOUT_USE);
+            final ServerboundUseItemPacket use = new ServerboundUseItemPacket(InteractionHand.MAIN_HAND, 1, 0.0F, 0.0F);
+            final ServerboundPlayerActionPacket release = new ServerboundPlayerActionPacket(ServerboundPlayerActionPacket.Action.RELEASE_USE_ITEM,
+                BlockPos.ZERO, Direction.DOWN);
+            final int[] k = {0};
+            this.c.before = x -> {
+                final int t = k[0]++;
+                switch (kind) {
+                    case 0 -> x.keys = t < 2 ? NONE : FORWARD_SPRINT; // let go of W for two ticks, sprint key held
+                    case 1 -> {
+                        if (t == 0) {
+                            this.attack(x, 1); // stops the simulated sprint; the held key re-sprints it this tick
+                            x.injectSprint = ServerboundPlayerCommandPacket.Action.STOP_SPRINTING;
+                        }
+                    }
+                    case 2 -> {
+                        if (t == 0) {
+                            x.injectSprint = ServerboundPlayerCommandPacket.Action.STOP_SPRINTING;
+                        } else if (t == 1) {
+                            x.injectSprint = ServerboundPlayerCommandPacket.Action.START_SPRINTING;
+                            this.attack(x, 1);
+                        }
+                    }
+                    case 3 -> {
+                        if (t == 0) {
+                            x.actions.add(use);
+                        } else if (t == 2) {
+                            x.actions.add(release);
+                        }
+                    }
+                    default -> {
+                        if (t == 0) {
+                            x.actions.add(use);
+                            x.actions.add(release);
+                        }
+                    }
+                }
+                if (t >= 3) {
+                    x.before = null;
+                }
+            };
+        });
+        this.judge(8, id, () -> {
+            final boolean armed = this.c.player.revivalSprintLedger.armed(false);
+            if (kind == 0 || kind == 3) {
+                this.label = "CONTROL";
+                this.honestExpect(armed, "re-armed: " + armed);
+            } else {
+                this.expect(!armed, "the held level, not re-armed (armed " + armed + ")");
+            }
+            if (kind == 4) {
+                final long counted = this.c.auth.inputRules().count(InputRules.RELEASE_WITHOUT_USE) - released[0];
+                this.expect(counted >= 1, "release-without-use counted " + counted);
+            }
+            this.note("sprinting " + this.c.auth.simulation().sprinting() + ", corrections " + this.delta(this.c).corrections());
+        });
+        this.honestAfter(id, NONE, 0);
+        this.finish(id);
+    }
 
     private void sprintEcho(final String id, final boolean noStop) {
         this.begin(id, () -> {
@@ -2093,6 +2712,7 @@ final class AuthCheatScenarios {
         final org.bukkit.Location spawn = this.level.getWorld().getSpawnLocation();
         this.ox = spawn.getBlockX() + 24;
         this.oz = spawn.getBlockZ() - 8;
+        this.level.getChunk(this.ox >> 4, this.oz >> 4); // loaded (a filtered dev run has no earlier scenario that loaded it)
         this.gy = this.level.getHeight(Heightmap.Types.MOTION_BLOCKING, this.ox, this.oz);
         final net.minecraft.server.ServerScoreboard scoreboard = this.server.getScoreboard();
         net.minecraft.world.scores.PlayerTeam team = scoreboard.getPlayerTeam(TEAM);
@@ -2351,7 +2971,7 @@ final class AuthCheatScenarios {
         world.setLevel(this.level, false);
         ref.seed(start[0], start[1], start[2], start[3], start[4], start[5], 0.0F, 0.0F, true, view, world);
         if (use) {
-            ref.startUsingItem(InteractionHand.MAIN_HAND);
+            ref.startUsingItem(InteractionHand.MAIN_HAND, view); // the hand as the view holds it (cheat suite 2 H2)
         }
         Input previous = NONE;
         for (int i = 0; i < n; i++) {
@@ -2568,6 +3188,15 @@ final class AuthCheatScenarios {
         boolean ignoreMotion;
         boolean ignoreBlockUpdates;
         boolean ownBlocks; // the cheat edited its own world: an honest client starts from the server's again
+        // An honest client's own breaks (MultiPlayerGameMode.destroyBlock under BlockStatePredictionHandler): the block goes
+        // at once, server updates for it are stored, and the BlockChangedAck puts the stored state back, snapping the
+        // player to where it broke it if it is inside and no teleport came since (ClientLevel.syncBlockState)
+        boolean predictBreaks;
+        int sequence;
+        private int teleportSequence = -1;
+        private final Map<Long, Object[]> retained = new HashMap<>();
+        int predictedBreaks;
+        int restoreSnaps;
         boolean acceptServerTeleports = true;
         @Nullable Vec3 acceptOffset;
         boolean acceptNaN;
@@ -2591,6 +3220,10 @@ final class AuthCheatScenarios {
         boolean noTickEnd;
         boolean noUsePrediction;
         boolean suppressSprintStop;
+        /** {@code BlockEvent}s handled (a piston moving, a shulker box opening). */
+        int blockEvents;
+        /** A sprint command sent this tick in the sprint slot whatever the model does (a spoofed one), then cleared. */
+        ServerboundPlayerCommandPacket.@Nullable Action injectSprint;
         boolean blink;
         int blinkTicks;
         boolean holdAfterDrain;
@@ -2748,6 +3381,10 @@ final class AuthCheatScenarios {
                 }
                 this.wasSprinting = sprinting;
             }
+            if (this.injectSprint != null) {
+                out.add(new ServerboundPlayerCommandPacket(this.player, this.injectSprint));
+                this.injectSprint = null;
+            }
             this.claimX = this.model.x();
             this.claimY = this.model.y();
             this.claimZ = this.model.z();
@@ -2822,15 +3459,86 @@ final class AuthCheatScenarios {
                 case final ServerboundAttackPacket ignored -> this.model.clientAttack(true, this.view);
                 case final ServerboundUseItemPacket use -> {
                     if (!this.noUsePrediction && Boolean.TRUE.equals(this.view.predictsUse(this.view.items.hand(use.hand())))) {
-                        this.model.startUsingItem(use.hand());
+                        this.model.startUsingItem(use.hand(), this.view);
                     }
                 }
                 case final ServerboundPlayerActionPacket playerAction when playerAction.getAction() == ServerboundPlayerActionPacket.Action.RELEASE_USE_ITEM ->
                     this.model.releaseUsingItem();
+                case final ServerboundPlayerActionPacket destroy when this.predictBreaks
+                    && (destroy.getAction() == ServerboundPlayerActionPacket.Action.START_DESTROY_BLOCK && destroy.getSequence() > 0
+                    || destroy.getAction() == ServerboundPlayerActionPacket.Action.STOP_DESTROY_BLOCK) -> this.predictBreak(destroy.getPos(), destroy.getSequence());
                 case final ServerboundSetCarriedItemPacket carried -> this.view.items.select(carried.getSlot());
                 default -> {
                 }
             }
+        }
+
+        // destroyBlock inside startPredicting: retainKnownServerState (the first state and player position stay), then the
+        // block's fluid, or air
+        private void predictBreak(final BlockPos pos, final int sequence) {
+            final BlockState state = this.world.blockState(pos);
+            if (state.isAir()) {
+                return;
+            }
+            final Object[] kept = this.retained.get(pos.asLong());
+            if (kept != null) {
+                kept[0] = sequence;
+            } else {
+                this.retained.put(pos.asLong(), new Object[] {sequence, state, new Vec3(this.model.x(), this.model.y(), this.model.z())});
+            }
+            this.world.onBlockUpdate(pos, state.getFluidState().createLegacyBlock());
+            this.predictedBreaks++;
+        }
+
+        // ClientLevel.setServerVerifiedBlockState: a position this client predicted keeps its update for the ack
+        private void serverBlock(final BlockPos pos, final BlockState state) {
+            final Object[] kept = this.retained.get(pos.asLong());
+            if (kept != null) {
+                kept[1] = state;
+            } else if (!this.ignoreBlockUpdates) {
+                this.world.onBlockUpdate(pos, state);
+            }
+        }
+
+        // BlockStatePredictionHandler.endPredictionsUpTo -> ClientLevel.syncBlockState
+        private void endPredictions(final int ackSequence) {
+            final java.util.Iterator<Map.Entry<Long, Object[]>> iterator = this.retained.entrySet().iterator();
+            while (iterator.hasNext()) {
+                final Map.Entry<Long, Object[]> entry = iterator.next();
+                if ((int) entry.getValue()[0] > ackSequence) {
+                    continue;
+                }
+                iterator.remove();
+                final BlockPos pos = BlockPos.of(entry.getKey());
+                final BlockState state = (BlockState) entry.getValue()[1];
+                if (this.world.blockState(pos) == state) {
+                    continue;
+                }
+                this.world.onBlockUpdate(pos, state);
+                final Vec3 at = (Vec3) entry.getValue()[2];
+                final boolean colliding = this.seeded && this.colliding(pos, state);
+                if (this.teleportSequence < ackSequence && colliding) {
+                    this.model.snapTo(at.x, at.y, at.z);
+                    this.restoreSnaps++;
+                }
+            }
+        }
+
+        // Entity.isColliding: the block's collision shape overlaps the player's box
+        private boolean colliding(final BlockPos pos, final BlockState state) {
+            final net.minecraft.world.phys.shapes.VoxelShape shape = state.getCollisionShape(this.player.level(), pos,
+                net.minecraft.world.phys.shapes.CollisionContext.empty());
+            if (shape.isEmpty()) {
+                return false;
+            }
+            final net.minecraft.world.phys.AABB box = new net.minecraft.world.phys.AABB(this.model.x() - 0.3, this.model.y(), this.model.z() - 0.3,
+                this.model.x() + 0.3, this.model.y() + 1.8, this.model.z() + 0.3);
+            for (final net.minecraft.world.phys.AABB part : shape.move(pos).toAabbs()) {
+                if (part.intersects(box)) {
+                    return true;
+                }
+            }
+            return false;
         }
 
         // Pong tricks that need the ids the server sent
@@ -2988,6 +3696,7 @@ final class AuthCheatScenarios {
                     this.model.attributes(attributes.getValues());
                 }
                 case final ClientboundUpdateMobEffectPacket effect when effect.getEntityId() == self -> this.view.addEffect(effect);
+                case final net.minecraft.network.protocol.game.ClientboundBlockEventPacket ignored -> this.blockEvents++;
                 case final ClientboundRemoveMobEffectPacket effect when effect.entityId() == self -> this.view.removeEffect(effect.effect());
                 case final ClientboundPlayerAbilitiesPacket abilities -> this.view.abilities(abilities);
                 case final ClientboundSetEntityDataPacket data when data.id() == self -> this.view.entityData(data.packedItems(), this.echo);
@@ -3000,17 +3709,12 @@ final class AuthCheatScenarios {
                 case final ClientboundContainerSetSlotPacket slot when slot.getContainerId() == 0 -> this.view.items.setMenuSlot(slot.getSlot(), slot.getItem());
                 case final ClientboundContainerSetContentPacket content when content.containerId() == 0 -> this.view.items.setMenuContent(content.items());
                 case final ClientboundSetHeldSlotPacket held -> this.view.items.select(held.slot());
-                case final ClientboundBlockUpdatePacket update -> {
-                    if (!this.ignoreBlockUpdates) {
-                        this.world.onBlockUpdate(update.getPos(), update.getBlockState());
-                    }
+                case final ClientboundBlockUpdatePacket update -> this.serverBlock(update.getPos(), update.getBlockState());
+                case final ClientboundSectionBlocksUpdatePacket section -> section.runUpdates(this::serverBlock);
+                case final ClientboundBlockChangedAckPacket ack -> {
+                    this.ackedSequence = Math.max(this.ackedSequence, ack.sequence());
+                    this.endPredictions(ack.sequence());
                 }
-                case final ClientboundSectionBlocksUpdatePacket section -> {
-                    if (!this.ignoreBlockUpdates) {
-                        section.runUpdates(this.world::onBlockUpdate);
-                    }
-                }
-                case final ClientboundBlockChangedAckPacket ack -> this.ackedSequence = Math.max(this.ackedSequence, ack.sequence());
                 case final ClientboundSetPassengersPacket passengers -> this.view.passengers(passengers.getVehicle(), passengers.getPassengers(), self);
                 default -> {
                 }
@@ -3020,6 +3724,7 @@ final class AuthCheatScenarios {
         // handleMovePlayer: apply, then accept with the resulting position (unless a cheat says otherwise)
         private void teleport(final ClientboundPlayerPositionPacket packet) {
             this.positions.add(packet);
+            this.teleportSequence = this.sequence; // blockStatePredictionHandler.onTeleport
             final boolean finite = AuthCheatScenarios.finite(packet.change());
             if (!this.seeded) {
                 this.joined = PositionMoveRotation.calculateAbsolute(this.joined, packet.change(), packet.relatives());
@@ -3078,6 +3783,7 @@ final class AuthCheatScenarios {
             this.acceptCorrectionNaN = false;
             this.noUsePrediction = false;
             this.suppressSprintStop = false;
+            this.injectSprint = null;
             this.noTickEnd = false;
             this.outOfOrder = false;
             this.futurePong = false;

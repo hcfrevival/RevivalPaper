@@ -50,12 +50,37 @@ public final class LegacySwordBlocking {
             return false;
         }
         if (player instanceof final ServerPlayer serverPlayer) {
-            if (Revival.settings().swordBlocking().rearmSprintOnBlock()) {
+            // Under authority the simulation re-arms, after a tick that really ran with the block up: a UseItem and its
+            // RELEASE_USE_ITEM in one window block for no tick at all (classic audit #5)
+            if (Revival.settings().swordBlocking().rearmSprintOnBlock() && !serverPlayer.revivalSprintLedger.simulated()) {
                 serverPlayer.revivalSprintLedger.rearm(serverPlayer.onGround());
             }
             NeueCombat.blockStarted(serverPlayer);
         }
         return true;
+    }
+
+    /**
+     * The hook in {@code ServerPlayerGameMode.useItem}, just before its cooldown check: whether the server refuses this
+     * legacy weapon's block, because the weapon is on cooldown or Neue's stagger forbids any block for its length (cheat
+     * suite 2, L4). On true the hook resyncs the use flags and returns PASS, so a client that predicted the block drops it
+     * at once instead of showing one the server doesn't have (a ghost block, held as long as right-click is):
+     * <ul>
+     *   <li>the cooldown: a block pressed in the parried click's own window, or before the stagger's cooldown reached the
+     *       client, which vanilla's own cooldown check refuses without a word (real-client run N1);</li>
+     *   <li>the stagger: a sword type that missed the stagger's cooldowns (picked up during it) or
+     *       {@code stagger-sword-cooldown: false}.</li>
+     * </ul>
+     * This is the one entry for every use, so it also covers legacy weapons whose use never reaches {@link #startBlocking}
+     * (a spear's kinetic use, a trident, a weapon with {@code BLOCKS_ATTACKS}). Under authority the resync is server-meant
+     * ({@code Authority.onServerResync}), so the truth takes the echo at its ack, as a guard break.
+     * <p>
+     * Only where the world's rules parry: a classic world has no stagger, and its cooldown refusal stays vanilla's silent
+     * PASS, so it sends exactly the traffic it always did (AGENTS.md rule 5), no resync for a sword or a pearl on cooldown.
+     */
+    public static boolean refusedBlock(final ServerPlayer player, final ItemStack stack) {
+        return isBlockingWeapon(stack) && NeueCombat.rules(player).parry() && (player.getCooldowns().isOnCooldown(stack)
+            || NeueCombat.state(player).staggered() && NeueCombat.lockedOut(player));
     }
 
     /** Whether the entity is blocking with a legacy weapon right now; 1.7.10 had no block delay. */
