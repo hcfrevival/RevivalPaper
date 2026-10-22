@@ -137,6 +137,7 @@ public final class Transactions {
     private int sentBundleCount;
     @SuppressWarnings("unchecked")
     private final ArrayList<Packet<? super ClientGamePacketListener>>[] spareBundles = new ArrayList[SPARE_BUNDLES];
+    private final int[] spareSizes = new int[SPARE_BUNDLES];
     private int spareBundleCount;
 
     // Other players this client has been sent, for REMOTE_PLAYER classification (guarded by the lock)
@@ -229,17 +230,24 @@ public final class Transactions {
     /** Sends {@code packet} on {@code connection}, logged and pinged when it changes the client's physics. */
     @SuppressWarnings("unchecked")
     public void send(final Connection connection, final Packet<?> packet, final @Nullable ChannelFutureListener listener, final boolean flush, final Context context) {
-        synchronized (this) {
-            final boolean coalesce = context.coalesce();
-            if (packet instanceof final ClientboundBundlePacket bundle) {
-                this.sendBundle(connection, bundle, listener, flush, context, coalesce);
-                return;
+        if (packet instanceof final ClientboundBundlePacket bundle) {
+            synchronized (this) {
+                this.sendBundle(connection, bundle, listener, flush, context, context.coalesce());
             }
-            final int kind = OutboundClassifier.classify(packet, context.selfId(), context.selfUuid(), this.trackedPlayers, this.trackedRockets);
-            this.track(packet);
-            final boolean bundleable = bundleable(packet);
+            return;
+        }
+        // Per packet to every player (auth-load §9): the class decides the family and whether it can be bundled, the
+        // entity-id tests and the tracked sets run only for the families that need them, the recorder is asked once
+        final OutboundClassifier.ClassInfo info = OutboundClassifier.info(packet);
+        final int self = info.family < 0 ? context.selfId() : 0;
+        synchronized (this) {
+            final int kind = info.family >= 0 ? info.family
+                : OutboundClassifier.classify(info.family, packet, self, context.selfUuid(), this.trackedPlayers, this.trackedRockets);
+            if (info.tracked) {
+                this.track(packet);
+            }
             if (this.open != null) {
-                if (bundleable && listener == null) {
+                if (listener == null && (info.plain || bundleable(packet))) {
                     this.append(connection, packet, kind, context);
                     return;
                 }
@@ -249,25 +257,34 @@ public final class Transactions {
                 connection.send(packet, listener, flush);
                 return;
             }
-            if (!bundleable) {
+            final TraceRecorder trace = context.trace();
+            if (!info.plain && !bundleable(packet)) {
                 // Logged before it is written, so the bypass audit expects it; the ping goes right after (upper bound)
                 final ClientboundPingPacket ping = this.newPing(context);
                 this.log(packet, kind, true, context);
-                this.traceState(context, packet);
+                if (trace != null) {
+                    trace.state(packet);
+                }
                 connection.send(packet, listener, false);
-                this.tracePing(context, ping.getId());
+                if (trace != null) {
+                    trace.ping(ping.getId());
+                }
                 connection.send(ping, null, flush);
                 return;
             }
-            if (coalesce && listener == null) {
+            if (context.coalesce() && listener == null) {
                 this.openBundle(context);
                 this.append(connection, packet, kind, context);
                 return;
             }
             final ClientboundPingPacket ping = this.newPing(context);
-            this.tracePing(context, ping.getId());
+            if (trace != null) {
+                trace.ping(ping.getId());
+            }
             this.log(packet, kind, false, context);
-            this.traceState(context, packet);
+            if (trace != null) {
+                trace.state(packet);
+            }
             connection.send(new ClientboundBundlePacket(List.of(ping, (Packet<? super ClientGamePacketListener>) packet)), listener, flush);
         }
     }
@@ -283,10 +300,14 @@ public final class Transactions {
         boolean matters = false;
         int i = 0;
         for (final Packet<? super ClientGamePacketListener> sub : bundle.subPackets()) {
-            final int kind = OutboundClassifier.mayMatter(sub) ? OutboundClassifier.classify(sub, context.selfId(), context.selfUuid(), this.trackedPlayers, this.trackedRockets) : OutboundClassifier.NONE;
+            final OutboundClassifier.ClassInfo info = OutboundClassifier.info(sub);
+            final int kind = info.family >= 0 ? info.family
+                : OutboundClassifier.classify(info.family, sub, context.selfId(), context.selfUuid(), this.trackedPlayers, this.trackedRockets);
             kinds[i++] = kind;
             matters |= kind != OutboundClassifier.NONE;
-            this.track(sub);
+            if (info.tracked) {
+                this.track(sub);
+            }
         }
         if (this.open != null && listener == null && this.open.size() + count < net.minecraft.network.protocol.BundlerInfo.BUNDLE_SIZE_LIMIT) {
             i = 0;
@@ -345,23 +366,40 @@ public final class Transactions {
         this.tracePing(context, ping.getId());
         final ArrayList<Packet<? super ClientGamePacketListener>> bundle = this.spareBundleCount > 0
             ? this.takeSpare()
-            : new ArrayList<>(64);
+            : new ArrayList<>(this.bundleHint);
+        bundle.ensureCapacity(this.bundleHint); // grown once to what recent bundles held, not packet by packet
         bundle.add(ping);
         this.open = bundle;
         this.openSeq = this.nextSeq - 1; // newPing's
     }
 
+    // About the most recent bundles held (a max that decays 1/32 per bundle), capped like the spares
+    private int bundleHint = 64;
+
+    // The spare that held the most (its array is at least that long): a tick's bundle at N=100 holds hundreds of packets,
+    // and a list that only held a between-ticks scope would grow again packet by packet (auth-load §9: 5 MB/s at N=100)
     private ArrayList<Packet<? super ClientGamePacketListener>> takeSpare() {
-        final ArrayList<Packet<? super ClientGamePacketListener>> spare = this.spareBundles[--this.spareBundleCount];
-        this.spareBundles[this.spareBundleCount] = null;
+        int best = this.spareBundleCount - 1;
+        for (int i = best - 1; i >= 0; i--) {
+            if (this.spareSizes[i] > this.spareSizes[best]) {
+                best = i;
+            }
+        }
+        final ArrayList<Packet<? super ClientGamePacketListener>> spare = this.spareBundles[best];
+        final int last = --this.spareBundleCount;
+        this.spareBundles[best] = this.spareBundles[last];
+        this.spareSizes[best] = this.spareSizes[last];
+        this.spareBundles[last] = null;
         return spare;
     }
 
     // A list nothing reads any more: cleared and kept for a later bundle, or dropped
     private void spare(final ArrayList<Packet<? super ClientGamePacketListener>> bundle) {
-        final boolean keep = bundle.size() <= SPARE_BUNDLE_MAX && this.spareBundleCount < SPARE_BUNDLES;
+        final int size = bundle.size();
+        final boolean keep = size <= SPARE_BUNDLE_MAX && this.spareBundleCount < SPARE_BUNDLES;
         bundle.clear();
         if (keep) {
+            this.spareSizes[this.spareBundleCount] = size;
             this.spareBundles[this.spareBundleCount++] = bundle;
         }
     }
@@ -440,6 +478,7 @@ public final class Transactions {
         if (bundle == null) {
             return;
         }
+        this.bundleHint = Math.min(SPARE_BUNDLE_MAX, Math.max(64, Math.max(bundle.size(), this.bundleHint - (this.bundleHint >> 5))));
         connection.send(new ClientboundBundlePacket(bundle), null, flush);
         this.keepSent(bundle, this.openSeq);
     }

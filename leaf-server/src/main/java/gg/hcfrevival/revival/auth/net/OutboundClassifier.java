@@ -157,6 +157,57 @@ public final class OutboundClassifier {
     }
 
     /**
+     * What the classifier and {@link Transactions} need from a packet's class, worked out once per class (auth-load §9:
+     * every packet to every player passes here). Every packet's {@code type()} returns its class's constant, so the class
+     * decides the family.
+     */
+    static final class ClassInfo {
+        /** {@code BY_TYPE} of the class's type: a kind, or a negative family that the entity id decides. */
+        final int family;
+        /** Never terminal, never held (Paper's {@code isReady}/{@code getExtraPackets} not overridden), not the login: always bundleable. */
+        final boolean plain;
+        /** {@code AddEntity}, {@code RemoveEntities}, {@code Respawn} or {@code Login}: the tracked-entity sets look at it. */
+        final boolean tracked;
+
+        private ClassInfo(final Packet<?> packet) {
+            final Class<?> type = packet.getClass();
+            this.family = BY_TYPE.getInt(packet.type());
+            this.plain = !(packet instanceof net.minecraft.network.protocol.game.ClientboundLoginPacket)
+                && inherited(type, "isTerminal") && inherited(type, "isReady") && inherited(type, "getExtraPackets");
+            this.tracked = packet instanceof ClientboundAddEntityPacket || packet instanceof net.minecraft.network.protocol.game.ClientboundRemoveEntitiesPacket
+                || packet instanceof net.minecraft.network.protocol.game.ClientboundRespawnPacket || packet instanceof net.minecraft.network.protocol.game.ClientboundLoginPacket;
+        }
+
+        // Whether the class keeps Packet's default for this no-argument method
+        private static boolean inherited(final Class<?> type, final String method) {
+            try {
+                return type.getMethod(method).getDeclaringClass() == Packet.class;
+            } catch (final NoSuchMethodException e) {
+                return false;
+            }
+        }
+    }
+
+    // One slot per packet class, filled from the first instance seen (benign race: the info is immutable and the same
+    // whichever thread computes it)
+    private static final ClassValue<ClassInfo[]> INFO = new ClassValue<>() {
+        @Override
+        protected ClassInfo[] computeValue(final Class<?> type) {
+            return new ClassInfo[1];
+        }
+    };
+
+    static ClassInfo info(final Packet<?> packet) {
+        final ClassInfo[] slot = INFO.get(packet.getClass());
+        ClassInfo info = slot[0];
+        if (info == null) {
+            info = new ClassInfo(packet);
+            slot[0] = info;
+        }
+        return info;
+    }
+
+    /**
      * The kind of {@code packet} for the client of entity {@code self}, or {@link #NONE}.
      *
      * @param trackedPlayers entity ids of the other players this client has been sent (kept by the caller from
@@ -171,7 +222,10 @@ public final class OutboundClassifier {
      * data and removal matter too).
      */
     public static int classify(final Packet<?> packet, final int self, final java.util.UUID selfUuid, final IntSet trackedPlayers, final IntSet trackedRockets) {
-        final int family = BY_TYPE.getInt(packet.type());
+        return classify(info(packet).family, packet, self, selfUuid, trackedPlayers, trackedRockets);
+    }
+
+    static int classify(final int family, final Packet<?> packet, final int self, final java.util.UUID selfUuid, final IntSet trackedPlayers, final IntSet trackedRockets) {
         if (family >= 0) {
             return family;
         }
@@ -211,7 +265,7 @@ public final class OutboundClassifier {
 
     /** Whether the classifier logs this packet type at all (a quick test for bundles). */
     public static boolean mayMatter(final Packet<?> packet) {
-        return BY_TYPE.getInt(packet.type()) != NONE;
+        return info(packet).family != NONE;
     }
 
     /** Packets that must not be bundled: the ping goes right after them (rule A, report 02 §6). */
