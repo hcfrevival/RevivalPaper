@@ -111,6 +111,14 @@ leaf-server/src/minecraft/java/net/minecraft/server/level/ChunkMap.java | if (vi
 leaf-server/src/minecraft/java/net/minecraft/server/network/ServerGamePacketListenerImpl.java | // Revival - Authoritative movement: no moved-too-quickly on the truth
 leaf-server/src/minecraft/java/net/minecraft/server/network/ServerGamePacketListenerImpl.java | // Revival - Authoritative movement: no moved-wrongly on the truth
 leaf-server/src/minecraft/java/net/minecraft/server/network/ServerGamePacketListenerImpl.java | // Revival - Authoritative movement: no clipped-into-block on the truth
+leaf-server/src/minecraft/java/net/minecraft/server/network/ServerGamePacketListenerImpl.java | this.player.revivalMoveResolved(new Vec3(xDist, yDist, zDist)); else // Revival - Authoritative movement: the truth is already collided
+leaf-server/src/minecraft/java/net/minecraft/server/network/ServerGamePacketListenerImpl.java | this.player.revivalQuietSnapTo(targetX, targetY, targetZ, targetYRot, targetXRot); else // Revival - Authoritative movement: an interim position
+leaf-server/src/minecraft/java/net/minecraft/server/network/ServerGamePacketListenerImpl.java | this.player.revivalQuietSnapTo(startX, startY, startZ, startYRot, startXRot); else // Revival - Authoritative movement: an interim position
+leaf-server/src/minecraft/java/net/minecraft/world/entity/Entity.java | // Revival start - Authoritative movement: the truth path
+leaf-server/src/minecraft/java/net/minecraft/world/entity/Entity.java | Vec3 movement = this.revivalResolvedMove ? delta : this.collide(delta); // Revival - Authoritative movement: the simulated truth is already collided
+leaf-server/src/minecraft/java/net/minecraft/world/entity/Entity.java | this.revivalQuietWaypoints = this.revivalResolvedMove; // Revival - Authoritative movement: the truth's interim position
+leaf-server/src/minecraft/java/net/minecraft/world/entity/Entity.java | this.revivalQuietWaypoints = false; // Revival - Authoritative movement: the truth's interim position
+leaf-server/src/minecraft/java/net/minecraft/world/entity/Entity.java | if (!this.revivalQuietWaypoints && (!org.dreeam.leaf.config.modules.opt.OptimizeWaypoint.enabled || blockUpdated) && !this.firstTick && this.level instanceof ServerLevel serverLevel && !this.isRemoved()) { // Leaf - optimize waypoint // Revival - Authoritative movement: interim truth positions skip the waypoint updates
 leaf-server/src/minecraft/java/net/minecraft/server/network/ServerGamePacketListenerImpl.java | gg.hcfrevival.revival.combat.NeueCombat.swung(this.player); // Revival - Neue combat
 leaf-server/src/minecraft/java/net/minecraft/world/entity/LivingEntity.java | if (gg.hcfrevival.revival.combat.NeueCombat.parried(this, source)) return false; // Revival - Neue combat
 leaf-server/src/minecraft/java/net/minecraft/world/entity/LivingEntity.java | gg.hcfrevival.revival.combat.NeueCombat.windowRejected(this, source); // Revival - Neue combat

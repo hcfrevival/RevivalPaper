@@ -165,6 +165,7 @@ public final class RevivalLiveTests extends JavaPlugin implements Listener {
         this.after(1, "damage windows on", () -> this.damageWindows(true));
         this.damageWindowScenarios();
         new AuthLiveScenarios(this, this.server, this.level).register();
+        new TruthPathCheck(this, this.server, this.level).register();
         new AuthCheatScenarios(this, this.server, this.level).register();
         // Neue off, then under enforce with the 450 ms rewind-cap control; runs the world peaceful without regeneration, then restores both
         new NeueLiveScenarios(this, this.server, this.level).register();

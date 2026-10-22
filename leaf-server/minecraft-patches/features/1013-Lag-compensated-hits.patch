@@ -8,10 +8,10 @@ and are judged at their place in it, from what the attacker's client saw,
 before the original handler runs.
 
 diff --git a/net/minecraft/server/network/ServerGamePacketListenerImpl.java b/net/minecraft/server/network/ServerGamePacketListenerImpl.java
-index 0b6219a8b34027ff00d79c4f068b467adaea1ec7..fe54d3799ff261bc13f69dc130e7f5fcc1bada54 100644
+index 8a5e2e1d7b004f78dfc98641a054c304399f5dde..f2f2157f83048c67ba8d96c448759fa914fe4063 100644
 --- a/net/minecraft/server/network/ServerGamePacketListenerImpl.java
 +++ b/net/minecraft/server/network/ServerGamePacketListenerImpl.java
-@@ -3091,6 +3091,7 @@ public class ServerGamePacketListenerImpl
+@@ -3108,6 +3108,7 @@ public class ServerGamePacketListenerImpl
      @Override
      public void handleAttack(final ServerboundAttackPacket packet) {
          PacketUtils.ensureRunningOnSameThread(packet, this, this.player.level());
