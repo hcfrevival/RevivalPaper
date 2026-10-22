@@ -58,4 +58,14 @@ class ReconcilerTest {
         assertEquals(1, reconciler.violations());
         assertFalse(reconciler.inFlight());
     }
+
+    @Test
+    void anAcceptForACorrectionNeverSentIsForged() {
+        final Reconciler reconciler = new Reconciler();
+        final int id = reconciler.send(0.5, 0.0, 0.0);
+        reconciler.reset(); // a server teleport dropped it while it was on its way
+        assertFalse(reconciler.accepted(id));
+        assertTrue(reconciler.sentLately(id), "its accept is stale, not forged");
+        assertFalse(reconciler.sentLately(Reconciler.ID_MAX - (1 << 25)), "an id in our band we never sent is forged");
+    }
 }

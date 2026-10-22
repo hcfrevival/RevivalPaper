@@ -85,6 +85,24 @@ public final class SelfEcho {
         return on ? flags | 1 << bit : flags & ~(1 << bit);
     }
 
+    /**
+     * Whether an attribute sync carries {@code movement_speed}: -1 when it doesn't, else 1 with the sprinting modifier and
+     * 0 without.
+     */
+    public static int speedSync(final ClientboundUpdateAttributesPacket packet) {
+        for (final ClientboundUpdateAttributesPacket.AttributeSnapshot snapshot : packet.getValues()) {
+            if (snapshot.attribute().equals(Attributes.MOVEMENT_SPEED)) {
+                for (final AttributeModifier modifier : snapshot.modifiers()) {
+                    if (modifier.id().equals(ClientAttributes.SPRINTING_MODIFIER_ID)) {
+                        return 1;
+                    }
+                }
+                return 0;
+            }
+        }
+        return -1;
+    }
+
     /** The attribute echo with the client's own sprint modifier state. */
     public static ClientboundUpdateAttributesPacket attributes(final ClientboundUpdateAttributesPacket packet, final boolean sprinting) {
         final List<ClientboundUpdateAttributesPacket.AttributeSnapshot> snapshots = packet.getValues();

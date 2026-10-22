@@ -85,6 +85,11 @@ public final class Transactions {
             return 0L;
         }
 
+        /** The client's copy of an inventory packet's stacks, taken when it is logged (§15.6), or null. */
+        default @Nullable Object snapshot(final Packet<?> packet) {
+            return null;
+        }
+
         @Nullable TraceRecorder trace();
     }
 
@@ -117,6 +122,11 @@ public final class Transactions {
 
     // Other players this client has been sent, for REMOTE_PLAYER classification (guarded by the lock)
     private final IntOpenHashSet trackedPlayers = new IntOpenHashSet();
+    private final IntOpenHashSet trackedRockets = new IntOpenHashSet();
+    // §15.6 inventory snapshots by entry packet (guarded by the lock), and the bypass audit's expectations
+    private final java.util.IdentityHashMap<Packet<?>, Object> snapshots = new java.util.IdentityHashMap<>();
+    private final java.util.concurrent.ConcurrentLinkedQueue<Packet<?>> auditExpected = new java.util.concurrent.ConcurrentLinkedQueue<>();
+    private volatile boolean auditing;
 
     private volatile boolean lostSync;
 
@@ -201,7 +211,7 @@ public final class Transactions {
                 this.sendBundle(connection, bundle, listener, flush, context, coalesce);
                 return;
             }
-            final int kind = OutboundClassifier.classify(packet, context.selfId(), context.selfUuid(), this.trackedPlayers);
+            final int kind = OutboundClassifier.classify(packet, context.selfId(), context.selfUuid(), this.trackedPlayers, this.trackedRockets);
             this.track(packet);
             final boolean bundleable = bundleable(packet);
             if (this.open != null) {
@@ -216,10 +226,11 @@ public final class Transactions {
                 return;
             }
             if (!bundleable) {
-                connection.send(packet, listener, false);
+                // Logged before it is written, so the bypass audit expects it; the ping goes right after (upper bound)
                 final ClientboundPingPacket ping = this.newPing(context);
                 this.log(packet, kind, true, context);
                 this.traceState(context, packet);
+                connection.send(packet, listener, false);
                 this.tracePing(context, ping.getId());
                 connection.send(ping, null, flush);
                 return;
@@ -248,7 +259,7 @@ public final class Transactions {
         boolean matters = false;
         int i = 0;
         for (final Packet<? super ClientGamePacketListener> sub : bundle.subPackets()) {
-            final int kind = OutboundClassifier.mayMatter(sub) ? OutboundClassifier.classify(sub, context.selfId(), context.selfUuid(), this.trackedPlayers) : OutboundClassifier.NONE;
+            final int kind = OutboundClassifier.mayMatter(sub) ? OutboundClassifier.classify(sub, context.selfId(), context.selfUuid(), this.trackedPlayers, this.trackedRockets) : OutboundClassifier.NONE;
             kinds[i++] = kind;
             matters |= kind != OutboundClassifier.NONE;
             this.track(sub);
@@ -276,9 +287,6 @@ public final class Transactions {
             return;
         }
         final boolean fits = count + 1 < net.minecraft.network.protocol.BundlerInfo.BUNDLE_SIZE_LIMIT;
-        if (!fits) {
-            connection.send(bundle, listener, false); // a full bundle can't take a ping: it goes right after (upper bound)
-        }
         final ClientboundPingPacket ping = this.newPing(context);
         if (fits) {
             this.tracePing(context, ping.getId());
@@ -301,6 +309,8 @@ public final class Transactions {
         if (fits) {
             connection.send(new ClientboundBundlePacket(packets), listener, flush);
         } else {
+            // A full bundle can't take a ping: it goes right after (upper bound). Logged first, so the audit expects it
+            connection.send(bundle, listener, false);
             this.tracePing(context, ping.getId());
             connection.send(ping, null, flush);
         }
@@ -370,15 +380,19 @@ public final class Transactions {
         if (packet instanceof final ClientboundAddEntityPacket add) {
             if (add.getType() == net.minecraft.world.entity.EntityTypes.PLAYER) {
                 this.trackedPlayers.add(add.getId());
+            } else if (add.getType() == net.minecraft.world.entity.EntityTypes.FIREWORK_ROCKET) {
+                this.trackedRockets.add(add.getId());
             }
         } else if (packet instanceof final ClientboundRemoveEntitiesPacket remove) {
-            if (!this.trackedPlayers.isEmpty()) {
+            if (!this.trackedPlayers.isEmpty() || !this.trackedRockets.isEmpty()) {
                 for (int i = 0, n = remove.entityIds().size(); i < n; i++) {
                     this.trackedPlayers.remove(remove.entityIds().getInt(i));
+                    this.trackedRockets.remove(remove.entityIds().getInt(i));
                 }
             }
         } else if (packet instanceof ClientboundRespawnPacket || packet instanceof ClientboundLoginPacket) {
             this.trackedPlayers.clear(); // the client drops every entity with its level
+            this.trackedRockets.clear();
         }
     }
 
@@ -421,6 +435,72 @@ public final class Transactions {
         final long stamp = context.stampMillis();
         this.entryMillis[slot] = stamp != 0L ? stamp : System.currentTimeMillis();
         this.entryCount++;
+        if (kind == OutboundClassifier.INVENTORY) {
+            // §15.6: the client's copy of the stacks as they are encoded now, not as they would convert at the ack
+            final Object snapshot = context.snapshot(packet);
+            if (snapshot != null) {
+                this.snapshots.put(packet, snapshot);
+            }
+        }
+        if (this.auditing && audited(kind)) {
+            this.auditExpected.add(packet);
+        }
+    }
+
+    private static boolean audited(final int kind) {
+        return kind == OutboundClassifier.SELF_MOTION || kind == OutboundClassifier.SELF_POSITION || kind == OutboundClassifier.SELF_ROTATION
+            || kind == OutboundClassifier.EXPLODE || kind == OutboundClassifier.BLOCK_UPDATE || kind == OutboundClassifier.SECTION_UPDATE;
+    }
+
+    // Bypass audit (§15.1) --------------------------------------------------------------------------------------------
+
+    /** Packets logged here that the bypass auditor should see written, in send order. */
+    public java.util.concurrent.ConcurrentLinkedQueue<Packet<?>> auditQueue() {
+        return this.auditExpected;
+    }
+
+    /** Whether a {@link BypassAuditor} is installed on the channel (otherwise nothing is queued for it). */
+    public void setAuditing(final boolean auditing) {
+        this.auditing = auditing;
+        if (!auditing) {
+            this.auditExpected.clear();
+        }
+    }
+
+    /**
+     * A physics packet that reached the client without passing here (the audit saw it written): logged now with
+     * upper-bound timing, at the next ping, which the client answers after applying it.
+     */
+    public void logBypass(final Connection connection, final Packet<?> packet, final int kind, final Context context) {
+        synchronized (this) {
+            this.track(packet);
+            if (this.open != null) {
+                // The open bundle's ping goes out after the bypassed packet was written: its ack bounds it
+                this.logUnaudited(packet, kind, context);
+                return;
+            }
+            final ClientboundPingPacket ping = this.newPing(context);
+            this.logUnaudited(packet, kind, context);
+            this.tracePing(context, ping.getId());
+            connection.send(ping, null, true);
+        }
+    }
+
+    private void logUnaudited(final Packet<?> packet, final int kind, final Context context) {
+        final boolean wasAuditing = this.auditing;
+        this.auditing = false;
+        try {
+            this.log(packet, kind, true, context);
+        } finally {
+            this.auditing = wasAuditing;
+        }
+    }
+
+    /** The client's stacks of an inventory entry, taken when it was logged (§15.6), or null. Main thread. */
+    public @Nullable Object takeSnapshot(final Packet<?> packet) {
+        synchronized (this) {
+            return this.snapshots.isEmpty() ? null : this.snapshots.remove(packet);
+        }
     }
 
     private void tracePing(final Context context, final int id) {
@@ -438,6 +518,8 @@ public final class Transactions {
     }
 
     private void overflow() {
+        this.snapshots.clear();
+        this.auditExpected.clear();
         Arrays.fill(this.entryPackets, null);
         this.entryCount = 0;
         this.entryHead = 0;
@@ -637,6 +719,8 @@ public final class Transactions {
     /** Drops every outstanding ping and entry (mode turned off, resync). */
     public void reset() {
         synchronized (this) {
+            this.snapshots.clear();
+            this.auditExpected.clear();
             Arrays.fill(this.entryPackets, null);
             this.entryCount = 0;
             this.entryHead = 0;
@@ -644,6 +728,7 @@ public final class Transactions {
             this.pingHead = 0;
             this.open = null;
             this.trackedPlayers.clear();
+            this.trackedRockets.clear();
         }
     }
 

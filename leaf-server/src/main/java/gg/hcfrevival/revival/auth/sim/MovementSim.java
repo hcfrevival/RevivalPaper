@@ -16,6 +16,7 @@ import net.minecraft.world.entity.Relative;
 import net.minecraft.world.entity.ai.attributes.Attribute;
 import net.minecraft.world.entity.ai.attributes.AttributeModifier;
 import net.minecraft.world.entity.ai.attributes.Attributes;
+import net.minecraft.world.entity.player.Input;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.item.component.UseEffects;
@@ -41,9 +42,9 @@ import net.minecraft.world.phys.Vec3;
  */
 public final class MovementSim {
 
-    private final SimCollision collision = new SimCollision();
+    final SimCollision collision = new SimCollision();
     private final SimFluids fluids = new SimFluids(this.collision.level);
-    private final SimBlocks blocks = new SimBlocks(this.collision);
+    final SimBlocks blocks = new SimBlocks(this.collision);
     private final double[] out = new double[3];
     private final SimBox box = new SimBox();
     private final BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos();
@@ -51,6 +52,55 @@ public final class MovementSim {
     // updateAutoJump's two segments (left begin, left end, right begin, right end) and the obstacle box it found
     private final double[] segments = new double[12];
     private final double[] obstacle = new double[6];
+    // the travel branch of the tick so far, recorded before its move (see Travel)
+    private final Travel travel = new Travel();
+    // Entity.collide's result in the last move, for tools (lastMove)
+    private double lastMoveX;
+    private double lastMoveY;
+    private double lastMoveZ;
+    // velocityAfterMove: when set, the next move copies the player here and moves nothing
+    private SimPlayer probe;
+    final Travel probeTravel = new Travel();
+    private MoveVelocity moveVelocity;
+
+    /**
+     * What the travel branch of a tick worked out before its move and reads after it: the branch, Player.travel's flight
+     * rule, travelFallFlying's climbable exit, and the branch's own pre-move values (travelInAir's friction and the column
+     * of the block it came from, travelInWater's slow-down). Recorded right before the move, so velocityAfterMove can run
+     * the after-move half by itself.
+     */
+    static final class Travel {
+        static final int AIR = 0;
+        static final int WATER = 1;
+        static final int LAVA = 2;
+        static final int GLIDE = 3;
+
+        int kind;
+        /** Player.travel while flying: afterwards y is the y before the branch × 0.6 ({@link #afterFlyingTravel}). */
+        boolean flying;
+        /** travelFallFlying on a climbable: travelInAir, then stopFallFlying. */
+        boolean stopsGliding;
+        float blockFriction;
+        int belowX;
+        int belowZ;
+        float slowDown;
+
+        void copyFrom(final Travel o) {
+            this.kind = o.kind;
+            this.flying = o.flying;
+            this.stopsGliding = o.stopsGliding;
+            this.blockFriction = o.blockFriction;
+            this.belowX = o.belowX;
+            this.belowZ = o.belowZ;
+            this.slowDown = o.slowDown;
+        }
+
+        boolean same(final Travel o) {
+            return this.kind == o.kind && this.flying == o.flying && this.stopsGliding == o.stopsGliding
+                && Float.floatToRawIntBits(this.blockFriction) == Float.floatToRawIntBits(o.blockFriction) && this.belowX == o.belowX
+                && this.belowZ == o.belowZ && Float.floatToRawIntBits(this.slowDown) == Float.floatToRawIntBits(o.slowDown);
+        }
+    }
 
     // ================================================================================================ the tick
 
@@ -68,7 +118,42 @@ public final class MovementSim {
         // the rotation the tick uses (mouse turns happen between ticks, Minecraft.java:1236)
         p.yRot = in.yRot;
         p.xRot = in.xRot;
+        this.startTick(p, world);
+        this.localAiStep(p, in, world);
+        if (p.scaleDirty) {
+            // refreshDirtyAttributes → onAttributeUpdated(SCALE) → refreshDimensions (LivingEntity.java:1134-1158)
+            p.scaleDirty = false;
+            p.refreshDimensions();
+        }
 
+        // Player.tick tail (Player.java:261-284)
+        final double nx = Mth.clamp(p.x, -2.9999999E7, 2.9999999E7);
+        final double nz = Mth.clamp(p.z, -2.9999999E7, 2.9999999E7);
+        if (nx != p.x || nz != p.z) {
+            p.setPos(nx, p.y, nz);
+        }
+        p.attackStrengthTicker++;
+        p.itemSwapTicker++;
+        // vanilla: if (!matches(last, main)) { if (!isSameItem(last, main)) reset; last = main.copy(); }. Only the item
+        // type of the copy is ever read (isSameItem), so comparing types is the same test without the per-tick
+        // component-map equality
+        if (p.lastItemInMainHand.getItem() != p.mainHand.getItem()) {
+            p.attackStrengthTicker = 0;
+            p.itemSwapTicker = 0;
+            p.lastItemInMainHand = p.mainHand.copy();
+        }
+        this.updatePlayerPose(p);
+        // LocalPlayer.sendPosition (LocalPlayer.java:330), after the tick: the option is read from here on
+        p.autoJumpEnabled = p.autoJumpOption;
+        return ExemptReason.NONE;
+    }
+
+    /**
+     * The tick from {@code Entity.commonTick} up to {@code LocalPlayer.aiStep}: the old position, Player.tick's head,
+     * baseTick's fluid update at the tick's start and LivingEntity.tick's item countdown. It reads no keys, and the
+     * velocity only to scale a current's push into it ({@link #velocityAfterMove} runs it without knowing either).
+     */
+    void startTick(final SimPlayer p, final SimWorld world) {
         // Entity.commonTick (Entity.java:527-538): setOldPosAndRot
         p.xo = p.x;
         p.yo = p.y;
@@ -98,33 +183,6 @@ public final class MovementSim {
 
         // LivingEntity.tick (LivingEntity.java:2758-2873)
         this.updatingUsingItem(p);
-        this.localAiStep(p, in, world);
-        if (p.scaleDirty) {
-            // refreshDirtyAttributes → onAttributeUpdated(SCALE) → refreshDimensions (LivingEntity.java:1134-1158)
-            p.scaleDirty = false;
-            p.refreshDimensions();
-        }
-
-        // Player.tick tail (Player.java:261-284)
-        final double nx = Mth.clamp(p.x, -2.9999999E7, 2.9999999E7);
-        final double nz = Mth.clamp(p.z, -2.9999999E7, 2.9999999E7);
-        if (nx != p.x || nz != p.z) {
-            p.setPos(nx, p.y, nz);
-        }
-        p.attackStrengthTicker++;
-        p.itemSwapTicker++;
-        // vanilla: if (!matches(last, main)) { if (!isSameItem(last, main)) reset; last = main.copy(); }. Only the item
-        // type of the copy is ever read (isSameItem), so comparing types is the same test without the per-tick
-        // component-map equality
-        if (p.lastItemInMainHand.getItem() != p.mainHand.getItem()) {
-            p.attackStrengthTicker = 0;
-            p.itemSwapTicker = 0;
-            p.lastItemInMainHand = p.mainHand.copy();
-        }
-        this.updatePlayerPose(p);
-        // LocalPlayer.sendPosition (LocalPlayer.java:330), after the tick: the option is read from here on
-        p.autoJumpEnabled = p.autoJumpOption;
-        return ExemptReason.NONE;
     }
 
     /** States the port leaves to vanilla handling (authoritative.md §5). */
@@ -172,7 +230,7 @@ public final class MovementSim {
     // ------------------------------------------------------------------------------------------------ LocalPlayer.aiStep
 
     /** LocalPlayer.aiStep (LocalPlayer.java:782-935). */
-    private void localAiStep(final SimPlayer p, final SimTickInput in, final SimWorld world) {
+    void localAiStep(final SimPlayer p, final SimTickInput in, final SimWorld world) {
         if (p.sprintTriggerTime > 0) {
             p.sprintTriggerTime--;
         }
@@ -516,13 +574,20 @@ public final class MovementSim {
                 setDelta(p, p.vx + 0.0, p.vy + (lookAngleY - p.vy) * multiplier, p.vz + 0.0);
             }
         }
+        this.travel.flying = p.flying;
+        this.travel.stopsGliding = false;
         if (p.flying) {
             final double originalMovementY = p.vy;
             this.livingTravel(p, world, inputX, inputZ);
-            setDelta(p, p.vx, originalMovementY * 0.6, p.vz);
+            afterFlyingTravel(p, originalMovementY);
         } else {
             this.livingTravel(p, world, inputX, inputZ);
         }
+    }
+
+    /** Player.travel's flight rule after the branch (Player.java:1384-1387): y = the y before the branch × 0.6. */
+    static void afterFlyingTravel(final SimPlayer p, final double originalMovementY) {
+        setDelta(p, p.vx, originalMovementY * 0.6, p.vz);
     }
 
     /** LivingEntity.travel (LivingEntity.java:2426-2434). */
@@ -549,7 +614,20 @@ public final class MovementSim {
         // handleRelativeFrictionAndCalculateMovement (LivingEntity.java:2674-2684)
         this.moveRelative(p, this.frictionInfluencedSpeed(p, blockFriction), inputX, 0.0, inputZ);
         this.handleOnClimbable(p, world);
+        this.travel.kind = Travel.AIR;
+        this.travel.blockFriction = blockFriction;
+        this.travel.belowX = belowX;
+        this.travel.belowZ = belowZ;
         this.move(p, world, p.vx, p.vy, p.vz);
+        this.afterAirMove(p, world, blockFriction, belowX, belowZ);
+    }
+
+    /**
+     * travelInAir after its move: handleRelativeFrictionAndCalculateMovement's climb (LivingEntity.java:2678-2681), then
+     * levitation, gravity or the unloaded-chunk fall, then drag and the block's friction (:2470-2490). {@code belowX/Z}
+     * is the column of the block under the start position the friction came from.
+     */
+    void afterAirMove(final SimPlayer p, final SimWorld world, final float blockFriction, final int belowX, final int belowZ) {
         final double movementX = p.vx;
         double movementY = p.vy;
         final double movementZ = p.vz;
@@ -593,7 +671,7 @@ public final class MovementSim {
     }
 
     /** LivingEntity.getEffectiveGravity (LivingEntity.java:2421-2424), reading the current velocity. */
-    private static double effectiveGravity(final SimPlayer p) {
+    static double effectiveGravity(final SimPlayer p) {
         final double gravity = p.noGravity ? 0.0 : p.attributes.gravity.value();
         final boolean isFalling = p.vy <= 0.0;
         return isFalling && p.slowFalling >= 0 ? Math.min(gravity, 0.01) : gravity;
@@ -669,33 +747,50 @@ public final class MovementSim {
                 slowDown = 0.96F;
             }
             this.moveRelative(p, speed, inputX, 0.0, inputZ);
+            this.travel.kind = Travel.WATER;
+            this.travel.slowDown = slowDown;
             this.move(p, world, p.vx, p.vy, p.vz);
-            double mx = p.vx;
-            double my = p.vy;
-            double mz = p.vz;
-            if (p.horizontalCollision && this.blocks.onClimbable(p, world)) {
-                my = 0.2;
-            }
-            mx = mx * slowDown;
-            my = my * 0.800000011920929;
-            mz = mz * slowDown;
-            this.setFluidFallingAdjusted(p, baseGravity, isFalling, mx, my, mz);
-            this.jumpOutOfFluid(p, oldY);
+            this.afterWaterMove(p, world, slowDown, baseGravity, isFalling, oldY);
         } else {
             // travelInLava (LivingEntity.java:2544-2560)
             this.moveRelative(p, 0.02F, inputX, 0.0, inputZ);
+            this.travel.kind = Travel.LAVA;
             this.move(p, world, p.vx, p.vy, p.vz);
-            if (p.fluids.fluidHeight(1) <= fluidJumpThreshold(p)) {
-                setDelta(p, p.vx * 0.5, p.vy * 0.800000011920929, p.vz * 0.5);
-                this.setFluidFallingAdjusted(p, baseGravity, isFalling, p.vx, p.vy, p.vz);
-            } else {
-                setDelta(p, p.vx * 0.5, p.vy * 0.5, p.vz * 0.5);
-            }
-            if (baseGravity != 0.0) {
-                setDelta(p, p.vx + 0.0, p.vy + -baseGravity / 4.0, p.vz + 0.0);
-            }
-            this.jumpOutOfFluid(p, oldY);
+            this.afterLavaMove(p, baseGravity, isFalling, oldY);
         }
+    }
+
+    /**
+     * travelInWater after its move (LivingEntity.java:2529-2537): the climb, the slow-down, the falling adjustment and
+     * jumpOutOfFluid. {@code baseGravity} and {@code isFalling} are travelInFluid's, from the velocity before the move.
+     */
+    void afterWaterMove(final SimPlayer p, final SimWorld world, final float slowDown, final double baseGravity, final boolean isFalling,
+                        final double oldY) {
+        double mx = p.vx;
+        double my = p.vy;
+        double mz = p.vz;
+        if (p.horizontalCollision && this.blocks.onClimbable(p, world)) {
+            my = 0.2;
+        }
+        mx = mx * slowDown;
+        my = my * 0.800000011920929;
+        mz = mz * slowDown;
+        this.setFluidFallingAdjusted(p, baseGravity, isFalling, mx, my, mz);
+        this.jumpOutOfFluid(p, oldY);
+    }
+
+    /** travelInLava after its move (LivingEntity.java:2546-2559): shallow or deep drag, a quarter of gravity, jumpOutOfFluid. */
+    void afterLavaMove(final SimPlayer p, final double baseGravity, final boolean isFalling, final double oldY) {
+        if (p.fluids.fluidHeight(1) <= fluidJumpThreshold(p)) {
+            setDelta(p, p.vx * 0.5, p.vy * 0.800000011920929, p.vz * 0.5);
+            this.setFluidFallingAdjusted(p, baseGravity, isFalling, p.vx, p.vy, p.vz);
+        } else {
+            setDelta(p, p.vx * 0.5, p.vy * 0.5, p.vz * 0.5);
+        }
+        if (baseGravity != 0.0) {
+            setDelta(p, p.vx + 0.0, p.vy + -baseGravity / 4.0, p.vz + 0.0);
+        }
+        this.jumpOutOfFluid(p, oldY);
     }
 
     /** LivingEntity.getFluidFallingAdjustedMovement (LivingEntity.java:2686-2699), then setDeltaMovement. */
@@ -726,6 +821,7 @@ public final class MovementSim {
     /** LivingEntity.travelFallFlying (LivingEntity.java:2579-2593) with updateFallFlyingMovement (:2600-2625). */
     private void travelFallFlying(final SimPlayer p, final SimWorld world, final double inputX, final double inputZ) {
         if (this.blocks.onClimbable(p, world)) {
+            this.travel.stopsGliding = true;
             this.travelInAir(p, world, inputX, inputZ);
             p.fallFlying = false; // stopFallFlying: flag 7 set then cleared
             return;
@@ -769,6 +865,7 @@ public final class MovementSim {
             mz = mz + (lookZ / lookHorLength * moveHorLength - mz) * 0.1;
         }
         setDelta(p, mx * 0.9900000095367432, my * 0.9800000190734863, mz * 0.9900000095367432);
+        this.travel.kind = Travel.GLIDE;
         this.move(p, world, p.vx, p.vy, p.vz);
     }
 
@@ -779,6 +876,14 @@ public final class MovementSim {
      * moved, as floats. The walked distance it also adds only drives sounds and the view bob.
      */
     private void move(final SimPlayer p, final SimWorld world, final double dx, final double dy, final double dz) {
+        if (this.probe != null) {
+            // velocityAfterMove runs the tick up to here only: keep the state the move starts from and the branch's
+            // pre-move values, and move nothing (the rest of this tick runs on a throwaway copy)
+            this.probe.copyFrom(p);
+            this.probeTravel.copyFrom(this.travel);
+            this.probe = null;
+            return;
+        }
         final double prevX = p.x;
         final double prevZ = p.z;
         this.entityMove(p, world, dx, dy, dz);
@@ -937,21 +1042,17 @@ public final class MovementSim {
     /** Entity.move(SELF, delta) (Entity.java:741-836). */
     private void entityMove(final SimPlayer p, final SimWorld world, double dx, double dy, double dz) {
         if (p.noPhysics) {
-            p.setPos(p.x + dx, p.y + dy, p.z + dz);
-            p.horizontalCollision = false;
-            p.verticalCollision = false;
-            p.verticalCollisionBelow = false;
-            p.minorHorizontalCollision = false;
+            this.lastMoveX = dx;
+            this.lastMoveY = dy;
+            this.lastMoveZ = dz;
+            noPhysicsMove(p, dx, dy, dz);
             return;
         }
-        if (p.stuckX * p.stuckX + p.stuckY * p.stuckY + p.stuckZ * p.stuckZ > 1.0E-7) {
+        if (isStuck(p)) {
             dx = dx * p.stuckX;
             dy = dy * p.stuckY;
             dz = dz * p.stuckZ;
-            p.stuckX = 0.0;
-            p.stuckY = 0.0;
-            p.stuckZ = 0.0;
-            setDelta(p, 0.0, 0.0, 0.0);
+            clearStuck(p);
         }
         // Player.maybeBackOffFromEdge (Player.java:864-931)
         final float maxDownStep = (float) p.attributes.stepHeight.value();
@@ -991,9 +1092,41 @@ public final class MovementSim {
         }
         // collide (Entity.java:1182-1211); maxUpStep() = (float) STEP_HEIGHT for an unridden player
         this.collision.collide(p, dx, dy, dz, maxDownStep, this.out);
-        final double mx = this.out[0];
-        final double my = this.out[1];
-        final double mz = this.out[2];
+        this.lastMoveX = this.out[0];
+        this.lastMoveY = this.out[1];
+        this.lastMoveZ = this.out[2];
+        this.afterCollide(p, world, dx, dy, dz, this.out[0], this.out[1], this.out[2]);
+    }
+
+    /** Entity.move with noPhysics (Entity.java:746-752): the delta added to the position, no collision flags. */
+    static void noPhysicsMove(final SimPlayer p, final double dx, final double dy, final double dz) {
+        p.setPos(p.x + dx, p.y + dy, p.z + dz);
+        p.horizontalCollision = false;
+        p.verticalCollision = false;
+        p.verticalCollisionBelow = false;
+        p.minorHorizontalCollision = false;
+    }
+
+    /** Entity.move's stuck test (Entity.java:763): a multiplier left by a cobweb, berry bush or powder snow. */
+    static boolean isStuck(final SimPlayer p) {
+        return p.stuckX * p.stuckX + p.stuckY * p.stuckY + p.stuckZ * p.stuckZ > 1.0E-7;
+    }
+
+    /** Entity.move consuming the stuck multiplier (Entity.java:768-769): it and the velocity are zeroed. */
+    static void clearStuck(final SimPlayer p) {
+        p.stuckX = 0.0;
+        p.stuckY = 0.0;
+        p.stuckZ = 0.0;
+        setDelta(p, 0.0, 0.0, 0.0);
+    }
+
+    /**
+     * Entity.move after collide (Entity.java:774-836): the long-fall clip, the position, the collision flags (Mth.equal
+     * against {@code dx/dy/dz}, what collide was given), the support, fall distance, restitution and the block speed
+     * factor, on the current velocity. {@code mx/my/mz} is collide's result.
+     */
+    void afterCollide(final SimPlayer p, final SimWorld world, final double dx, final double dy, final double dz,
+                      final double mx, final double my, final double mz) {
         final double movementLength = mx * mx + my * my + mz * mz;
         if (movementLength > 1.0E-7 || dx * dx + dy * dy + dz * dz - movementLength < 1.0E-7) {
             if (p.fallDistance != 0.0 && movementLength >= 1.0) {
@@ -1064,12 +1197,12 @@ public final class MovementSim {
     }
 
     /** Player.isAboveGround (Player.java:913-915). */
-    private boolean isAboveGround(final SimPlayer p, final float maxDownStep) {
+    boolean isAboveGround(final SimPlayer p, final float maxDownStep) {
         return p.onGround || p.fallDistance < maxDownStep && !this.canFallAtLeast(p, 0.0, 0.0, maxDownStep - p.fallDistance);
     }
 
     /** Player.canFallAtLeast (Player.java:917-931). */
-    private boolean canFallAtLeast(final SimPlayer p, final double deltaX, final double deltaZ, final double minHeight) {
+    boolean canFallAtLeast(final SimPlayer p, final double deltaX, final double deltaZ, final double minHeight) {
         final SimBox bb = p.bb;
         this.box.set(bb.minX + 1.0E-7 + deltaX, bb.minY - minHeight - 1.0E-7, bb.minZ + 1.0E-7 + deltaZ,
             bb.maxX - 1.0E-7 + deltaX, bb.minY, bb.maxZ - 1.0E-7 + deltaZ);
@@ -1219,6 +1352,136 @@ public final class MovementSim {
     public void collide(final SimPlayer p, final SimWorld world, final double mx, final double my, final double mz, final double[] out) {
         this.collision.world(world);
         this.collision.collide(p, mx, my, mz, (float) p.attributes.stepHeight.value(), out);
+    }
+
+    /**
+     * The movement the last tick's {@code Entity.move} added to the position ({@code Entity.collide}'s result, or the
+     * delta itself with no physics) into {@code out[0..2]}: the exact move, which {@code to - from} only gives up to the
+     * position's rounding. For tools and tests ({@link #velocityAfterExactMove}).
+     */
+    public void lastMove(final double[] out) {
+        out[0] = this.lastMoveX;
+        out[1] = this.lastMoveY;
+        out[2] = this.lastMoveZ;
+    }
+
+    // ================================================================================================ velocity after a move
+
+    /** {@link #velocityAfterMove}: the x velocity is not determined (it may differ from {@code out[0]}). */
+    public static final int VELOCITY_X = 1;
+    /** {@link #velocityAfterMove}: the y velocity is not determined. */
+    public static final int VELOCITY_Y = 1 << 1;
+    /** {@link #velocityAfterMove}: the z velocity is not determined. */
+    public static final int VELOCITY_Z = 1 << 2;
+    public static final int VELOCITY_AXES = VELOCITY_X | VELOCITY_Y | VELOCITY_Z;
+    /**
+     * Why: the move only reaches the server as {@code to - from}, and {@code from + move} rounded to the position's ulp,
+     * so the move's last bits (and the velocity that carries them) are lost. Off by at most half an ulp of {@code to}
+     * per axis, times the after-move drag. Never set by {@link #velocityAfterExactMove}.
+     */
+    public static final int VELOCITY_ROUNDED = 1 << 3;
+    /**
+     * Why: an axis that did not move can still hold a velocity the move cannot show: {@code -0.0}, under 1e-7 (collide
+     * returns 0 for it once anything is in reach), or, when another axis collided, anything under 3.2e-4 (Entity.move
+     * does not apply a move that short, so the position stays). Off by less than 3.2e-4.
+     */
+    public static final int VELOCITY_UNMOVED = 1 << 4;
+    /**
+     * Why: a collision may have cut the move (a wall, the floor, a ceiling, a step), and what collide was given, the
+     * velocity before the move, then stays unknown: whether the axis collided at all (velocity 0 or the move), a bounce
+     * off slime or a bed, a cut under Mth.equal's 1e-5, or a stepped move.
+     */
+    public static final int VELOCITY_COLLIDED = 1 << 5;
+    /** Why: sneaking at an edge may have shortened the move (Player.maybeBackOffFromEdge), not the velocity. */
+    public static final int VELOCITY_EDGE = 1 << 6;
+    /**
+     * Why: the tick's own keys decide, and they are not part of the state the tick started from: sprinting in water or
+     * lava (slow-down, falling adjustment), jumping on a climbable, sneaking on a bounce, a double-tap flight or a glide
+     * started this tick.
+     */
+    public static final int VELOCITY_KEYS = 1 << 7;
+    /** Why: a rule after the move reads a velocity from before it that the move does not carry: creative flight while gliding or stuck. */
+    public static final int VELOCITY_PRE_MOVE = 1 << 8;
+    /** Why: no tick from this state makes this move here (an exempt state, a position this tick cannot reach), so no value. */
+    public static final int VELOCITY_NO_TICK = 1 << 9;
+
+    /**
+     * The velocity ({@code deltaMovement}) a vanilla 26.3 client holds at the end of a tick whose move went from
+     * {@code from} to {@code to}, worked out from the rest of the state the tick started from: the belief velocity of
+     * authoritative.md §6.2, and the seed's velocity after one claimed move (auth-sim-requests.md §1).
+     * <p>
+     * It runs the port's own rules, nothing restated: the tick's start from {@code from} ({@link #startTick}), its aiStep
+     * up to the move for every combination of the keys that can change the state the move starts from, then the
+     * after-move half of the tick ({@link #afterCollide}: collision flags with Mth.equal, the support, fall, restitution
+     * and the block speed factor; the travel branch's climb, gravity or levitation, drag and friction, the fluid slow-downs
+     * and jumpOutOfFluid; Player.travel's flight rule; applyEffectsFromBlocks). The one unknown it cannot run is what
+     * collide was given, the velocity before the move: it tries every reading the world allows (the move itself, cut by
+     * a collision near or far, stepped up, a hidden signed zero or a sub-threshold move), keeps the ones the port's own
+     * collide turns into exactly this move, and returns determined only for axes on which all of them, under every key
+     * combination, give the same bits. {@link MoveVelocity} has the details.
+     * <p>
+     * {@code p} is the client's state at the start of the tick, as {@link #tick} would get it (after the between-tick
+     * changes the client applied); its position, velocity and rotation are never read, and it is not modified. The
+     * result is the velocity at the end of the player's own tick, before any attached rocket boosts it
+     * ({@link #fireworkBoost}, once per rocket, as after {@link #tick}).
+     * <p>
+     * {@code from} and {@code to} must be the two ends of one client tick, as the client holds them. A tick the client
+     * sent no position for (a move under 2.0E-4 from the last position it sent, without the 20-tick reminder;
+     * LocalPlayer.sendPosition) has no {@code to}, and the tick after it then has no exact {@code from}: neither has an
+     * answer here, the caller has to skip them.
+     * <p>
+     * Returns 0 when {@code out[0..2]} is the client's velocity bit for bit. Otherwise {@link #VELOCITY_X}/{@code Y}/
+     * {@code Z} mark the axes that are not, and the {@code VELOCITY_*} reason bits say why; {@code out} then holds the
+     * most likely value (the keys held as before the tick; a move that ended against something was cut, one that did not
+     * move stood still, a player on the ground pressed down on it), or NaN with {@link #VELOCITY_NO_TICK}.
+     * {@link #VELOCITY_ROUNDED} and {@link #VELOCITY_UNMOVED} are bounded (see each); the others are not.
+     * {@link #VELOCITY_KEYS} only comes from not knowing the tick's keys: the overload that takes them has none.
+     * Allocation-free after the first call (which allocates its scratch players).
+     */
+    public int velocityAfterMove(final SimPlayer p, final double fromX, final double fromY, final double fromZ, final double toX, final double toY,
+                                 final double toZ, final SimWorld world, final double[] out) {
+        return this.moveVelocity().after(p, null, fromX, fromY, fromZ, toX, toY, toZ, false, world, out);
+    }
+
+    /**
+     * {@link #velocityAfterMove} knowing the keys the client sent for the tick ({@code ServerboundPlayerInputPacket}, as
+     * {@link #tick} takes them): the state the move starts from is then the one the client had, so
+     * {@link #VELOCITY_KEYS} never shows (water and lava sprint, a glide or a flight started this tick, jumping on a
+     * climbable, sneaking on a bounce all become exact).
+     */
+    public int velocityAfterMove(final SimPlayer p, final Input keys, final double fromX, final double fromY, final double fromZ, final double toX,
+                                 final double toY, final double toZ, final SimWorld world, final double[] out) {
+        return this.moveVelocity().after(p, keys, fromX, fromY, fromZ, toX, toY, toZ, false, world, out);
+    }
+
+    /**
+     * {@link #velocityAfterMove} for a move known exactly ({@code Entity.collide}'s result, as {@link #lastMove} gives
+     * it), so the position's rounding hides nothing ({@link #VELOCITY_ROUNDED} never set). For tools and tests: it shows
+     * the rules are exact where the positions alone cannot be.
+     */
+    public int velocityAfterExactMove(final SimPlayer p, final double fromX, final double fromY, final double fromZ, final double moveX,
+                                      final double moveY, final double moveZ, final SimWorld world, final double[] out) {
+        return this.moveVelocity().after(p, null, fromX, fromY, fromZ, moveX, moveY, moveZ, true, world, out);
+    }
+
+    private MoveVelocity moveVelocity() {
+        if (this.moveVelocity == null) {
+            this.moveVelocity = new MoveVelocity(this);
+        }
+        return this.moveVelocity;
+    }
+
+    /**
+     * Runs {@code p}'s aiStep with these keys up to its move and copies the state the move starts from into {@code into}
+     * (the travel branch's pre-move values into {@link #probeTravel}). Returns false when the tick made no move;
+     * {@code p} is left mid-tick.
+     */
+    boolean probeMove(final SimPlayer p, final SimTickInput in, final SimWorld world, final SimPlayer into) {
+        this.probe = into;
+        this.localAiStep(p, in, world);
+        final boolean moved = this.probe == null;
+        this.probe = null;
+        return moved;
     }
 
     // ================================================================================================ client actions

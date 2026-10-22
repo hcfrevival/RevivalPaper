@@ -77,26 +77,43 @@ public final class ClientItems {
 
     /** {@code SetPlayerInventory(slot, stack)}: an inventory index. */
     public void setInventory(final int index, final ItemStack server) {
+        this.setInventoryClient(index, toClient(server));
+    }
+
+    /** As {@link #setInventory}, with the client's copy already made (a §15.6 snapshot). */
+    public void setInventoryClient(final int index, final ItemStack client) {
         if (index >= 0 && index < SIZE) {
-            this.stacks[index] = toClient(server);
+            this.stacks[index] = client;
             this.changes++;
         }
     }
 
     /** {@code ContainerSetSlot} for the inventory menu (container 0): a menu slot. */
     public void setMenuSlot(final int menuSlot, final ItemStack server) {
+        this.setMenuSlotClient(menuSlot, toClient(server));
+    }
+
+    public void setMenuSlotClient(final int menuSlot, final ItemStack client) {
         final int index = menuToInventory(menuSlot);
         if (index >= 0) {
-            this.setInventory(index, server);
+            this.setInventoryClient(index, client);
         }
     }
 
     /** {@code ContainerSetContent} for the inventory menu. */
     public void setMenuContent(final List<ItemStack> items) {
-        for (int slot = 0; slot < items.size(); slot++) {
+        final ItemStack[] client = new ItemStack[items.size()];
+        for (int slot = 0; slot < client.length; slot++) {
+            client[slot] = toClient(items.get(slot));
+        }
+        this.setMenuContentClient(client);
+    }
+
+    public void setMenuContentClient(final ItemStack[] client) {
+        for (int slot = 0; slot < client.length; slot++) {
             final int index = menuToInventory(slot);
             if (index >= 0) {
-                this.stacks[index] = toClient(items.get(slot));
+                this.stacks[index] = client[slot];
             }
         }
         this.changes++;
@@ -104,11 +121,41 @@ public final class ClientItems {
 
     /** {@code SetEquipment} for the player itself. */
     public void setEquipment(final EquipmentSlot slot, final ItemStack server) {
+        this.setEquipmentClient(slot, toClient(server));
+    }
+
+    public void setEquipmentClient(final EquipmentSlot slot, final ItemStack client) {
         switch (slot) {
-            case MAINHAND -> this.setInventory(this.selected, server);
-            case OFFHAND -> this.setInventory(OFFHAND, server);
-            default -> this.setInventory(slot.getIndex(Inventory.INVENTORY_SIZE), server);
+            case MAINHAND -> this.setInventoryClient(this.selected, client);
+            case OFFHAND -> this.setInventoryClient(OFFHAND, client);
+            default -> this.setInventoryClient(slot.getIndex(Inventory.INVENTORY_SIZE), client);
         }
+    }
+
+    /**
+     * The client's copies of an inventory packet's stacks, made when the packet is logged (§15.6), so the ack applies
+     * what was encoded even if the decoration settings changed in between; null for packets that carry none.
+     */
+    public static ItemStack @org.jspecify.annotations.Nullable [] snapshot(final net.minecraft.network.protocol.Packet<?> packet) {
+        return switch (packet) {
+            case final net.minecraft.network.protocol.game.ClientboundSetPlayerInventoryPacket slot -> new ItemStack[]{toClient(slot.contents())};
+            case final net.minecraft.network.protocol.game.ClientboundContainerSetSlotPacket slot -> new ItemStack[]{toClient(slot.getItem())};
+            case final net.minecraft.network.protocol.game.ClientboundContainerSetContentPacket content -> {
+                final ItemStack[] client = new ItemStack[content.items().size()];
+                for (int i = 0; i < client.length; i++) {
+                    client[i] = toClient(content.items().get(i));
+                }
+                yield client;
+            }
+            case final net.minecraft.network.protocol.game.ClientboundSetEquipmentPacket equipment -> {
+                final ItemStack[] client = new ItemStack[equipment.getSlots().size()];
+                for (int i = 0; i < client.length; i++) {
+                    client[i] = toClient(equipment.getSlots().get(i).getSecond());
+                }
+                yield client;
+            }
+            default -> null;
+        };
     }
 
     /** The client's drop prediction ({@code MultiPlayerGameMode.dropItem} → {@code removeFromSelected}). */

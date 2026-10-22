@@ -2,7 +2,10 @@ package gg.hcfrevival.revival.auth;
 
 import gg.hcfrevival.revival.Revival;
 import gg.hcfrevival.revival.auth.input.InputEnvelope;
+import gg.hcfrevival.revival.auth.input.AnomalyWatch;
+import gg.hcfrevival.revival.auth.input.InputRules;
 import gg.hcfrevival.revival.auth.input.InputStats;
+import gg.hcfrevival.revival.auth.net.BypassAuditor;
 import gg.hcfrevival.revival.auth.net.ClientStream;
 import gg.hcfrevival.revival.auth.net.OutboundClassifier;
 import gg.hcfrevival.revival.auth.net.TickClock;
@@ -11,7 +14,9 @@ import gg.hcfrevival.revival.auth.net.Wire;
 import gg.hcfrevival.revival.auth.reconcile.RebaseGuard;
 import gg.hcfrevival.revival.auth.reconcile.Reconciler;
 import gg.hcfrevival.revival.auth.trace.TraceRecorder;
+import gg.hcfrevival.revival.auth.view.ClientItems;
 import gg.hcfrevival.revival.auth.view.ClientView;
+import gg.hcfrevival.revival.auth.view.PredictionRules;
 import gg.hcfrevival.revival.auth.view.SelfEcho;
 import gg.hcfrevival.revival.auth.view.WorldView;
 import gg.hcfrevival.revival.config.AuthoritativeSettings;
@@ -109,6 +114,8 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
 
     private static final Logger LOGGER = LogManager.getLogger("RevivalPaper");
     private static final Set<Relative> CORRECTION = EnumSet.of(Relative.X, Relative.Y, Relative.Z, Relative.Y_ROT, Relative.X_ROT);
+    /** Position and velocity absolute, camera untouched: for a client stuck off the truth. */
+    private static final Set<Relative> CORRECTION_ABSOLUTE = EnumSet.of(Relative.Y_ROT, Relative.X_ROT);
     private static final Set<Relative> CORRECTION_RELATIVE = EnumSet.of(Relative.X, Relative.Y, Relative.Z, Relative.Y_ROT, Relative.X_ROT,
         Relative.DELTA_X, Relative.DELTA_Y, Relative.DELTA_Z);
 
@@ -132,6 +139,8 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
     private long lastHitRewindMillis = -1L;
     private double lastHitDistance = Double.NaN;
     private final InputStats inputStats = new InputStats();
+    private final InputRules rules = new InputRules();
+    private final AnomalyWatch anomalies = new AnomalyWatch();
     private final InputEnvelope envelope = new InputEnvelope();
     private final Transactions.Acked forced = new Transactions.Acked();
     private final double[] decoded = new double[3];
@@ -169,6 +178,14 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
     private double lastClaimY;
     private double lastClaimZ;
     private boolean hasLastClaim;
+    private int lastClaimTick;
+    private double prevClaimX;
+    private double prevClaimY;
+    private double prevClaimZ;
+    private int prevClaimTick;
+    private boolean hasPrevClaim;
+    /** The next seed is a new local player's (login, respawn): standing still where the server put it. */
+    private boolean seedStill;
 
     public AuthPlayer(final ServerPlayer player) {
         this.player = player;
@@ -247,6 +264,10 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
         this.lastHitVerdict = verdict;
         this.lastHitRewindMillis = rewindMillis;
         this.lastHitDistance = distance;
+    }
+
+    public InputRules inputRules() {
+        return this.rules;
     }
 
     public InputStats inputStats() {
@@ -371,7 +392,154 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
         this.simulation.trackBelief(wanted == AuthMode.ENFORCE);
     }
 
+    // §11 visibility ---------------------------------------------------------------------------------------------------
+
+    private final gg.hcfrevival.revival.auth.visibility.Visibility visibility = new gg.hcfrevival.revival.auth.visibility.Visibility();
+
+    public gg.hcfrevival.revival.auth.visibility.Visibility visibility() {
+        return this.visibility;
+    }
+
+    /**
+     * Whether {@code target} may be sent to this client: closer than {@code always-visible-distance}, or in line of sight
+     * through this client's blocks from its eye region (grown by what it can move over its round trip) to the target's
+     * box (grown by what the target moves before the client shows it). Main thread.
+     */
+    boolean sees(final ServerPlayer target, final AuthoritativeSettings settings) {
+        if (this.mode == AuthMode.OFF || !this.netActive || !this.simulation.seeded() || this.world.level() != target.level()) {
+            return true;
+        }
+        final int id = target.getId();
+        final int tick = MinecraftServer.currentTick;
+        if (!this.visibility.due(id, tick, settings.visibilityCheckIntervalTicks())) {
+            return this.visibility.sent(id);
+        }
+        final Simulation sim = this.simulation;
+        final double eyeX = sim.x();
+        final double eyeY = sim.y() + sim.eyeHeight();
+        final double eyeZ = sim.z();
+        final net.minecraft.world.phys.AABB box = target.getBoundingBox();
+        final double cx = (box.minX + box.maxX) * 0.5 - eyeX;
+        final double cy = (box.minY + box.maxY) * 0.5 - eyeY;
+        final double cz = (box.minZ + box.maxZ) * 0.5 - eyeZ;
+        final double always = settings.alwaysVisibleDistance();
+        boolean seen = cx * cx + cy * cy + cz * cz <= always * always;
+        if (!seen) {
+            final double speed = settings.visibilityMaxSpeed();
+            final double rttTicks = this.transactions.rttBaseNanos() / 50_000_000.0;
+            final double grow = speed * (rttTicks + settings.visibilityCheckIntervalTicks());
+            final double targetGrow = speed * (settings.visibilityCheckIntervalTicks() + settings.pathStepTicks());
+            seen = gg.hcfrevival.revival.auth.visibility.Occlusion.boxesSeeEachOther(this.world, eyeX - grow, eyeY - grow, eyeZ - grow,
+                eyeX + grow, eyeY + grow, eyeZ + grow, box.minX - targetGrow, box.minY - targetGrow, box.minZ - targetGrow,
+                box.maxX + targetGrow, box.maxY + targetGrow, box.maxZ + targetGrow);
+        }
+        final boolean sent = this.visibility.decide(id, tick, seen, settings.visibilityHideAfterChecks());
+        if (!sent) {
+            this.stats.hiddenChecks++;
+        }
+        return sent;
+    }
+
+    // §11: sounds and particles that would give a hidden player away
+    private boolean givesAwayHidden(final Packet<?> packet) {
+        final it.unimi.dsi.fastutil.ints.IntOpenHashSet hidden = this.visibility.hidden();
+        if (hidden.isEmpty()) {
+            return false;
+        }
+        double x;
+        double y;
+        double z;
+        switch (packet) {
+            case final net.minecraft.network.protocol.game.ClientboundSoundEntityPacket sound -> {
+                return hidden.contains(sound.getId());
+            }
+            case final net.minecraft.network.protocol.game.ClientboundSoundPacket sound -> {
+                x = sound.getX();
+                y = sound.getY();
+                z = sound.getZ();
+            }
+            case final net.minecraft.network.protocol.game.ClientboundLevelParticlesPacket particles -> {
+                x = particles.x();
+                y = particles.y();
+                z = particles.z();
+            }
+            default -> {
+                return false;
+            }
+        }
+        for (final it.unimi.dsi.fastutil.ints.IntIterator it = hidden.iterator(); it.hasNext(); ) {
+            final net.minecraft.world.entity.Entity target = this.player.level().getEntity(it.nextInt());
+            if (target != null && target.getBoundingBox().inflate(this.settings().visibilityEffectReach()).contains(x, y, z)) {
+                this.stats.culledEffects++;
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // §15.1 bypass audit: physics packets that reached the client around our choke point, logged at the next ping
+    private @Nullable BypassAuditor auditor;
+    private boolean bypassWarned;
+
+    private void installAuditor() {
+        if (!this.settings().bypassAudit()) {
+            return;
+        }
+        final BypassAuditor audit = new BypassAuditor(this.player.getId(),
+            this.transactions.auditQueue(), this.player.level().registryAccess());
+        final io.netty.channel.Channel channel = this.player.connection.connection.channel;
+        if (channel != null && audit.install(channel)) {
+            this.auditor = audit;
+            this.transactions.setAuditing(true);
+        }
+    }
+
+    private void uninstallAuditor() {
+        this.transactions.setAuditing(false);
+        final BypassAuditor audit = this.auditor;
+        this.auditor = null;
+        if (audit != null) {
+            audit.uninstall();
+        }
+    }
+
+    /** The bypass auditor, when the channel has one (tests, inspect). */
+    public @Nullable BypassAuditor auditor() {
+        return this.auditor;
+    }
+
+    private void drainBypasses() {
+        final BypassAuditor audit = this.auditor;
+        if (audit == null) {
+            return;
+        }
+        Packet<?> packet;
+        while ((packet = audit.pollBypassed()) != null) {
+            this.onBypass(packet);
+        }
+    }
+
+    /** A physics packet the client got without our ping around it: logged now, applied at the next ack (upper bound). */
+    public void onBypass(final Packet<?> packet) {
+        final int kind = OutboundClassifier.classify(packet, this.player.getId(), this.player.getUUID(), it.unimi.dsi.fastutil.ints.IntSets.EMPTY_SET);
+        if (kind == OutboundClassifier.NONE) {
+            return;
+        }
+        this.stats.bypasses++;
+        if (kind != OutboundClassifier.BLOCK_UPDATE && kind != OutboundClassifier.SECTION_UPDATE) {
+            this.stats.bypassMovers++;
+        }
+        this.transactions.logBypass(this.player.connection.connection, packet, kind, this);
+        if (!this.bypassWarned) {
+            this.bypassWarned = true;
+            LOGGER.warn("{} was sent a {} that did not go through RevivalPaper's netcode (a plugin writing packets directly: PacketEvents, "
+                + "ProtocolLib, GrimAC). It is applied late; turn GrimAC's movement, velocity and setback handling off for players under "
+                + "authoritative movement", this.player.getScoreboardName(), packet.type().id());
+        }
+    }
+
     private void activate() {
+        this.installAuditor();
         this.simulation = Authority.newSimulation(this);
         this.view.seed(this.player);
         this.simulation.attributes(this.player.getAttributes().getSyncableAttributesPacket());
@@ -389,6 +557,7 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
     }
 
     private void deactivate() {
+        this.uninstallAuditor();
         this.netActive = false;
         this.mode = AuthMode.OFF;
         Authority.deactivated(this);
@@ -414,6 +583,9 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
      */
     void send(final Connection connection, final Packet<?> packet, final @Nullable ChannelFutureListener listener, final boolean flush) {
         Packet<?> out = packet;
+        if (!this.visibility.hidden().isEmpty() && MinecraftServer.getServer().isSameThread() && this.givesAwayHidden(packet)) {
+            return;
+        }
         if (this.ownsClientState() && MinecraftServer.getServer().isSameThread()) {
             final Simulation sim = this.simulation;
             if (packet instanceof final ClientboundSetEntityDataPacket data && data.id() == this.player.getId()) {
@@ -421,9 +593,16 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
                 if (out == null) {
                     return;
                 }
-            } else if (packet instanceof final ClientboundUpdateAttributesPacket attributes && attributes.getEntityId() == this.player.getId()
-                && (this.meant & SelfEcho.SPRINT) == 0) {
-                out = SelfEcho.attributes(attributes, sim.sprinting());
+            } else if (packet instanceof final ClientboundUpdateAttributesPacket attributes && attributes.getEntityId() == this.player.getId()) {
+                final ClientboundUpdateAttributesPacket echo = (this.meant & SelfEcho.SPRINT) == 0 ? SelfEcho.attributes(attributes, sim.sprinting()) : attributes;
+                out = echo;
+                final int speed = SelfEcho.speedSync(echo);
+                if (speed >= 0) {
+                    // A movement-speed sync on its way: if the sprint changes before its ack, the client would keep the
+                    // wrong modifier (MC-69459), so another one follows then
+                    this.speedSyncsPending++;
+                    this.speedSyncSprint = speed == 1;
+                }
             }
         }
         this.transactions.send(connection, out, listener, flush, this);
@@ -471,9 +650,32 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
         if (this.mode == AuthMode.OFF) {
             return false;
         }
-        this.stream.record(packet);
+        if (packet instanceof final ServerboundMovePlayerPacket move && !finite(move)) {
+            if (Double.isNaN(move.getX(0.0)) || Double.isNaN(move.getY(0.0)) || Double.isNaN(move.getZ(0.0))
+                || !Float.isFinite(move.getYRot(0.0F)) || !Float.isFinite(move.getXRot(0.0F))) {
+                this.violation("NaN move");
+                return false; // vanilla disconnects for these, as it always has
+            }
+            // Infinite coordinates (vanilla would clamp them): never a claim, never a correction off them
+            this.protocolViolation("non-finite move");
+            return true;
+        }
+        switch (this.stream.recordChecked(packet)) {
+            case ClientStream.SECOND_CLAIM -> this.protocolViolation("a second move claim, input or sprint command in one client tick");
+            case ClientStream.OVERFLOW -> {
+                this.protocolViolation("a client tick past " + ClientStream.MAX_ITEMS + " packets (no TickEnd)");
+                return true; // dropped
+            }
+            default -> {
+            }
+        }
         this.traceInbound(packet);
         return true;
+    }
+
+    private static boolean finite(final ServerboundMovePlayerPacket move) {
+        return Double.isFinite(move.getX(0.0)) && Double.isFinite(move.getY(0.0)) && Double.isFinite(move.getZ(0.0))
+            && Float.isFinite(move.getYRot(0.0F)) && Float.isFinite(move.getXRot(0.0F));
     }
 
     private boolean onTickEnd(final Packet<?> packet) {
@@ -523,7 +725,10 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
                         correction = position.id();
                     }
                 }
-                this.stream.recordAck(from, acked.size(), rotation, correction);
+                if (!this.stream.recordAck(from, acked.size(), rotation, correction)) {
+                    // Pongs belong to the drain, before the tick's keybinds: a late one would choose when a packet lands
+                    this.protocolViolation("a pong after the tick's keybinds");
+                }
                 if (status == Transactions.SKIPPED) {
                     this.protocolViolation("skipped pings");
                 }
@@ -539,15 +744,53 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
      * corrections). The accept is also recorded in the window's drain, where it is checked as a claim.
      */
     public boolean onTeleportAccept(final ServerboundAcceptTeleportationPacket packet) {
-        if (this.mode == AuthMode.OFF || this.replaying) {
+        if (this.replaying) {
+            return false;
+        }
+        if (this.mode == AuthMode.OFF) {
+            // A teleport enforce completed at its pong before authority went off: vanilla no longer waits for it
+            final int index = this.awaitingAccepts.indexOf(packet.id());
+            if (index >= 0) {
+                this.awaitingAccepts.removeElements(0, index + 1);
+                this.awaitingSince.removeElements(0, index + 1);
+                return true;
+            }
             return false;
         }
         final TraceRecorder recorder = this.trace;
         if (recorder != null) {
             recorder.teleportAck(packet.id(), packet.x(), packet.y(), packet.z(), packet.yRot(), packet.xRot());
         }
+        if (this.mode == AuthMode.ENFORCE && !(Double.isFinite(packet.x()) && Double.isFinite(packet.y()) && Double.isFinite(packet.z())
+            && Float.isFinite(packet.yRot()) && Float.isFinite(packet.xRot()))) {
+            this.protocolViolation("a non-finite teleport accept"); // vanilla kicks these too; under enforce it never sees them
+            return true;
+        }
         this.stream.recordAccept(packet);
-        return Reconciler.ours(packet.id());
+        if (this.mode == AuthMode.ENFORCE && !Reconciler.ours(packet.id())) {
+            // A teleport sent before authority started has no pong of ours: vanilla's bookkeeping happens here (its
+            // destination, never the accept's coordinates); a no-op when its pong already completed it
+            if (this.player.connection.revivalCompleteServerTeleport(packet.id())) {
+                this.acceptedBeforeAuthority.add(packet.id());
+            }
+        }
+        // Enforce: every accept is ours, judged as a claim in its window; vanilla never takes its coordinates (§15.3)
+        return this.mode == AuthMode.ENFORCE || Reconciler.ours(packet.id());
+    }
+
+    // Server teleports applied at their pong window whose accept hasn't come yet: ids and the window they were applied in
+    private final it.unimi.dsi.fastutil.ints.IntArrayList awaitingAccepts = new it.unimi.dsi.fastutil.ints.IntArrayList();
+    private final it.unimi.dsi.fastutil.ints.IntArrayList awaitingSince = new it.unimi.dsi.fastutil.ints.IntArrayList();
+    private final it.unimi.dsi.fastutil.ints.IntArrayList earlyAccepts = new it.unimi.dsi.fastutil.ints.IntArrayList();
+    private final it.unimi.dsi.fastutil.ints.IntArrayList acceptedBeforeAuthority = new it.unimi.dsi.fastutil.ints.IntArrayList();
+
+    // A server teleport's accept must follow its pong in the same drain; past the ack deadline it never will
+    private void checkAwaitingAccepts(final int tick, final int deadline) {
+        if (!this.awaitingAccepts.isEmpty() && tick - this.awaitingSince.getInt(0) > deadline) {
+            this.awaitingAccepts.clear();
+            this.awaitingSince.clear();
+            this.protocolViolation("a server teleport was never accepted");
+        }
     }
 
     /** {@code internalTeleport}, right before the packet is sent: a server teleport is a transaction (§15.3). */
@@ -565,8 +808,10 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
         if (this.mode == AuthMode.OFF) {
             return; // activation happens at a TickEnd, at a window boundary
         }
+        this.drainBypasses();
         final long now = System.nanoTime();
-        final long unanswered = this.transactions.oldestOutstandingNanos(now);
+        // Unanswered pings, or a client tick that never ends while packets keep coming: frozen, then kicked
+        final long unanswered = Math.max(this.transactions.oldestOutstandingNanos(now), this.stream.openWindowAgeNanos(now));
         final long limit = this.settings().maxUnackedMs() * 1_000_000L;
         this.frozen = unanswered > limit;
         if (unanswered > 3 * limit && this.mode == AuthMode.ENFORCE && !this.kicked) {
@@ -715,6 +960,7 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
             this.forced.clear();
         }
         this.world.expire(tick - deadline, this);
+        this.checkAwaitingAccepts(tick, deadline);
         this.expireMeant(System.currentTimeMillis(), deadline * 50L + 1000L);
         if (this.deferredCorrection) {
             this.resolveCorrection(window);
@@ -726,11 +972,13 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
         ServerboundMovePlayerPacket claim = null;
         int flying = -1;
         boolean fallFlying = false;
+        int lastClose = -1;
         for (int i = 0; i < window.items(); i++) {
             if (window.kind(i) != ClientStream.PACKET) {
                 continue;
             }
             switch (window.ref(i)) {
+                case final net.minecraft.network.protocol.game.ServerboundContainerClosePacket ignored -> lastClose = i;
                 case final ServerboundPlayerInputPacket input -> sentInput = input.input();
                 case final ServerboundMovePlayerPacket move -> claim = move;
                 case final ServerboundPlayerAbilitiesPacket abilities -> flying = abilities.isFlying() ? 1 : 0;
@@ -748,6 +996,8 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
             }
         }
         this.attacksThisTick = 0;
+        // The input grammar (§15.4) judges each action against the input the tick ends with
+        this.rules.startWindow(InputRules.walking(sentInput != null ? sentInput : this.stream.input()));
 
         boolean simulated = false;
         boolean rotationResolved = false;
@@ -774,6 +1024,13 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
                         // The tick's rotation, after the drain applied any teleport or rotation packet (report 02 §2.2)
                         this.resolveRotation(claim);
                         rotationResolved = true;
+                        this.rules.keybinds(this.simulation.seeded() && this.simulation.usingItem());
+                    }
+                    final int rule = this.rules.check(InputRules.action(packet), i < lastClose);
+                    // Enforce: an action no vanilla client sends is not handled; the client's own prediction still runs
+                    final boolean dropped = rule != InputRules.OK && this.mode == AuthMode.ENFORCE;
+                    if (rule != InputRules.OK && settings.debugLog()) {
+                        DebugHud.grammar(this, tick, InputRules.name(rule), packet, dropped);
                     }
                     if (category == ClientStream.TICK_END) {
                         tickEnd = packet;
@@ -783,7 +1040,13 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
                         this.simulate(sentInput, sprint, flying, fallFlying, claim, refused, settings);
                         simulated = true;
                     }
-                    this.runPacket(packet, category, tick, refused, settings);
+                    this.runPacket(packet, category, tick, refused || dropped, settings);
+                    if (dropped) {
+                        this.stats.grammarDropped++;
+                        if (packet instanceof ServerboundAttackPacket) {
+                            this.recordHit("INVALID grammar " + InputRules.name(rule), -1L, Double.NaN);
+                        }
+                    }
                 }
                 default -> {
                 }
@@ -802,8 +1065,28 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
         this.reconciler.afterWindow();
         this.mirrorTick(tick);
         this.inputStats.onTick(tick, this.attacksThisTick, claim != null && claim.hasRotation(), this.tickYRot);
+        if (settings.anomalyAlerts()) {
+            this.checkAnomalies(settings);
+        }
         this.envelope.endTick();
         this.view.tick();
+    }
+
+    // AuthInputAnomalyEvent once per crossing of a stats threshold (design §10)
+    private void checkAnomalies(final AuthoritativeSettings settings) {
+        final InputStats input = this.inputStats;
+        this.anomaly(AnomalyWatch.DOUBLE_CLICKS, input.doubleClickRatio(), settings.anomalyDoubleClickRatio(),
+            input.attackTicks() >= settings.anomalyMinAttackTicks());
+        this.anomaly(AnomalyWatch.AIM_GCD, input.turns() == 0 ? 0.0 : (double) input.gcdMisses() / input.turns(), settings.anomalyAimGcdMissRatio(),
+            input.turns() >= settings.anomalyMinTurns());
+        this.anomaly(AnomalyWatch.INPUT_GRAMMAR, this.rules.total(), settings.anomalyGrammarViolations(), true);
+    }
+
+    private void anomaly(final int kind, final double value, final double threshold, final boolean enough) {
+        if (this.anomalies.crossed(kind, value, threshold, enough)) {
+            LOGGER.info("[auth] input anomaly {}: {} {} (threshold {})", this.player.getScoreboardName(), AnomalyWatch.name(kind), value, threshold);
+            new gg.hcfrevival.revival.api.event.AuthInputAnomalyEvent(this.player.getBukkitEntity(), AnomalyWatch.name(kind), value, threshold).callEvent();
+        }
     }
 
     // One buffered gameplay packet, at its place in the window
@@ -824,10 +1107,13 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
                     default -> {
                     }
                 }
+                final boolean breaking = action.getAction() == ServerboundPlayerActionPacket.Action.START_DESTROY_BLOCK
+                    || action.getAction() == ServerboundPlayerActionPacket.Action.STOP_DESTROY_BLOCK;
+                // §15.2: the client breaks (and predicts) only the block on its crosshair; judged before the handler runs
+                final boolean admitted = breaking && this.onCrosshair(action.getPos());
                 this.replayUnless(refused, packet);
-                if (action.getAction() == ServerboundPlayerActionPacket.Action.START_DESTROY_BLOCK
-                    || action.getAction() == ServerboundPlayerActionPacket.Action.STOP_DESTROY_BLOCK) {
-                    this.predict(action.getPos(), action.getSequence(), tick);
+                if (breaking) {
+                    this.predict(action.getPos(), action.getSequence(), tick, admitted);
                 }
             }
             case final ServerboundUseItemPacket use -> {
@@ -845,10 +1131,12 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
             }
             case final ServerboundUseItemOnPacket useOn -> {
                 this.player.connection.ackBlockChangesUpTo(useOn.sequence()); // acked even when Paper's spam limit drops it (§15.2)
-                this.replayUnless(refused, packet);
                 final BlockHitResult hit = useOn.hitResult();
-                this.predict(hit.getBlockPos(), useOn.sequence(), tick);
-                this.predict(hit.getBlockPos().relative(hit.getDirection()), useOn.sequence(), tick);
+                // §15.2: a vanilla client places only a block item it holds, on the block on its crosshair
+                final boolean admitted = PredictionRules.canPlace(this.view.items.hand(useOn.hand())) && this.onCrosshair(hit.getBlockPos());
+                this.replayUnless(refused, packet);
+                this.predict(hit.getBlockPos(), useOn.sequence(), tick, admitted);
+                this.predict(hit.getBlockPos().relative(hit.getDirection()), useOn.sequence(), tick, admitted);
             }
             case final ServerboundAttackPacket attack -> this.runAttack(attack, tick, refused, settings);
             case final ServerboundPlayerLoadedPacket ignored -> {
@@ -863,6 +1151,10 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
             default -> {
                 this.replayUnless(refused, packet);
                 if (category == ClientStream.GUI) {
+                    if (refused && packet instanceof net.minecraft.network.protocol.game.ServerboundContainerClickPacket) {
+                        // Not handled: the client predicted the click, so it gets the container back as it is
+                        this.player.containerMenu.sendAllDataToRemote();
+                    }
                     // Container clicks carry hashed stacks: the client changed its inventory as the server just did
                     this.view.items.seed(this.player.getInventory());
                 }
@@ -879,10 +1171,27 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
         this.tickXRot = this.stream.xRot();
     }
 
-    private void predict(final BlockPos pos, final int sequence, final int tick) {
-        if (!this.world.predict(pos, sequence, tick, this.simulation.x(), this.simulation.y(), this.simulation.z())) {
+    private void predict(final BlockPos pos, final int sequence, final int tick, final boolean admitted) {
+        if (!admitted) {
+            this.stats.predictionsRefused++;
+        }
+        if (!this.world.predict(pos, sequence, tick, this.simulation.x(), this.simulation.y(), this.simulation.z(), admitted)) {
             this.violation("block prediction sequence went backwards");
         }
+    }
+
+    private final gg.hcfrevival.revival.auth.combat.PickRay pickRay = new gg.hcfrevival.revival.auth.combat.PickRay();
+
+    // The client's crosshair at its keybinds (Minecraft.pick(1.0F), no entity in the way modelled) is on this block
+    private boolean onCrosshair(final BlockPos pos) {
+        if (!this.simulation.seeded()) {
+            return false;
+        }
+        final gg.hcfrevival.revival.auth.combat.PickRay ray = this.pickRay;
+        ray.clear();
+        ray.cast(CombatWiring.snapshot(this), this.world);
+        return PredictionRules.onCrosshair(ray.resolveInOrder() == gg.hcfrevival.revival.auth.combat.PickRay.Kind.BLOCK,
+            ray.blockPosX(), ray.blockPosY(), ray.blockPosZ(), pos.getX(), pos.getY(), pos.getZ());
     }
 
     // An attack at its place in the window: the client's own prediction, the input cap, then the lag-compensated check
@@ -900,7 +1209,9 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
             this.stats.attacksOverCap++;
         }
         int verdict = AttackJudge.UNKNOWN;
-        if (target != null && !refused && this.teleportsPending == 0) {
+        if (target != null && !refused) {
+            // Also while a server teleport is pending: the windows in flight are simulated from the pre-teleport state,
+            // which is where the client really is when it attacks
             verdict = Authority.attackJudge().judge(this, target, tick);
         }
         if (verdict == AttackJudge.VALID) {
@@ -911,12 +1222,16 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
                 DebugHud.rejectedHit(this, tick, target.getScoreboardName(), this.lastHitVerdict == null ? "INVALID" : this.lastHitVerdict,
                     this.lastHitRewindMillis, this.lastHitDistance);
             }
-        } else if (target == null || refused || this.teleportsPending > 0) {
-            this.recordHit(target == null ? "UNKNOWN no-target" : refused ? "UNKNOWN refused" : "UNKNOWN teleport", -1L, Double.NaN);
+        } else if (target == null || refused) {
+            this.recordHit(target == null ? "UNKNOWN no-target" : "UNKNOWN refused", -1L, Double.NaN);
         }
         final boolean deliver;
         if (this.mode == AuthMode.ENFORCE) {
-            deliver = !refused && admitted && verdict != AttackJudge.INVALID && this.lastExempt == AuthStats.EXEMPT_NONE;
+            // A player is hit only when the lag-compensated check says so: an attack it could not judge (a server
+            // teleport pending, no seed, the mirror out of reach of the rewind) is not delivered. Other targets keep
+            // Paper's own validation.
+            final boolean judged = target instanceof Player ? verdict == AttackJudge.VALID : verdict != AttackJudge.INVALID;
+            deliver = !refused && admitted && judged && this.lastExempt == AuthStats.EXEMPT_NONE;
         } else {
             deliver = !refused;
         }
@@ -925,6 +1240,8 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
         }
     }
 
+    private int speedSyncsPending;
+    private boolean speedSyncSprint;
     private int lastExempt = AuthStats.EXEMPT_NONE;
     private int mirroredTick;
     private double eyeOffsetX;
@@ -971,6 +1288,9 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
             this.seedFromServer();
         }
         if (exempt == AuthStats.EXEMPT_NONE) {
+            // §15.6: a piston, shulker box, solid entity, geyser or rod pull may move the client this tick
+            sim.externalMover(sim.seeded() && this.movers.near(this.player, this.runningTick, sim.x(), sim.y(), sim.z(), sim.box(), this.world, settings));
+            sim.attachedRockets(this.rocketsOnSelf.size());
             exempt = sim.unsupported(this.view);
         }
         final boolean wasSprinting = sim.sprinting();
@@ -994,6 +1314,12 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
             if (this.mode == AuthMode.ENFORCE && wasSprinting != sim.sprinting()) {
                 // The sprint knock arms from the client's real sprint, not its sprint packets (§7.2)
                 gg.hcfrevival.revival.combat.LegacyKnockback.simulatedSprint(this.player, sim.sprinting(), wasOnGround);
+                if (this.speedSyncsPending > 0 && this.speedSyncSprint != sim.sprinting()) {
+                    // The sync on its way says the opposite: send the sprint state as it is now behind it
+                    this.player.connection.send(new ClientboundUpdateAttributesPacket(this.player.getId(),
+                        java.util.List.of(this.player.getAttribute(net.minecraft.world.entity.ai.attributes.Attributes.MOVEMENT_SPEED))));
+                    this.stats.speedResyncs++;
+                }
             }
             this.compare(claim, hasPos, cx, cy, cz, settings);
             if (this.mode == AuthMode.ENFORCE) {
@@ -1036,9 +1362,15 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
             }
         }
         if (hasPos) {
+            this.prevClaimX = this.lastClaimX;
+            this.prevClaimY = this.lastClaimY;
+            this.prevClaimZ = this.lastClaimZ;
+            this.prevClaimTick = this.lastClaimTick;
+            this.hasPrevClaim = this.hasLastClaim;
             this.lastClaimX = cx;
             this.lastClaimY = cy;
             this.lastClaimZ = cz;
+            this.lastClaimTick = this.runningTick;
             this.hasLastClaim = true;
         }
         // §15.3: while a correction is in flight, the next attack is judged from where the client is, within the Δ
@@ -1058,11 +1390,29 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
         }
     }
 
+    /**
+     * Seeds from server-owned state (§15.3): the position the server holds. The velocity: zero for a new local player
+     * (login, respawn); the client's own after its last claimed move when the last two claims were consecutive ticks
+     * ending where the server is (the port works it out, auth-sim-requests §1); else the server's known movement.
+     */
     private void seedFromServer() {
         this.rebaseGuard.reset();
         final ServerPlayer p = this.player;
-        final Vec3 known = p.getKnownMovement();
-        this.simulation.seed(p.getX(), p.getY(), p.getZ(), known.x, known.y, known.z, this.tickYRot, this.tickXRot, p.onGround(), this.view, this.world);
+        final Simulation sim = this.simulation;
+        if (this.seedStill) {
+            sim.seed(p.getX(), p.getY(), p.getZ(), 0.0, 0.0, 0.0, this.tickYRot, this.tickXRot, p.onGround(), this.view, this.world);
+        } else if (this.hasPrevClaim && this.lastClaimTick == this.prevClaimTick + 1
+            && p.getX() == this.lastClaimX && p.getY() == this.lastClaimY && p.getZ() == this.lastClaimZ) {
+            if (!sim.seedFromMove(this.prevClaimX, this.prevClaimY, this.prevClaimZ, this.lastClaimX, this.lastClaimY, this.lastClaimZ,
+                this.tickYRot, this.tickXRot, p.onGround(), this.view, this.world)) {
+                this.stats.inexactSeeds++;
+            }
+        } else {
+            final Vec3 known = p.getKnownMovement();
+            sim.seed(p.getX(), p.getY(), p.getZ(), known.x, known.y, known.z, this.tickYRot, this.tickXRot, p.onGround(), this.view, this.world);
+            this.stats.inexactSeeds++;
+        }
+        this.seedStill = false;
         this.reseedFromServer = false;
     }
 
@@ -1149,6 +1499,15 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
                 decision = Reconciler.WITHIN;
             }
         }
+        // A claim off by less than the threshold for correction-persist-ticks in a row is corrected anyway: every client converges
+        if (decision == Reconciler.WITHIN && distance > 0.0) {
+            if (++this.withinStreak >= settings.correctionPersistTicks()) {
+                decision = Reconciler.CORRECT;
+            }
+        }
+        if (decision != Reconciler.WITHIN) {
+            this.withinStreak = 0;
+        }
         final boolean exact = decision == Reconciler.EXACT;
         if (decision != Reconciler.IN_FLIGHT) {
             sim.belief(exact, cx, cy, cz);
@@ -1182,14 +1541,50 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
             this.applyTruth();
             return;
         }
-        // Land the client on the truth at the tick it will apply the correction (§15.5): sent now, at window T+1, it is
-        // applied in the drain before tick T+1+n̂, with n̂ = rtt / 50; the state then is the end of tick T+n̂, n̂ ticks past now
-        final int ahead = (int) Math.round(this.transactions.rttBaseNanos() / 50_000_000.0);
-        if (sim.correction(ahead, this.stream.input(), this.tickYRot, this.tickXRot, this.view, this.world, this.delta)) {
-            this.sendCorrection(this.delta[0], this.delta[1], this.delta[2], this.delta[3], this.delta[4], this.delta[5], true);
+        if (sim.correction(this.correctionAhead(), this.stream.input(), this.tickYRot, this.tickXRot, this.view, this.world, this.delta)) {
+            this.sendForecast();
         } else {
-            this.sendCorrection(sim.x() - this.deferredX, sim.y() - this.deferredY, sim.z() - this.deferredZ, sim.vx(), sim.vy(), sim.vz(), false);
+            this.sendFallback(sim.x() - this.deferredX, sim.y() - this.deferredY, sim.z() - this.deferredZ);
         }
+    }
+
+    /**
+     * Client ticks between the truth's last tick and the drain that applies a correction sent now (§15.5): the window
+     * being processed already ended its tick, so at least one, else {@code n̂ = rtt / 50}.
+     */
+    private int correctionAhead() {
+        return Math.max(1, (int) Math.round(this.transactions.rttBaseNanos() / 50_000_000.0));
+    }
+
+    // The forecast in delta: relative, or absolute when the client would land inside a block or the same correction
+    // keeps coming back (a client stuck off the truth, where relative corrections chase it one tick behind forever)
+    private void sendForecast() {
+        final double[] d = this.delta;
+        if (d[6] != 0.0 || this.repeating(d[0], d[1], d[2])) {
+            this.sendAbsolute(d[7], d[8], d[9], d[10], d[11], d[12]);
+        } else {
+            this.sendCorrection(d[0], d[1], d[2], d[3], d[4], d[5], true);
+        }
+    }
+
+    // No belief to forecast with: relative position and absolute velocity, absolute when stuck
+    private void sendFallback(final double dx, final double dy, final double dz) {
+        final Simulation sim = this.simulation;
+        if (this.repeating(dx, dy, dz)) {
+            this.sendAbsolute(sim.x(), sim.y(), sim.z(), sim.vx(), sim.vy(), sim.vz());
+        } else {
+            this.sendCorrection(dx, dy, dz, sim.vx(), sim.vy(), sim.vz(), false);
+        }
+    }
+
+    // Whether this correction is the one sent last, correction-repeat-limit times in a row
+    private boolean repeating(final double dx, final double dy, final double dz) {
+        final boolean same = Math.abs(dx - this.lastSentDx) < 1.0E-9 && Math.abs(dy - this.lastSentDy) < 1.0E-9 && Math.abs(dz - this.lastSentDz) < 1.0E-9;
+        if (same && this.correctionRepeats + 1 >= this.settings().correctionRepeatLimit()) {
+            this.correctionRepeats = 0;
+            return true;
+        }
+        return false;
     }
 
     // A SetCarriedItem that opens the window's tick group (gameMode.tick's ensureHasSentCarriedItem), or -1
@@ -1203,14 +1598,38 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
         return -1;
     }
 
-    private final double[] delta = new double[6];
+    private final double[] delta = new double[13];
+    // The last relative correction's Δ and how many times in a row it went out; the last velocity sent
+    private double lastSentDx = Double.NaN;
+    private double lastSentDy = Double.NaN;
+    private double lastSentDz = Double.NaN;
+    private int correctionRepeats;
+    private double lastSentVx;
+    private double lastSentVy;
+    private double lastSentVz;
+    private int withinStreak;
+    // Accepts in a row whose residual needed another correction (reset by an accept that lands)
+    private int backstopStreak;
     private final RebaseGuard rebaseGuard = new RebaseGuard();
+    private final ExternalMovers movers = new ExternalMovers();
 
     /**
      * One correction (design §6.2, report 06 §7.3): position always relative (the client keeps its frame interpolation),
      * camera untouched (relative zero rotation); velocity relative when it is a Δ against the belief, else absolute.
      */
     private void sendCorrection(final double dx, final double dy, final double dz, final double vx, final double vy, final double vz, final boolean relativeVelocity) {
+        if (!Double.isFinite(dx) || !Double.isFinite(dy) || !Double.isFinite(dz) || !Double.isFinite(vx) || !Double.isFinite(vy) || !Double.isFinite(vz)) {
+            this.violation("a correction off a non-finite state"); // never sent: the client would disconnect on it
+            return;
+        }
+        final boolean same = Math.abs(dx - this.lastSentDx) < 1.0E-9 && Math.abs(dy - this.lastSentDy) < 1.0E-9 && Math.abs(dz - this.lastSentDz) < 1.0E-9;
+        this.correctionRepeats = same ? this.correctionRepeats + 1 : 0;
+        this.lastSentDx = dx;
+        this.lastSentDy = dy;
+        this.lastSentDz = dz;
+        this.lastSentVx = vx;
+        this.lastSentVy = vy;
+        this.lastSentVz = vz;
         final int id = this.reconciler.send(dx, dy, dz);
         this.stats.corrections++;
         this.recent.correction(System.currentTimeMillis());
@@ -1224,6 +1643,36 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
         }
         this.player.connection.send(new ClientboundPlayerPositionPacket(id,
             new PositionMoveRotation(new Vec3(dx, dy, dz), new Vec3(vx, vy, vz), 0.0F, 0.0F), relativeVelocity ? CORRECTION_RELATIVE : CORRECTION));
+    }
+
+    /** An absolute correction: the client is put on {@code (x, y, z)} moving at {@code (vx, vy, vz)}, its camera untouched. */
+    private void sendAbsolute(final double x, final double y, final double z, final double vx, final double vy, final double vz) {
+        if (!Double.isFinite(x) || !Double.isFinite(y) || !Double.isFinite(z) || !Double.isFinite(vx) || !Double.isFinite(vy) || !Double.isFinite(vz)) {
+            this.violation("a correction off a non-finite state");
+            return;
+        }
+        final Simulation sim = this.simulation;
+        this.lastSentDx = Double.NaN;
+        this.lastSentDy = Double.NaN;
+        this.lastSentDz = Double.NaN;
+        this.correctionRepeats = 0;
+        this.lastSentVx = vx;
+        this.lastSentVy = vy;
+        this.lastSentVz = vz;
+        final int id = this.reconciler.send(x - sim.x(), y - sim.y(), z - sim.z());
+        this.stats.corrections++;
+        this.stats.absoluteCorrections++;
+        this.recent.correction(System.currentTimeMillis());
+        this.lastCorrectionSize = Math.sqrt((x - sim.x()) * (x - sim.x()) + (y - sim.y()) * (y - sim.y()) + (z - sim.z()) * (z - sim.z()));
+        if (this.settings().debugLog()) {
+            DebugHud.absoluteCorrection(this, this.runningTick, x, y, z, vx, vy, vz);
+        }
+        final TraceRecorder recorder = this.trace;
+        if (recorder != null) {
+            recorder.correction(3, x, y, z);
+        }
+        this.player.connection.send(new ClientboundPlayerPositionPacket(id,
+            new PositionMoveRotation(new Vec3(x, y, z), new Vec3(vx, vy, vz), 0.0F, 0.0F), CORRECTION_ABSOLUTE));
     }
 
     // Enforce: the truth goes through the vanilla accepted-move path, so its side effects and events stay (§6.3)
@@ -1283,16 +1732,58 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
                 final double dz = sim.z() - accept.z();
                 final double residual = Math.sqrt(dx * dx + dy * dy + dz * dz);
                 if (residual > settings.correctionThreshold() && this.mode == AuthMode.ENFORCE && this.teleportsPending == 0) {
-                    this.sendCorrection(dx, dy, dz, sim.vx(), sim.vy(), sim.vz(), false);
+                    // The backstop: the client is where it says now; forecast both to the tick it applies the next one,
+                    // so a client stuck off the truth (inside a block, falling) is not chased one tick behind forever
+                    if (sim.beliefValid()) {
+                        sim.belief(false, accept.x(), accept.y(), accept.z()); // its velocity already took the correction
+                    } else {
+                        sim.rebaseBelief(accept.x(), accept.y(), accept.z(), this.lastSentVx, this.lastSentVy, this.lastSentVz);
+                    }
+                    final boolean forecast = sim.correction(this.correctionAhead(), this.stream.input(), this.tickYRot, this.tickXRot, this.view,
+                        this.world, this.delta);
+                    if (++this.backstopStreak >= settings.correctionRepeatLimit()) {
+                        // Corrections keep missing: the client's own state isn't what the belief says (its velocity, its
+                        // ground), so land it absolutely, position and velocity, where the truth will be
+                        this.backstopStreak = 0;
+                        if (forecast) {
+                            this.sendAbsolute(this.delta[7], this.delta[8], this.delta[9], this.delta[10], this.delta[11], this.delta[12]);
+                        } else {
+                            this.sendAbsolute(sim.x(), sim.y(), sim.z(), sim.vx(), sim.vy(), sim.vz());
+                        }
+                    } else if (forecast) {
+                        this.sendForecast();
+                    } else {
+                        this.sendFallback(dx, dy, dz);
+                    }
                 } else {
+                    this.backstopStreak = 0;
                     sim.belief(residual <= settings.rebaseEpsilon(), accept.x(), accept.y(), accept.z());
                 }
+            } else if (this.reconciler.sentLately(accept.id())) {
+                this.stats.staleAccepts++; // a correction a server teleport or reset dropped while it was on its way
             } else {
-                // An accept we can't place is a teleport we did not model (another plugin's setback): start over (§15.1)
-                this.violation("teleport accept for a correction never sent or not in flight");
-                this.resync();
+                // Our correction ids are ours alone: an unknown one is forged, like an unknown pong (§15.1)
+                this.protocolViolation("accept for a correction never sent");
             }
             return;
+        }
+        if (this.mode == AuthMode.ENFORCE) {
+            final int index = this.awaitingAccepts.indexOf(accept.id());
+            if (index < 0) {
+                if (this.acceptedBeforeAuthority.rem(accept.id())) {
+                    return; // sent before authority started: vanilla's bookkeeping ran at its arrival
+                }
+                if (this.teleportsPending > 0) {
+                    // A teleport sent ahead of its ping (a full bundle) is accepted before its pong: matched when it lands
+                    this.earlyAccepts.add(accept.id());
+                } else {
+                    this.violation("accept for a server teleport never sent or already accepted");
+                }
+                return;
+            }
+            // Accepted: this one and any earlier ones (the client acks only the newest it applied)
+            this.awaitingAccepts.removeElements(0, index + 1);
+            this.awaitingSince.removeElements(0, index + 1);
         }
         final Simulation sim = this.simulation;
         if (sim.seeded() && (accept.x() != sim.x() || accept.y() != sim.y() || accept.z() != sim.z())) {
@@ -1315,13 +1806,25 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
                 this.world.onTeleport();
                 if (Reconciler.ours(position.id())) {
                     this.reconciler.applied(position.id()); // changes the client, not the truth
+                    sim.beliefCorrected(position.change(), position.relatives()); // the client's own state takes it, as the client does
                 } else {
                     if (!this.view.passenger()) {
                         sim.position(position.change(), position.relatives());
                         this.stream.setRotation(sim.yRot(), sim.xRot());
                         this.reseedFromServer = !sim.seeded(); // the teleport is the server-owned state to start from
                     }
+                    if (this.mode == AuthMode.ENFORCE) {
+                        // Complete at its pong (§15.3): the server player writes the truth again; the accept is only a claim
+                        this.player.connection.revivalCompleteServerTeleport(position.id());
+                        if (!this.earlyAccepts.rem(position.id())) {
+                            this.awaitingAccepts.add(position.id());
+                            this.awaitingSince.add(tick);
+                        }
+                    }
                     this.teleportsPending = Math.max(0, this.teleportsPending - 1);
+                    if (this.teleportsPending == 0) {
+                        this.earlyAccepts.clear();
+                    }
                     this.reconciler.reset();
                 }
             }
@@ -1341,6 +1844,9 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
                 final java.util.List<ClientboundUpdateAttributesPacket.AttributeSnapshot> values = ((ClientboundUpdateAttributesPacket) packet).getValues();
                 this.view.attributes.apply(values);
                 sim.attributes(values);
+                if (SelfEcho.speedSync((ClientboundUpdateAttributesPacket) packet) >= 0 && this.speedSyncsPending > 0) {
+                    this.speedSyncsPending--;
+                }
             }
             case OutboundClassifier.SELF_EFFECT_ADD -> this.view.addEffect((ClientboundUpdateMobEffectPacket) packet);
             case OutboundClassifier.SELF_EFFECT_REMOVE -> this.view.removeEffect(((ClientboundRemoveMobEffectPacket) packet).effect());
@@ -1363,20 +1869,25 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
                 final ClientboundForgetLevelChunkPacket forget = (ClientboundForgetLevelChunkPacket) packet;
                 this.world.onForgetChunk(forget.pos().x(), forget.pos().z());
             }
-            case OutboundClassifier.GAME_MODE -> {
-                final GameType mode = GameType.byId((int) ((ClientboundGameEventPacket) packet).getParam());
-                this.view.gameMode(mode);
-                sim.localGameMode(mode);
-            }
+            case OutboundClassifier.GAME_MODE -> this.localGameMode(GameType.byId((int) ((ClientboundGameEventPacket) packet).getParam()));
             case OutboundClassifier.SELF_INFO -> {
                 for (final ClientboundPlayerInfoUpdatePacket.Entry entry : ((ClientboundPlayerInfoUpdatePacket) packet).entries()) {
                     if (this.player.getUUID().equals(entry.profileId())) {
+                        sim.tabListGameMode(entry.gameMode()); // first: it compares with the mode the view still holds
                         this.view.tabGameMode(entry.gameMode());
                     }
                 }
             }
-            case OutboundClassifier.RESPAWN -> this.respawn(((ClientboundRespawnPacket) packet).dataToKeep());
-            case OutboundClassifier.LOGIN -> this.respawn((byte) 0);
+            case OutboundClassifier.RESPAWN -> {
+                final ClientboundRespawnPacket respawn = (ClientboundRespawnPacket) packet;
+                this.respawn(respawn.dataToKeep());
+                this.localGameMode(respawn.commonPlayerSpawnInfo().gameType()); // handleRespawn → setLocalMode
+            }
+            case OutboundClassifier.LOGIN -> {
+                this.respawn((byte) 0);
+                this.localGameMode(((net.minecraft.network.protocol.game.ClientboundLoginPacket) packet).commonPlayerSpawnInfo().gameType());
+            }
+            case OutboundClassifier.ROCKET -> this.applyRocket(packet);
             case OutboundClassifier.SELF_PASSENGERS -> {
                 final ClientboundSetPassengersPacket passengers = (ClientboundSetPassengersPacket) packet;
                 this.view.passengers(passengers.getVehicle(), passengers.getPassengers(), this.player.getId());
@@ -1403,36 +1914,51 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
             case OutboundClassifier.CAMERA -> this.view.camera(((ClientboundSetCameraPacket) packet).getEntity(this.player.level()) != this.player);
             case OutboundClassifier.ROD_PULL -> {
                 if (((ClientboundEntityEventPacket) packet).getEntity(this.player.level()) instanceof final FishingHook hook && hook.getHookedIn() == this.player) {
-                    this.stats.externalMovers++; // the client pulls itself toward the rod owner: not modelled yet (bounded band, §15.6)
+                    this.stats.externalMovers++; // the client pulls itself toward the rod owner this tick: not modelled, exempt (§15.6)
+                    this.movers.rodPull(tick);
                 }
             }
-            case OutboundClassifier.PISTON -> this.stats.externalMovers++;
-            case OutboundClassifier.REMOTE_PLAYER -> Authority.mirrors().onApplied(this, packet, tick, exact, sentMillis);
+            case OutboundClassifier.PISTON -> {
+                this.stats.externalMovers++;
+                this.movers.blockEvent(tick, ((net.minecraft.network.protocol.game.ClientboundBlockEventPacket) packet).getPos());
+            }
+            case OutboundClassifier.REMOTE_PLAYER -> {
+                Authority.mirrors().onApplied(this, packet, tick, exact, sentMillis);
+                if (packet instanceof final net.minecraft.network.protocol.game.ClientboundRemoveEntitiesPacket remove) {
+                    this.removeRockets(remove);
+                }
+            }
             default -> {
             }
         }
     }
 
     private void applyInventory(final Packet<?> packet) {
+        // §15.6: the client's stacks as encoded when the entry was logged; converted now only if no snapshot was taken
+        final Object taken = this.transactions.takeSnapshot(packet);
+        final net.minecraft.world.item.ItemStack[] snapshot = taken instanceof final net.minecraft.world.item.ItemStack[] stacks ? stacks : ClientItems.snapshot(packet);
+        if (snapshot == null) {
+            return;
+        }
         switch (packet) {
-            case final ClientboundSetPlayerInventoryPacket slot -> this.view.items.setInventory(slot.slot(), slot.contents());
+            case final ClientboundSetPlayerInventoryPacket slot -> this.view.items.setInventoryClient(slot.slot(), snapshot[0]);
             case final ClientboundContainerSetSlotPacket slot -> {
                 if (slot.getContainerId() == 0) {
-                    this.view.items.setMenuSlot(slot.getSlot(), slot.getItem());
+                    this.view.items.setMenuSlotClient(slot.getSlot(), snapshot[0]);
                 } else {
                     this.view.items.seed(this.player.getInventory());
                 }
             }
             case final ClientboundContainerSetContentPacket content -> {
                 if (content.containerId() == 0) {
-                    this.view.items.setMenuContent(content.items());
+                    this.view.items.setMenuContentClient(snapshot);
                 } else {
                     this.view.items.seed(this.player.getInventory());
                 }
             }
             case final ClientboundSetEquipmentPacket equipment -> {
-                for (final com.mojang.datafixers.util.Pair<net.minecraft.world.entity.EquipmentSlot, net.minecraft.world.item.ItemStack> pair : equipment.getSlots()) {
-                    this.view.items.setEquipment(pair.getFirst(), pair.getSecond());
+                for (int i = 0; i < snapshot.length; i++) {
+                    this.view.items.setEquipmentClient(equipment.getSlots().get(i).getFirst(), snapshot[i]);
                 }
             }
             default -> {
@@ -1440,8 +1966,59 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
         }
     }
 
+    @Override
+    public @Nullable Object snapshot(final Packet<?> packet) {
+        return ClientItems.snapshot(packet);
+    }
+
     // A new local player (respawn, dimension change, login): KEEP flags per report 02 §3.14
+    // handleLogin / handleRespawn / GameEvent CHANGE_GAME_MODE → MultiPlayerGameMode.setLocalMode
+    private void localGameMode(final GameType mode) {
+        this.view.gameMode(mode);
+        this.simulation.localGameMode(mode);
+    }
+
+    // Firework rockets the client holds, in the order it added them, and which of them are attached to it (auth-sim §3.2)
+    private final it.unimi.dsi.fastutil.ints.IntArrayList rockets = new it.unimi.dsi.fastutil.ints.IntArrayList();
+    private final it.unimi.dsi.fastutil.ints.IntOpenHashSet rocketsOnSelf = new it.unimi.dsi.fastutil.ints.IntOpenHashSet();
+
+    private void applyRocket(final Packet<?> packet) {
+        switch (packet) {
+            case final net.minecraft.network.protocol.game.ClientboundAddEntityPacket add -> this.rockets.add(add.getId());
+            case final ClientboundSetEntityDataPacket data -> {
+                for (final net.minecraft.network.syncher.SynchedEntityData.DataValue<?> value : data.packedItems()) {
+                    // The rocket resolves its attachment in its own tick and keeps it (FireworkRocketEntity.tick)
+                    if (value.id() == net.minecraft.world.entity.projectile.FireworkRocketEntity.DATA_ATTACHED_TO_TARGET.id()
+                        && value.value() instanceof final java.util.OptionalInt target && target.isPresent() && target.getAsInt() == this.player.getId()) {
+                        this.rocketsOnSelf.add(data.id());
+                    }
+                }
+            }
+            case final net.minecraft.network.protocol.game.ClientboundRemoveEntitiesPacket remove -> this.removeRockets(remove);
+            default -> {
+            }
+        }
+    }
+
+    private void removeRockets(final net.minecraft.network.protocol.game.ClientboundRemoveEntitiesPacket remove) {
+        if (this.rockets.isEmpty()) {
+            return;
+        }
+        for (int i = 0, n = remove.entityIds().size(); i < n; i++) {
+            final int id = remove.entityIds().getInt(i);
+            this.rockets.rem(id);
+            this.rocketsOnSelf.remove(id);
+        }
+    }
+
     private void respawn(final byte keep) {
+        this.visibility.clear();
+        this.seedStill = true;
+        this.hasLastClaim = false;
+        this.hasPrevClaim = false;
+        this.rockets.clear();
+        this.rocketsOnSelf.clear();
+        this.movers.reset();
         final boolean keepAttributes = (keep & ClientboundRespawnPacket.KEEP_ATTRIBUTE_MODIFIERS) != 0;
         final boolean keepData = (keep & ClientboundRespawnPacket.KEEP_ENTITY_DATA) != 0;
         this.view.respawn(keepAttributes, keepData);
@@ -1460,7 +2037,7 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
         this.view.seed(this.player);
         this.simulation.attributes(this.player.getAttributes().getSyncableAttributesPacket());
         this.world.setLevel(this.player.level(), false);
-        this.world.clear();
+        this.world.clearUnsent();
         this.reseedFromServer = true;
         this.reconciler.reset();
         Authority.mirrors().onReset(this);

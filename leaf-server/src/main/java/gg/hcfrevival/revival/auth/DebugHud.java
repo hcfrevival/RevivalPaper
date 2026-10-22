@@ -62,6 +62,17 @@ public final class DebugHud {
             sim.onGround() ? " ground" : "", sim.vx(), sim.vy(), sim.vz()));
     }
 
+    static void absoluteCorrection(final AuthPlayer auth, final int tick, final double x, final double y, final double z, final double vx, final double vy,
+                                   final double vz) {
+        LOGGER.info(String.format(Locale.ROOT, "[auth] absolute correction %s tick %d pos (%.6f, %.6f, %.6f) vel (%.6f, %.6f, %.6f) rtt %dms",
+            auth.player().getScoreboardName(), tick, x, y, z, vx, vy, vz, auth.transactions().rttBaseNanos() / 1_000_000L));
+    }
+
+    static void grammar(final AuthPlayer auth, final int tick, final String rule, final net.minecraft.network.protocol.Packet<?> packet, final boolean dropped) {
+        LOGGER.info(String.format(Locale.ROOT, "[auth] input grammar %s tick %d %s: %s%s", auth.player().getScoreboardName(), tick, rule,
+            packet.getClass().getSimpleName(), dropped ? " (dropped)" : ""));
+    }
+
     static void rejectedHit(final AuthPlayer auth, final int tick, final String target, final String reason, final long rewindMillis, final double distance) {
         LOGGER.info(String.format(Locale.ROOT, "[auth] hit rejected %s -> %s tick %d %s rewind %dms distance %.4f",
             auth.player().getScoreboardName(), target, tick, reason, rewindMillis, distance));

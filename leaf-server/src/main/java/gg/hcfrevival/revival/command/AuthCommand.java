@@ -158,6 +158,22 @@ final class AuthCommand {
         lines.add(String.format(Locale.ROOT, "attacks %d: accepted %d, rejected %d, over cap %d; double clicks %.1f%%, yaw gcd %.4f (%d turns, %d misses)",
             stats.attacksQueued(), stats.attacksAccepted(), stats.attacksRejected(), stats.attacksOverCap(), input.doubleClickRatio() * 100.0,
             input.yawGcd(), input.turns(), input.gcdMisses()));
+        final gg.hcfrevival.revival.auth.input.InputRules rules = auth.inputRules();
+        final StringBuilder grammar = new StringBuilder("input grammar: " + rules.total() + " broken, " + stats.grammarDropped() + " dropped");
+        for (int rule = 1; rule < gg.hcfrevival.revival.auth.input.InputRules.RULES; rule++) {
+            if (rules.count(rule) > 0) {
+                grammar.append(", ").append(gg.hcfrevival.revival.auth.input.InputRules.name(rule)).append(' ').append(rules.count(rule));
+            }
+        }
+        final StringBuilder clicks = new StringBuilder("; attacks per tick");
+        for (int bucket = 0; bucket <= 5; bucket++) {
+            clicks.append(' ').append(bucket == 5 ? "5+" : String.valueOf(bucket)).append(':').append(input.attacksPerTick(bucket));
+        }
+        lines.add(grammar.append(clicks).toString());
+        final gg.hcfrevival.revival.auth.net.BypassAuditor audit = auth.auditor();
+        lines.add(audit == null ? "bypass audit: not installed (no game encoder on this channel)"
+            : String.format(Locale.ROOT, "bypass audit: %d packets around the netcode (%d moved the player; %d as Packet objects, %d pre-encoded)",
+                stats.bypasses(), stats.bypassMovers(), audit.packetBypasses(), audit.rawBypasses()));
         lines.add(String.format(Locale.ROOT, "world view: %d sent, %d pinned, %d predicted, %d chunks%s; trace %s",
             auth.world().sentCount(), auth.world().pinnedCount(), auth.world().predictionCount(), auth.world().chunkCount(),
             auth.world().chunksKnown() ? "" : " (chunk list unknown)", auth.trace() != null ? auth.trace().file() : "off"));

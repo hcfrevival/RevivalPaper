@@ -39,10 +39,11 @@ public final class AuthStats {
         NAMES[EXEMPT_WARMUP] = "warmup";
         NAMES[EXEMPT_NO_SIMULATION] = "no-simulation";
         NAMES[EXEMPT_SIMULATION_ERROR] = "simulation-error";
-        NAMES[EXEMPT_SIMULATION_BASE + 5] = "riptide";
         for (int i = EXEMPT_SIMULATION_BASE; i < EXEMPT_REASONS; i++) {
             NAMES[i] = "simulation-" + (i - EXEMPT_SIMULATION_BASE);
         }
+        NAMES[EXEMPT_SIMULATION_BASE + gg.hcfrevival.revival.auth.sim.ExemptReason.RIPTIDE.ordinal()] = "riptide";
+        NAMES[EXEMPT_SIMULATION_BASE + gg.hcfrevival.revival.auth.sim.ExemptReason.EXTERNAL_MOVER.ordinal()] = "external-mover";
     }
 
     public static String exemptName(final int reason) {
@@ -79,6 +80,16 @@ public final class AuthStats {
     long attackStrengthBranches;
     long rebasesRefused;
     long mountsRefused;
+    long grammarDropped;
+    long bypasses;
+    long bypassMovers;
+    long predictionsRefused;
+    long absoluteCorrections;
+    long staleAccepts;
+    long speedResyncs;
+    long inexactSeeds;
+    long hiddenChecks;
+    long culledEffects;
 
     void countExempt(final int reason) {
         this.exempt[Math.clamp(reason, 0, EXEMPT_REASONS - 1)]++;
@@ -218,6 +229,46 @@ public final class AuthStats {
 
     public long mountsRefused() {
         return this.mountsRefused;
+    }
+
+    public long grammarDropped() {
+        return this.grammarDropped;
+    }
+
+    public long bypasses() {
+        return this.bypasses;
+    }
+
+    public long bypassMovers() {
+        return this.bypassMovers;
+    }
+
+    public long predictionsRefused() {
+        return this.predictionsRefused;
+    }
+
+    public long absoluteCorrections() {
+        return this.absoluteCorrections;
+    }
+
+    public long staleAccepts() {
+        return this.staleAccepts;
+    }
+
+    public long speedResyncs() {
+        return this.speedResyncs;
+    }
+
+    public long inexactSeeds() {
+        return this.inexactSeeds;
+    }
+
+    public long hiddenChecks() {
+        return this.hiddenChecks;
+    }
+
+    public long culledEffects() {
+        return this.culledEffects;
     }
 
     public long simulationErrors() {

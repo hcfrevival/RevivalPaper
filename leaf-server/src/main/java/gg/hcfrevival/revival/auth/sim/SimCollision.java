@@ -423,6 +423,16 @@ final class SimCollision {
         return !this.joinIsNotEmpty(this.borderShape(world), false, 0.0, 0.0, 0.0);
     }
 
+    /**
+     * Whether {@code box} overlaps the world border's collision shape, whatever its size: unlike {@link #noCollision},
+     * without WorldBorder.isInsideCloseToBorder, whose reach grows with the size of the box asked about (a long move
+     * gathers the border where a short one does not).
+     */
+    boolean touchesBorder(final SimBox box) {
+        this.entityShape.set(box);
+        return this.joinIsNotEmpty(this.borderShape(this.level.world()), false, 0.0, 0.0, 0.0);
+    }
+
     /** CollisionGetter.collidesWithSuffocatingBlock (CollisionGetter.java:117-127). */
     boolean collidesWithSuffocatingBlock(final SimPlayer player, final SimBox box) {
         this.begin(player);

@@ -249,6 +249,11 @@ final class FakeClient {
         }
     }
 
+    /** A new local player (respawn): it reports {@code PlayerLoaded} again on its first tick. */
+    void respawned() {
+        this.loaded = false;
+    }
+
     void disconnect() {
         this.server.getConnection().getConnections().remove(this.connection);
         this.server.getPlayerList().remove(this.player);

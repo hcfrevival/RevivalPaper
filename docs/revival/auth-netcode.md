@@ -1,6 +1,7 @@
 # Authoritative netcode
 
-Status: built 2026-10-21 on `revival/authoritative`. Design: `authoritative.md` (§15 binding). Research:
+Status: built 2026-10-21 on `revival/authoritative` (Phase B: replication, §15.3-15.6, input grammar, bypass audit,
+visibility). Design: `authoritative.md` (§15 binding). Research:
 `auth-research/02` (client stream, transaction rule), `04` (hook sites), `07` (FakeClient, RVTR).
 
 This is the layer between the network and the movement port (`auth.sim`) and the combat package (`auth.combat`):
@@ -30,8 +31,16 @@ it decides **when** the client saw what, and feeds the simulation and the mirror
 | `auth.view.ClientItems` | Client-visible stacks (with `LegacySwordBlocking.toClient`) |
 | `auth.view.WorldView` | What this client was sent: persistent sent states, pinned pre-change states, predictions, chunk set. Implements `SimWorld` and `PickWorld` |
 | `auth.view.SelfEcho` | Enforce-mode rewrite of self entity data and attributes (§3.3) |
-| `auth.reconcile.Reconciler` | Exact / budget / correct decision, correction ids, in-flight, rate limit |
+| `auth.reconcile.Reconciler` | Exact / budget / correct decision, correction ids (and the last 32 sent), in-flight Δ, rate limit |
+| `auth.reconcile.RebaseGuard` | With `rebase-epsilon` on: signed drift cap per axis per window of ticks |
 | `auth.input.InputEnvelope`, `InputStats` | Attack cap; click and yaw-GCD statistics |
+| `auth.input.InputRules` | The in-tick input grammar of a vanilla client (attack/use while using, attack after use, attack after a container close, container click while walking, anything after the move claim) |
+| `auth.input.AnomalyWatch` | `AuthInputAnomalyEvent` once per threshold crossing |
+| `auth.net.BypassAuditor` | Netty handlers around the encoder: physics packets written around the choke point (as `Packet` objects or pre-encoded) |
+| `auth.view.PredictionRules` | Which block changes a vanilla client predicts (a held block item, the block on its crosshair) |
+| `auth.PathWiring` | Replication: `PathFeed` per player, K2 steps to viewers in `exact-radius`, handovers, re-pairs (R6 and inexact mirrors) |
+| `auth.ExternalMovers` | Pistons and shulker boxes (block events), boats/shulkers/happy ghasts, geysers, rod pulls: the port's `EXTERNAL_MOVER` exemption |
+| `auth.DebugHud` | `debug.hud` action-bar line and `debug.log` console lines |
 | `auth.trace.TraceRecorder` | RVTR v1 writer (report 07 §4) |
 | `config.AuthoritativeSettings` | `revival.yml` `authoritative:` |
 | `command.AuthCommand` | `/revival auth status | mode | inspect | trace` |
@@ -59,6 +68,28 @@ it decides **when** the client saw what, and feeds the simulation and the mirror
      and writes the truth through `revivalApplyTruth` (the vanilla accepted-move path);
    - input, sprint and move packets replay (the move only in observe or exempt states), then `TickEnd` replays so
      vanilla's per-tick resets land at the right point.
+4. **Enforce extras.**
+   - The input grammar (`InputRules`): an attack or use while the client uses an item (the release tick included), an
+     attack after a use or after a container close in the same tick, a container click while the tick's input walks,
+     anything after the move claim: not handled (the client's own prediction still runs), counted, logged, and past
+     `stats.grammar-violations` an `AuthInputAnomalyEvent`. A second move claim, input or sprint command in one tick, a
+     pong after the tick's keybinds, more than 512 packets in one tick, a forged correction accept and a server
+     teleport never accepted are protocol violations (kick).
+   - The simulation is the only writer of pose, swimming, gliding and item use on the `ServerPlayer` (§15.4); the
+     server's own recomputation is skipped. A change the server makes on purpose marks the field "meant": its self echo
+     goes out as is and the simulation takes it at the ack; every other self echo of a client-owned field says what the
+     client already has. The truth's `movement_speed` has the sprint modifier only while it sprints; a sync on its way
+     that says the opposite is followed by a fresh one.
+   - The server's motion is the simulation's (written with the truth, except while a server velocity waits for the
+     tracker): `getVelocity`, 26.x knockback and the move checks read it; `motion-model: authoritative` knocks from it.
+     The sprint knock arms from the simulated sprint, and the attack reads the sprint the client attacked with.
+   - Corrections are decided a window late, so a hotbar change by number key (report 02 H9) or the attack-strength reset
+     tick can explain the claim first (bounded branching). They forecast truth and belief to the apply tick; an accept
+     with a residual is forecast again from where the client says it is; a correction that keeps coming back, or would
+     land the client inside a block, goes out absolute (position and velocity).
+   - Server teleports complete at their pong window (the `ServerPlayer` writes the truth again at once); the accept is
+     only a claim. Players are hit only on a `VALID` verdict; the attacker's eye is the truth's, or its own claim
+     bounded by the in-flight correction while one is out.
 
 ## Transactions
 
@@ -95,7 +126,14 @@ it decides **when** the client saw what, and feeds the simulation and the mirror
 | 1011 | `ClientboundMoveEntityPacket`, `ClientboundEntityEventPacket` | `revivalEntityId()` accessors |
 | 1012 | `SGPLI.revivalApplyTruth` | the truth through `handlePlayerPositionChange` |
 | 1012 | `LivingEntity.aiStep` travel | skipped while `revivalAuth.skipsTravel()` |
+| 1011 | `SGPLI.handleContainerClose` (the client's one-argument overload) | main thread, then `intercept` (server-initiated closes stay immediate) |
+| 1012 | `SGPLI.revivalCompleteServerTeleport` | vanilla's accept bookkeeping at a server teleport's pong, without the accept's coordinates |
+| 1012 | `Player.tick` / `updateSwimming`, `LivingEntity.updateFallFlying` / `updatingUsingItem` | skipped while `Authority.ownsClientState` (§15.4: the simulation writes them) |
+| 1012 | `Entity.setSharedFlag` / `setPose`, `LivingEntity.setLivingEntityFlag` / `resyncUsingItem` | `Authority.onServerFlag/Pose/Use/Resync`: a server change to a client-owned field is "meant" and its echo goes out as is |
+| 1012 | `Entity.startRiding` | `Authority.refusesMount` (`vehicles: deny`) |
 | 1013 | `SGPLI.handleAttack` | `intercept` (attacks judged in the window) |
+| 1014 | `ServerEntity.sendChanges` / `addPairing` / `removePairing`, movement output | `Authority.drainPaths`, `onPaired`, `onUnpaired`, `sendMovement` (K2 paths, R7 suppression) |
+| 1015 | `ChunkMap.TrackedEntity.updatePlayer` / `updatePlayerMulti`, after the vanish check | `Authority.visibleTo` (design §11) |
 
 All listed in `scripts/revival/markers.txt`.
 
@@ -103,13 +141,20 @@ All listed in `scripts/revival/markers.txt`.
 
 - **Movement port:** `Authority.setSimulationFactory(player -> new PortSimulation(player.player()))` is the default.
   `PortSimulation` maps netcode calls to `MovementSim` and syncs `SimPlayer`'s client-view fields from `ClientView`
-  before each tick; `WorldView` is the `SimWorld`.
+  before each tick; `WorldView` is the `SimWorld`. The local and tab-list game modes go to `setLocalGameMode` and
+  `setTabListGameMode` at their own acks (login and respawn included); attached firework rockets the client holds
+  (`AddEntity` with `DATA_ATTACHED_TO_TARGET` on the player, until `RemoveEntities`) boost after every tick, the belief's
+  and the forecasts' too; a respawn carries the hidden `autoJumpOption` and `sprintWindow` over; seeds use
+  `velocityAfterMove` (auth-sim-requests §1); `ExternalMovers` sets `externalMover`.
 - **Combat:** `CombatWiring` is the default judge and mirror feed. Each viewer's `MirrorBook` lives in
   `AuthPlayer.combatState`; packets about other players arrive through `ViewerMirrors.onApplied` with their arrival
   tick and send time; `onTickEnd(T)` runs before the window's first attack is judged. `AttackerSnapshot` comes from the
   simulation (`xo/x`, `eyeHeight`, `box`), `tickYRot/tickXRot` and the client's interaction-range attributes.
-- **Replication:** `PathSink.onTick` gets every simulated (or exempt-claimed) client tick outside pending server
-  teleports. `PathFeed` and the tracker hook (patch 1014) are not wired yet.
+- **Replication:** `PathSink.onTick` (`PathWiring`) appends every simulated client tick to the player's `PathFeed`;
+  viewers within `exact-radius` get one 2-tick stepped move per tick in their per-tick bundle and no vanilla movement
+  packets for that player (patch 1014); viewers farther away keep the vanilla cadence. A viewer coming into range starts
+  from the vanilla codec base; one leaving gets an `EntityPositionSync` at that base; a jump the client would snap, or a
+  viewer mirror that went inexact (a lag spike past the ack deadline), re-pairs the player on that viewer.
 - **Reconcile:** `Reconciler` decides (exact / budget / correct / in flight / rate limited). In enforce the simulation
   keeps a belief (the client's own state: re-based on the truth at every exact claim, moved onto a diverged claim,
   stepped with the client's inputs). A correction runs truth and belief `n̂ = round(rttBase / 50)` ticks ahead with the
@@ -119,11 +164,29 @@ All listed in `scripts/revival/markers.txt`.
 
 ## Config (`revival.yml`)
 
-`authoritative.mode` (default `off`), `rebase-epsilon` (0), `correction-threshold`, `correction-budget`,
-`correction-budget-decay`, `max-corrections-per-second`, `max-rewind-ms`, `timer-drift-ms`, `max-banked-ticks`,
-`timer-queue-cap-ms`, `ack-jitter-ticks`, `max-unacked-ms`, `vehicles` (`deny`/`vanilla`), `honor-denied-predictions`,
-`max-attacks-per-client-tick`, `heartbeat-ping`, `replication.{path-step-ticks, keep-alive, exact-radius}`,
-`visibility.{enabled, always-visible-distance}`, `stats.anomaly-alerts`, `trace.directory`.
+All under `authoritative.` (defaults in brackets):
+
+| Key | |
+|---|---|
+| `mode` [`off`] | `off`, `observe` or `enforce`; `/revival auth mode` overrides it until restart |
+| `rebase-epsilon` [0], `rebase-drift-cap` [1e-9], `rebase-drift-window-ticks` [20] | adopt claims this close (ulp scale at most), with the creep guard |
+| `correction-threshold` [1e-3], `correction-budget` [0.01], `correction-budget-decay` [0.95] | small divergences go into a decaying budget |
+| `correction-persist-ticks` [20] | a claim off by less than the threshold this many ticks in a row is corrected anyway |
+| `correction-repeat-limit` [2] | the same correction (or accepts that keep needing one) this many times goes out absolute |
+| `max-corrections-per-second` [5], `max-rewind-ms` [300] | |
+| `timer-drift-ms` [120], `max-banked-ticks` [10], `timer-queue-cap-ms` [1000] | the tick clock |
+| `ack-jitter-ticks` [4], `max-unacked-ms` [1500] | ack deadline; freeze, and kick at 3x (also a client tick held open that long) |
+| `vehicles` [`deny`] | `deny` refuses mounting under enforce; `vanilla` rides exempt (client-trusted) |
+| `honor-denied-predictions` [false], `max-attacks-per-client-tick` [1], `heartbeat-ping` [true], `bypass-audit` [true] | |
+| `replication.path-step-ticks` [2], `keep-alive` [true], `exact-radius` [24], `pre-roll` [true], `respawn-distance` [48], `path-buffer` [64], `repair-interval-ticks` [20] | K2 paths; a viewer whose mirror of a target went inexact gets it re-spawned at most this often |
+| `mirror-history-ticks` [64] | lag compensation history per viewer |
+| `external-movers.block-window-ticks` [12], `block-range` [14], `entity-range` [1.0], `geyser-depth` [24] | ticks exempt near pistons/shulker boxes, solid entities, geysers |
+| `visibility.enabled` [false], `always-visible-distance` [8], `check-interval-ticks` [2], `hide-after-checks` [2], `max-speed` [1.0], `effect-reach` [1.5] | anti-ESP |
+| `stats.anomaly-alerts` [true], `double-click-ratio` [0.3], `double-click-min-attack-ticks` [40], `aim-gcd-miss-ratio` [0.5], `aim-min-turns` [200], `grammar-violations` [3] | `AuthInputAnomalyEvent` thresholds |
+| `trace.directory` [`traces`], `debug.hud` [false], `debug.hud-interval-ticks` [5], `debug.log` [false] | |
+
+Knockback profiles take `motion-model: authoritative` (knock a player under authority from its simulated motion; others
+as `sportbukkit`).
 
 Authority refuses (stays off, logs once) with Leaf `async.async-entity-tracker` or `async.parallel-world-ticking` on.
 Per player: only real connections speaking this protocol (not ViaVersion-translated, not Floodgate). `/revival auth
@@ -139,41 +202,42 @@ inspect` warns when the client's own team collision rule is not `NEVER` (other p
 
 ```bash
 export JAVA_HOME=~/Developer/tools/jdk25/Contents/Home
-./gradlew :leaf-server:runRevivalTests      # unit: transactions, windows, timer, LpVec3, attributes, self echo, classifier, config
+./gradlew :leaf-server:runRevivalTests      # unit
 ./gradlew createPaperclipJar :leaf-server:revivalLiveTestPlugin && python3 scripts/revival/live-tests.py
 ```
 
-The live run (`AuthLiveScenarios`, `FakeClient`) joins a fake player that speaks the 26.3 protocol (pongs from inside
-bundles, one accept per teleport, vanilla `sendChanges` order), with a client-side model (the same port, fed what the
-client applied) producing its positions. Under `observe` it checks: one window per client tick; a server teleport is a
-transaction applied exactly at its ack window and the accept matches it; a velocity packet goes out behind our ping and
-is applied at the window its pong arrives in, as `LpVec3` decodes it; an honest 40-tick walk matches the simulation bit
-for bit (47/47 claims exact, flags equal); unknown pongs are violations and foreign ones pass. Then `enforce`: refused
-(stays observe) until the client is on a team with collision rule `NEVER`; after the team packets are acked, an honest
-30-tick walk gets zero corrections and the server player sits exactly on the simulated position with the zero-input
-travel skipped; a client that puts itself half a block off gets exactly one correction, accepts it right after its pong,
-and is back on the true path bit for bit while the server player never took the cheated position. With Leaf's async
-tracker on (the second run) it checks that authority refuses. All pass (2026-10-21).
+Unit (`leaf-server/src/test/java/gg/hcfrevival/revival/auth/**`): transactions (ids, FIFO, bundles, deadlines, stamps),
+the client stream (windows, grammar, second claims, overflow, window age), the tick clock, `LpVec3`, attributes, self
+echo (meant fields, speed syncs), the classifier (rockets, pistons and shulker boxes), the reconciler (in-flight Δ,
+bounded eye, forged and stale accepts), the rebase guard, the input rules (one test per rule), the anomaly watch, the
+bypass auditor (packet level, pre-encoded, skipped expectations), prediction rules, occlusion and visibility hysteresis,
+the sprint modifier from state, config.
+
+Live (`AuthLiveScenarios`, `FakeClient`, a client-side model running the same port on what the client applied): under
+`observe` one window per client tick, server teleports and velocity applied exactly at their ack window, an honest walk
+bit for bit, pong violations. Under `enforce`: the collision-rule precondition; an honest walk with no correction and the
+server player on the truth; one correction for a client half a block off; replication (every move a one-step 2-tick
+path, the viewer's mirror never freezes, trails by a steady K2 delay, stays exact); §15.4 (the server pose follows the
+simulation while sneaking; a pose the server sets reaches the client and the simulation owns it again after the ack; a
+number-key slot switch while blocking takes the hotbar branch, no correction); §15.5 (a plugin's `setVelocity` from
+`PlayerMoveEvent` and a cancelled flight toggle with `setVelocity` reach client and truth at the ack tick with no
+correction; a double-tap sprint sword hit and a charged axe hit deal the same damage and knock with authority on and
+off, judged `VALID`); `vehicles: deny`; the input grammar (attacks while blocking dropped and reported, a container click
+while walking dropped and the container resent); death and respawn (no tick of the dying client judged; the new local
+player simulated from a standstill); visibility (a player behind a wall is removed from the viewer's client and spawned
+again when the wall goes). Then `AuthCheatScenarios` (the cheat suite, docs/revival/auth-cheat-suite.md). With Leaf's
+async tracker on (the second run) authority refuses.
 
 ## Gaps
 
-- Enforce: the simulation as the only writer of pose/sprint/swim/glide/shift/use on the `ServerPlayer` and the skip of
-  the server's own recomputation (§15.4), sim velocity read by `getVelocity`/`LegacyKnockback`/`MotionShadow` (§15.5),
-  `vehicles: deny` mount refusal, attacks validated from the client's eye while a correction is in flight (§15.3): not
-  done. A correction whose accept doesn't follow its pong is a violation and frees the reconciler for a new one; there is
-  no separate timer for a correction whose pong never comes (its ack deadline force-applies it).
-- Block predictions are admitted only where the server's own handling made the same change; judging what a vanilla
-  client would have predicted (pick, held item, `BlockPlaceContext`, dig progress) is not done. Every
-  sequence-carrying packet is acked when its window runs, even when Paper's spam limiter or the immobile check then
-  drops it.
-- World border lerp, entity colliders (boats, shulkers), pistons and rod pulls are not modelled (counted as external
-  movers); `BlockEvent` pistons are only counted.
-- Bounded branching for one-tick ambiguities (hotbar key vs scroll) is not done.
-- The Netty bypass auditor (§15.1) and per-tick replication bundles (§8 R5, patch 1014) are not done.
+- Prediction admission follows a vanilla client's held item and crosshair; dig progress per tick is left to Paper's
+  own break checks. Every sequence-carrying packet is acked when its window runs, even when Paper then drops it.
+- World border lerp and entity colliders (boats, shulkers) are not modelled: ticks near them, pistons, shulker boxes,
+  geysers and rod pulls are exempt (the claim through vanilla's checks, a re-seed after) rather than banded.
+- The bypass audit logs a bypassed packet at the next ping (upper bound): a client applies it earlier, so the truth
+  can be a tick late on it and corrects; GrimAC's movement, velocity and setback handling must be off for players under
+  authority (warned once when its packets show up).
 - `ContainerSetSlot`/`SetContent` for a container other than the inventory menu resync the client items from the
   server inventory at the ack (approximation).
-- Between server ticks each physics packet gets its own ping (not one per handler invocation); in-tick traffic is
-  coalesced.
-- Item stacks in logged inventory packets are converted to the client's copy at ack time, not snapshotted when logged
-  (§15.6).
+- Visibility samples 9 points per box (81 rays when hidden); it costs most when many players hide from each other.
 - Trace: no world snapshot (zero hash, ±48 box), chunk packets not recorded.

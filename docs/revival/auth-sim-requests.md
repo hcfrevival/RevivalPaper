@@ -3,7 +3,24 @@
 The netcode (`auth`, `auth.net`, `auth.view`) owns `PortSimulation`, the adapter between `AuthPlayer` and
 `MovementSim`/`SimPlayer`. These are things it needs from `auth.sim` and can't write itself. Newest first.
 
-## 1. Seed velocity from a claimed move (2026-10-21)
+## 1. Seed velocity from a claimed move (2026-10-21) — done 2026-10-21
+
+**Done:** `MovementSim.velocityAfterMove(p, fromX, fromY, fromZ, toX, toY, toZ, world, out)`, plus an overload taking the
+tick's sent `Input` after `p` (use it: the keys remove `VELOCITY_KEYS`, 16% of the oracle's ticks). See auth-sim.md §3.4.
+
+- `p` is the client's state at the start of the claimed tick (what `tick` would get: the previous tick's flags, ground,
+  support, stuck multiplier, effects, attributes, keys); its position, velocity and rotation are never read, and it is
+  not modified. `from`/`to` are the two claims of one tick: skip a pair around a tick with no position claim (the 2e-4
+  rule), its `from` is not exact.
+- It returns 0 when `out` is the client's velocity bit for bit, else `VELOCITY_X/Y/Z` for the axes that are not plus
+  reason bits; `out` always holds the most likely value (NaN only with `VELOCITY_NO_TICK`). `VELOCITY_ROUNDED` (the
+  claim's position rounding, under an ulp of the position) and `VELOCITY_UNMOVED` (under 3.2e-4 on an axis that did not
+  move) are bounded; `COLLIDED`, `EDGE`, `KEYS`, `PRE_MOVE` are not.
+- From two claims the result is almost never bit for bit on a moving axis: `from + move` rounds to the position's ulp,
+  so the move's last bits are gone (`VELOCITY_ROUNDED`). For the seed that is still the fix for the case below: a
+  client seeded mid-air falls with a velocity within an ulp of the position instead of a tick of gravity off, and a
+  fall from rest at y = 0 is exact.
+- The result is before attached rockets: call `fireworkBoost` per rocket after it, as after `tick`.
 
 **Need:** `MovementSim.velocityAfterMove(SimPlayer p, double fromX, fromY, fromZ, double toX, toY, toZ, SimWorld world, double[] out)`:
 the `deltaMovement` the client has at the end of a tick whose `move` went from `from` to `to`, run through the port's
@@ -17,4 +34,7 @@ which is the move, not the velocity. A player seeded mid-air then stays off by a
 lands). With this call the seed becomes exact after one claimed move. It is also the fallback belief for corrections
 when the belief state isn't valid.
 
-**Where it's used:** `PortSimulation.seed(...)` (new overload taking the previous claim), `AuthPlayer.seedFromServer`.
+**Where it's used:** `PortSimulation.seedFromMove(...)`, `AuthPlayer.seedFromServer`: when the last two claims were
+consecutive ticks ending where the server holds the player (an exempt stretch the vanilla handler moved through), the
+seed takes the velocity the port works out; after a respawn or login the seed stands still (a new `LocalPlayer`); else
+the server's known movement, counted as an inexact seed. Wired 2026-10-21.

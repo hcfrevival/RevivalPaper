@@ -63,6 +63,8 @@ leaf-server/src/minecraft/java/net/minecraft/server/network/ServerGamePacketList
 leaf-server/src/minecraft/java/net/minecraft/server/network/ServerGamePacketListenerImpl.java | if (this.player.revivalAuth.intercept(packet)) return; // Revival - Authoritative netcode: handlePlayerInput
 leaf-server/src/minecraft/java/net/minecraft/server/network/ServerGamePacketListenerImpl.java | if (this.player.revivalAuth.onTeleportAccept(packet)) return; // Revival - Authoritative netcode: handleAcceptTeleportPacket
 leaf-server/src/minecraft/java/net/minecraft/server/network/ServerGamePacketListenerImpl.java | if (this.player.revivalAuth.intercept(packet)) return; // Revival - Authoritative netcode: handleAcceptPlayerLoad
+leaf-server/src/minecraft/java/net/minecraft/server/network/ServerGamePacketListenerImpl.java | PacketUtils.ensureRunningOnSameThread(packet, this, this.player.level()); // Revival - Authoritative netcode: the client's close on the main thread
+leaf-server/src/minecraft/java/net/minecraft/server/network/ServerGamePacketListenerImpl.java | if (this.player.revivalAuth.intercept(packet)) return; // Revival - Authoritative netcode: handleContainerClose
 leaf-server/src/minecraft/java/net/minecraft/server/network/ServerGamePacketListenerImpl.java | if (this.player.revivalAuth.intercept(packet)) return; // Revival - Authoritative netcode: handleBundleItemSelectedPacket
 leaf-server/src/minecraft/java/net/minecraft/server/network/ServerGamePacketListenerImpl.java | if (this.player.revivalAuth.intercept(packet)) return; // Revival - Authoritative netcode: handlePickItemFromBlock
 leaf-server/src/minecraft/java/net/minecraft/server/network/ServerGamePacketListenerImpl.java | if (this.player.revivalAuth.intercept(packet)) return; // Revival - Authoritative netcode: handlePickItemFromEntity
@@ -105,3 +107,4 @@ leaf-server/src/minecraft/java/net/minecraft/server/level/ServerEntity.java | gg
 leaf-server/src/minecraft/java/net/minecraft/server/level/ServerEntity.java | gg.hcfrevival.revival.auth.Authority.drainPaths(this, this.trackedPlayers); // Revival - Authoritative paths: drain
 leaf-server/src/minecraft/java/net/minecraft/server/level/ServerEntity.java | gg.hcfrevival.revival.auth.Authority.onUnpaired(this.entity, player); // Revival - Authoritative paths: unpair
 leaf-server/src/minecraft/java/net/minecraft/server/level/ServerEntity.java | gg.hcfrevival.revival.auth.Authority.onPaired(this.entity, player, packets); // Revival - Authoritative paths: pair
+leaf-server/src/minecraft/java/net/minecraft/server/level/ChunkMap.java | if (visibleToPlayer && !gg.hcfrevival.revival.auth.Authority.visibleTo(this.entity, player)) visibleToPlayer = false; // Revival - Visibility: no line of sight

@@ -8,6 +8,7 @@ import net.minecraft.world.entity.Pose;
 import net.minecraft.world.entity.PositionMoveRotation;
 import net.minecraft.world.entity.Relative;
 import net.minecraft.world.entity.player.Input;
+import net.minecraft.world.level.GameType;
 
 /**
  * What the netcode needs from the movement simulation of one player: the exact vanilla 26.3 client port in
@@ -131,11 +132,40 @@ public interface Simulation {
     /**
      * The correction that lands the client on the truth at the predicted apply tick: truth and belief are both run
      * {@code ticksAhead} ticks further with the latest input, and {@code out} gets {@code Δpos} (0..2) and {@code Δvel}
-     * (3..5). Returns false when there is no belief to compare with.
+     * (3..5); with room for 13, also whether the client's box would then be inside a block (6, 1 or 0) and the truth's
+     * position (7..9) and velocity (10..12) at that tick. Returns false when there is no belief to compare with.
      */
     default boolean correction(final int ticksAhead, final Input keys, final float yRot, final float xRot, final ClientView view, final WorldView world,
                                final double[] out) {
         return false;
+    }
+
+    /**
+     * Seeds at {@code to} with the velocity a vanilla client holds after a tick whose move went from {@code from} to
+     * {@code to} (auth-sim-requests §1). Returns false when that velocity is not known bit for bit (it then seeds the most
+     * likely one); not supported: false and nothing seeded.
+     */
+    default boolean seedFromMove(final double fromX, final double fromY, final double fromZ, final double toX, final double toY, final double toZ,
+                                 final float yRot, final float xRot, final boolean onGround, final ClientView view, final WorldView world) {
+        return false;
+    }
+
+    /** Whether the belief is being kept and holds a state. */
+    default boolean beliefValid() {
+        return false;
+    }
+
+    /** The belief becomes the truth's state at {@code (x, y, z)} moving at {@code (vx, vy, vz)}: the client's, as an accept shows it. */
+    default void rebaseBelief(final double x, final double y, final double z, final double vx, final double vy, final double vz) {
+    }
+
+    /** Whether the client's own state (the belief) has its box inside a block's collision shape. */
+    default boolean beliefInsideShape(final WorldView world) {
+        return false;
+    }
+
+    /** Our correction reached the client: its own state (the belief) takes it as the client does ({@code handleMovePlayer}). */
+    default void beliefCorrected(final PositionMoveRotation change, final Set<Relative> relatives) {
     }
 
     // State after the last tick --------------------------------------------------------------------------------------
@@ -218,6 +248,21 @@ public interface Simulation {
      */
     default boolean clearPath(final double dx, final double dy, final double dz, final WorldView world) {
         return false;
+    }
+
+    /** The client's tab-list game mode for itself ({@code PlayerInfoUpdate} UPDATE_GAME_MODE), at its ack. */
+    default void tabListGameMode(final GameType mode) {
+    }
+
+    /**
+     * Something outside the player's own tick may move it in the client's level this tick (§15.6: a piston, a shulker
+     * box or shulker, a solid entity, a geyser, a rod pull): the tick is exempt.
+     */
+    default void externalMover(final boolean moving) {
+    }
+
+    /** Firework rockets attached to the player that the client holds: each boosts it after every tick (auth-sim §3.2). */
+    default void attachedRockets(final int count) {
     }
 
     Pose pose();

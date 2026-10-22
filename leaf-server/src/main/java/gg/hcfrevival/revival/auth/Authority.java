@@ -271,6 +271,22 @@ public final class Authority {
         return false;
     }
 
+    /**
+     * {@code ChunkMap.TrackedEntity.updatePlayer}, after the vanish check (patch 1015): whether player {@code target} is
+     * sent to {@code viewer} (design §11, {@code visibility.enabled}). Only players under authority are judged, from the
+     * blocks they were sent; everyone else sees what vanilla shows. Main thread.
+     */
+    public static boolean visibleTo(final net.minecraft.world.entity.Entity target, final ServerPlayer viewer) {
+        if (!(target instanceof final ServerPlayer player) || player == viewer) {
+            return true;
+        }
+        final gg.hcfrevival.revival.config.AuthoritativeSettings settings = gg.hcfrevival.revival.Revival.settings().authoritative();
+        if (!settings.visibilityEnabled()) {
+            return true;
+        }
+        return viewer.revivalAuth.sees(player, settings);
+    }
+
     /** {@code LivingEntity.resyncUsingItem}, before Paper resends the use flags. */
     public static void onServerResync(final net.minecraft.world.entity.Entity entity) {
         if (entity instanceof final ServerPlayer player) {

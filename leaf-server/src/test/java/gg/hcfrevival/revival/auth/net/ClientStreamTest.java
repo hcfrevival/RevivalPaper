@@ -133,4 +133,21 @@ class ClientStreamTest {
         stream.advancePosition(false, 0.0, 0.0, 0.0);
         assertTrue(stream.reminderDue());
     }
+
+    @Test
+    void aSecondMoveClaimAndAnOverflowAreProtocolViolations() {
+        final ClientStream stream = new ClientStream();
+        assertEquals(ClientStream.RECORDED, stream.recordChecked(new ServerboundMovePlayerPacket.StatusOnly(true, false)));
+        assertEquals(ClientStream.SECOND_CLAIM, stream.recordChecked(new ServerboundMovePlayerPacket.StatusOnly(true, false)));
+        stream.close(ServerboundClientTickEndPacket.INSTANCE, 0L);
+        // A client that never ends its tick: the window stops growing at the cap
+        int overflow = 0;
+        for (int i = 0; i < ClientStream.MAX_ITEMS + 10; i++) {
+            if (stream.recordChecked(new ServerboundSetCarriedItemPacket(i % 9)) == ClientStream.OVERFLOW) {
+                overflow++;
+            }
+        }
+        assertEquals(10, overflow);
+        assertTrue(stream.openWindowAgeNanos(System.nanoTime() + 1_000_000L) > 0L, "the open window has an age");
+    }
 }

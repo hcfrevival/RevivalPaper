@@ -69,6 +69,7 @@ public final class ClientStream {
     /** One client tick's worth of the stream. */
     public static final class Window {
         int tick;
+        long openedNanos;
         long closedNanos;
         byte[] kinds = new byte[16];
         @Nullable Object[] refs = new Object[16];
@@ -117,6 +118,9 @@ public final class ClientStream {
         }
 
         void add(final byte kind, final @Nullable Object ref, final int a, final int b) {
+            if (this.items == 0) {
+                this.openedNanos = System.nanoTime(); // drain replies open a window as much as packets do
+            }
             if (this.items == this.kinds.length) {
                 final int grown = this.items * 2;
                 this.kinds = Arrays.copyOf(this.kinds, grown);
@@ -134,6 +138,7 @@ public final class ClientStream {
         void clear() {
             Arrays.fill(this.refs, 0, this.items, null);
             this.items = 0;
+            this.openedNanos = 0L;
             this.acked.clear();
             this.lastCategory = GUI;
             this.tickGroupStarted = false;
@@ -198,12 +203,31 @@ public final class ClientStream {
      * server sees what the client sent).
      */
     public boolean record(final Packet<?> packet) {
+        return this.recordChecked(packet) == RECORDED;
+    }
+
+    // recordChecked results
+    public static final int RECORDED = 0;
+    /** Out of the vanilla order: counted, kept. */
+    public static final int OUT_OF_ORDER = 1;
+    /** A second move claim, input or sprint command in one window: a protocol violation. */
+    public static final int SECOND_CLAIM = 2;
+    /** Past {@link #MAX_ITEMS} in one window (a client that never ends its tick): dropped, a protocol violation. */
+    public static final int OVERFLOW = 3;
+
+    /** {@link #record}, saying how a packet broke the grammar ({@link #RECORDED} when it didn't). */
+    public int recordChecked(final Packet<?> packet) {
         final Window window = this.current;
+        if (window.items >= MAX_ITEMS) {
+            window.violations++;
+            this.violations++;
+            return OVERFLOW;
+        }
         final boolean reply = this.rotationReplyNext && packet instanceof ServerboundMovePlayerPacket.Rot;
         this.clearAdjacency();
         if (reply) {
             window.add(ROTATION_REPLY, packet, 0, 0);
-            return true;
+            return RECORDED;
         }
         final int category = category(packet);
         boolean legal = category >= window.lastCategory || category == KEYBIND && window.lastCategory == KEYBIND;
@@ -212,24 +236,31 @@ public final class ClientStream {
         } else {
             legal = !window.tickGroupStarted;
         }
+        boolean second = false;
         switch (category) {
-            case INPUT -> legal &= ++window.inputs == 1;
-            case SPRINT -> legal &= ++window.sprints == 1;
-            case MOVE -> legal &= ++window.moves == 1;
+            case INPUT -> second = ++window.inputs > 1;
+            case SPRINT -> second = ++window.sprints > 1;
+            case MOVE -> second = ++window.moves > 1;
             default -> {
             }
         }
+        legal &= !second;
         if (packet instanceof final ServerboundUseItemPacket ignored && this.releasedEarlier(window)) {
             legal = false; // use after release in one window: a vanilla client discards every click of the release tick
         }
         window.lastCategory = Math.max(window.lastCategory, category);
         window.add(PACKET, packet, category, 0);
-        if (window.items > MAX_ITEMS || !legal) {
+        if (!legal) {
             window.violations++;
             this.violations++;
-            return false;
+            return second ? SECOND_CLAIM : OUT_OF_ORDER;
         }
-        return true;
+        return RECORDED;
+    }
+
+    /** How long the window still open has held packets without its {@code TickEnd}, or 0. */
+    public long openWindowAgeNanos(final long nowNanos) {
+        return this.current.items == 0 ? 0L : nowNanos - this.current.openedNanos;
     }
 
     private boolean releasedEarlier(final Window window) {

@@ -15,10 +15,10 @@ axe disabling a shield, a finished meal) is reported so it reaches the
 client in a transaction.
 
 diff --git a/net/minecraft/server/network/ServerGamePacketListenerImpl.java b/net/minecraft/server/network/ServerGamePacketListenerImpl.java
-index 8b42eefe8717fff1986ee086e47ff2b0abe0c240..81cdb511b3ee004288085f6132310173a1ed51f0 100644
+index 10f015b7d83e78772484d309f8ed4baeba5ae34f..b65bfa38d8aa05308125e7a5cd1d3184f0394528 100644
 --- a/net/minecraft/server/network/ServerGamePacketListenerImpl.java
 +++ b/net/minecraft/server/network/ServerGamePacketListenerImpl.java
-@@ -1578,6 +1578,14 @@ public class ServerGamePacketListenerImpl
+@@ -1578,6 +1578,32 @@ public class ServerGamePacketListenerImpl
          }
      }
  
@@ -27,6 +27,24 @@ index 8b42eefe8717fff1986ee086e47ff2b0abe0c240..81cdb511b3ee004288085f6132310173
 +        if (this.hasClientLoaded() && !this.updateAwaitingTeleport()) {
 +            this.handlePlayerPositionChange(x, y, z, yRot, xRot, onGround, horizontalCollision);
 +        }
++    }
++
++    /**
++     * A server teleport is complete at its pong window (design §15.3): vanilla's bookkeeping for its accept, without
++     * taking the accept's coordinates (the truth already has the destination; the accept is judged as a claim).
++     */
++    public boolean revivalCompleteServerTeleport(final int id) {
++        if (id != this.awaitingTeleport || this.awaitingPositionFromClient == null) {
++            return false; // done already, or a later teleport is still on its way: vanilla waits for that one
++        }
++        this.player.absSnapTo(this.awaitingPositionFromClient.x, this.awaitingPositionFromClient.y, this.awaitingPositionFromClient.z,
++            this.player.getYRot(), this.player.getXRot());
++        this.lastGoodX = this.awaitingPositionFromClient.x;
++        this.lastGoodY = this.awaitingPositionFromClient.y;
++        this.lastGoodZ = this.awaitingPositionFromClient.z;
++        this.player.hasChangedDimension();
++        this.awaitingPositionFromClient = null;
++        return true;
 +    }
 +    // Revival end - Authoritative movement
 +

@@ -51,6 +51,8 @@ public final class PortSimulation implements Simulation {
     private boolean attackedThisTick;
     private boolean attackedLastTick;
     private final SimPlayer alternative = new SimPlayer();
+    private final SimPlayer forecastTruth = new SimPlayer();
+    private final SimPlayer forecastClient = new SimPlayer();
     private Input previousKeys = Input.EMPTY;
     private float previousYRot;
     private float previousXRot;
@@ -120,6 +122,21 @@ public final class PortSimulation implements Simulation {
         this.previousValid = false;
     }
 
+    private final double[] seedVelocity = new double[3];
+
+    @Override
+    public boolean seedFromMove(final double fromX, final double fromY, final double fromZ, final double toX, final double toY, final double toZ,
+                                final float yRot, final float xRot, final boolean onGround, final ClientView view, final WorldView world) {
+        this.seed(toX, toY, toZ, 0.0, 0.0, 0.0, yRot, xRot, onGround, view, world);
+        // p is the state the tick started from (its position and velocity are not read): the seed, synced from the view
+        final int why = this.sim.velocityAfterMove(this.player, fromX, fromY, fromZ, toX, toY, toZ, world, this.seedVelocity);
+        final double[] v = this.seedVelocity;
+        if ((why & MovementSim.VELOCITY_NO_TICK) == 0 && Double.isFinite(v[0]) && Double.isFinite(v[1]) && Double.isFinite(v[2])) {
+            this.sim.setVelocity(this.player, v[0], v[1], v[2]);
+        }
+        return why == 0;
+    }
+
     @Override
     public void unseed() {
         this.seeded = false;
@@ -180,13 +197,66 @@ public final class PortSimulation implements Simulation {
     @Override
     public void attributes(final List<ClientboundUpdateAttributesPacket.AttributeSnapshot> snapshots) {
         for (final ClientboundUpdateAttributesPacket.AttributeSnapshot snapshot : snapshots) {
-            this.sim.applyAttributeUpdate(this.player, snapshot.attribute(), snapshot.base(), List.copyOf(snapshot.modifiers()));
+            List<net.minecraft.world.entity.ai.attributes.AttributeModifier> modifiers = List.copyOf(snapshot.modifiers());
+            if (snapshot.attribute().equals(net.minecraft.world.entity.ai.attributes.Attributes.MOVEMENT_SPEED)) {
+                // §15.4: the truth has the sprint modifier only while it sprints. The client copies whatever the sync says
+                // (MC-69459), so a sync sent while sprinting and acked after the sprint ended would keep sprint speed
+                modifiers = sprintFromState(modifiers, this.player.sprinting);
+            }
+            this.sim.applyAttributeUpdate(this.player, snapshot.attribute(), snapshot.base(), modifiers);
         }
+    }
+
+    // The modifiers with the sprinting one present iff {@code sprinting}
+    static List<net.minecraft.world.entity.ai.attributes.AttributeModifier> sprintFromState(
+        final List<net.minecraft.world.entity.ai.attributes.AttributeModifier> modifiers, final boolean sprinting) {
+        boolean has = false;
+        for (final net.minecraft.world.entity.ai.attributes.AttributeModifier modifier : modifiers) {
+            has |= modifier.id().equals(gg.hcfrevival.revival.auth.view.ClientAttributes.SPRINTING_MODIFIER_ID);
+        }
+        if (has == sprinting) {
+            return modifiers;
+        }
+        final java.util.ArrayList<net.minecraft.world.entity.ai.attributes.AttributeModifier> out = new java.util.ArrayList<>(modifiers.size() + 1);
+        for (final net.minecraft.world.entity.ai.attributes.AttributeModifier modifier : modifiers) {
+            if (!modifier.id().equals(gg.hcfrevival.revival.auth.view.ClientAttributes.SPRINTING_MODIFIER_ID)) {
+                out.add(modifier);
+            }
+        }
+        if (sprinting) {
+            out.add(gg.hcfrevival.revival.auth.view.ClientAttributes.SPEED_MODIFIER_SPRINTING);
+        }
+        return out;
     }
 
     @Override
     public void localGameMode(final GameType mode) {
-        this.sim.setLocalGameModeSpectator(this.player, mode == GameType.SPECTATOR);
+        this.sim.setLocalGameMode(this.player, mode);
+    }
+
+    @Override
+    public void tabListGameMode(final GameType mode) {
+        this.sim.setTabListGameMode(this.player, mode); // before sync copies the view's mode: onGameModeChanged sees the change
+    }
+
+    @Override
+    public void externalMover(final boolean moving) {
+        this.player.externalMover = moving;
+    }
+
+    @Override
+    public void attachedRockets(final int count) {
+        this.rockets = count;
+    }
+
+    private int rockets;
+
+    // The client's tick, then its attached rockets' ticks (they tick after the player, in the order they were added)
+    private void tickWithRockets(final SimPlayer p, final WorldView world) {
+        this.sim.tick(p, this.input, world);
+        for (int i = 0; i < this.rockets; i++) {
+            this.sim.fireworkBoost(p);
+        }
     }
 
     @Override
@@ -218,6 +288,9 @@ public final class PortSimulation implements Simulation {
         } else {
             fresh.yRot = -180.0F;
         }
+        // The client's hidden options survive a new LocalPlayer (auth-sim §2, §3.1)
+        fresh.autoJumpOption = old.autoJumpOption;
+        fresh.sprintWindow = old.sprintWindow;
         this.player = fresh;
         this.seeded = false;
         this.beliefValid = false;
@@ -280,21 +353,44 @@ public final class PortSimulation implements Simulation {
     }
 
     @Override
+    public boolean beliefValid() {
+        return this.beliefOn && this.beliefValid;
+    }
+
+    @Override
+    public void rebaseBelief(final double x, final double y, final double z, final double vx, final double vy, final double vz) {
+        if (!this.beliefOn) {
+            return;
+        }
+        this.belief.copyFrom(this.player);
+        this.belief.setPos(x, y, z);
+        this.sim.setVelocity(this.belief, vx, vy, vz);
+        this.beliefValid = true;
+    }
+
+    @Override
+    public void beliefCorrected(final PositionMoveRotation change, final Set<Relative> relatives) {
+        if (this.beliefOn && this.beliefValid) {
+            this.sim.teleport(this.belief, change, relatives);
+        }
+    }
+
+    @Override
     public boolean correction(final int ticksAhead, final Input keys, final float yRot, final float xRot, final ClientView view, final WorldView world,
                               final double[] out) {
         if (!this.beliefValid) {
             return false;
         }
-        final SimPlayer truth = new SimPlayer();
+        final SimPlayer truth = this.forecastTruth;
         truth.copyFrom(this.player);
-        final SimPlayer client = new SimPlayer();
+        final SimPlayer client = this.forecastClient;
         client.copyFrom(this.belief);
         this.input.set(keys, yRot, xRot);
         for (int i = 0; i < ticksAhead; i++) {
             this.sync(truth, view);
-            this.sim.tick(truth, this.input, world);
+            this.tickWithRockets(truth, world);
             this.sync(client, view);
-            this.sim.tick(client, this.input, world);
+            this.tickWithRockets(client, world);
         }
         out[0] = truth.x - client.x;
         out[1] = truth.y - client.y;
@@ -302,7 +398,52 @@ public final class PortSimulation implements Simulation {
         out[3] = truth.vx - client.vx;
         out[4] = truth.vy - client.vy;
         out[5] = truth.vz - client.vz;
+        if (out.length >= 13) {
+            out[6] = insideShape(client.bb, world) ? 1.0 : 0.0;
+            out[7] = truth.x;
+            out[8] = truth.y;
+            out[9] = truth.z;
+            out[10] = truth.vx;
+            out[11] = truth.vy;
+            out[12] = truth.vz;
+        }
         return true;
+    }
+
+    /** Whether the client's box would be inside a block's collision shape, where its own collision no longer stops it. */
+    @Override
+    public boolean beliefInsideShape(final WorldView world) {
+        return this.beliefValid && insideShape(this.belief.bb, world);
+    }
+
+    // A box overlapping a collision shape by more than the collision epsilon (Shapes.collide ignores less)
+    static boolean insideShape(final gg.hcfrevival.revival.auth.sim.SimBox bb, final WorldView world) {
+        final double inset = 1.0E-7;
+        final net.minecraft.world.phys.AABB box = new net.minecraft.world.phys.AABB(bb.minX + inset, bb.minY + inset, bb.minZ + inset,
+            bb.maxX - inset, bb.maxY - inset, bb.maxZ - inset);
+        final int minX = net.minecraft.util.Mth.floor(box.minX);
+        final int minY = net.minecraft.util.Mth.floor(box.minY);
+        final int minZ = net.minecraft.util.Mth.floor(box.minZ);
+        final int maxX = net.minecraft.util.Mth.floor(box.maxX);
+        final int maxY = net.minecraft.util.Mth.floor(box.maxY);
+        final int maxZ = net.minecraft.util.Mth.floor(box.maxZ);
+        final net.minecraft.core.BlockPos.MutableBlockPos pos = new net.minecraft.core.BlockPos.MutableBlockPos();
+        for (int x = minX; x <= maxX; x++) {
+            for (int y = minY; y <= maxY; y++) {
+                for (int z = minZ; z <= maxZ; z++) {
+                    final net.minecraft.world.level.block.state.BlockState state = world.blockState(x, y, z);
+                    if (state.isAir()) {
+                        continue;
+                    }
+                    pos.set(x, y, z);
+                    final net.minecraft.world.phys.shapes.VoxelShape shape = state.getCollisionShape(net.minecraft.world.level.EmptyBlockGetter.INSTANCE, pos);
+                    if (!shape.isEmpty() && shape.move(x, y, z).toAabbs().stream().anyMatch(box::intersects)) {
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
     }
 
     @Override
@@ -312,7 +453,8 @@ public final class PortSimulation implements Simulation {
         if (this.beliefOn && this.beliefValid) {
             // The client's own state moves with its own inputs too (§15.5)
             this.sync(this.belief, view);
-            this.sim.tick(this.belief, this.input.set(keys, yRot, xRot), world);
+            this.input.set(keys, yRot, xRot);
+            this.tickWithRockets(this.belief, world);
         }
         this.sync(view);
         if (this.beliefOn) {
@@ -325,7 +467,8 @@ public final class PortSimulation implements Simulation {
         this.attackedLastTick = this.attackedThisTick;
         this.attackedThisTick = false;
         final boolean wasSprinting = p.sprinting;
-        this.sim.tick(p, this.input.set(keys, yRot, xRot), world);
+        this.input.set(keys, yRot, xRot);
+        this.tickWithRockets(p, world);
         if (wasSprinting != p.sprinting) {
             view.attributes.setSprinting(p.sprinting);
         }
@@ -386,7 +529,8 @@ public final class PortSimulation implements Simulation {
     // Runs the last tick's input on the alternative; keeps it when it lands exactly on the claim
     private boolean keepIfClaimed(final SimPlayer alternative, final ClientView view, final WorldView world, final double claimX, final double claimY,
                                   final double claimZ) {
-        this.sim.tick(alternative, this.input.set(this.previousKeys, this.previousYRot, this.previousXRot), world);
+        this.input.set(this.previousKeys, this.previousYRot, this.previousXRot);
+        this.tickWithRockets(alternative, world);
         if (alternative.x != claimX || alternative.y != claimY || alternative.z != claimZ) {
             return false;
         }

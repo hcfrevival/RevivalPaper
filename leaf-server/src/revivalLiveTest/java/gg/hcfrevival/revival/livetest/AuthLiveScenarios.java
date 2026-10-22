@@ -64,6 +64,7 @@ final class AuthLiveScenarios {
     private Input keys = Input.EMPTY;
     private Input previousKeys = Input.EMPTY;
     private float yaw;
+    private float pitch;
 
     // The client's own movement: the port, fed what the fake client applied
     private final ClientView clientView = new ClientView();
@@ -134,12 +135,31 @@ final class AuthLiveScenarios {
         this.tests.after(1, "auth: a double jump (flight toggle cancelled, setVelocity)", this::doubleJumpSetup);
         this.tests.after(5, "auth: a double jump (jump twice)", this::doubleJump);
         this.tests.after(40, "auth: a double jump reaches the client and the truth at its ack tick", this::doubleJumpChecked);
+        this.tests.after(1, "auth: vehicles: deny refuses mounting under enforce", this::mountRefused);
         this.tests.after(1, "auth: a second client watches the walker", this::viewerJoins);
         this.tests.after(30, "auth: the walker is on the viewer's path feed", this::viewerFed);
         this.tests.after(60, "auth: the viewer's mirror of a walking player never freezes and trails it by the K2 delay", this::mirrorChecked);
         this.hitRun(true);
         this.hitRun(false);
         this.tests.after(1, "auth: a double-tap sprint sword hit and an axe hit deal the same damage and knock with authority on and off", this::hitCompare);
+        this.tests.after(1, "auth: input grammar: face to face again under enforce", () -> this.hitSetup(true));
+        this.tests.after(15, "auth: input grammar: sword in hand", () -> this.hitWeapon(true, Items.DIAMOND_SWORD));
+        this.tests.after(30, "auth: input grammar: attacks while blocking", this::attackWhileBlocking);
+        this.tests.after(15, "auth: input grammar: attacks while blocking are dropped and reported", this::attackWhileBlockingChecked);
+        this.tests.after(1, "auth: input grammar: a container click while walking", this::clickWhileWalking);
+        this.tests.after(10, "auth: input grammar: a container click while walking is dropped and the container resent", this::clickWhileWalkingChecked);
+        this.tests.after(1, "auth: snowball, rod and arrow on a running victim", this::projectilesRunning);
+        this.tests.after(80, "auth: projectile knocks on a running victim reach client and truth at their ack tick", this::projectilesChecked);
+        this.tests.after(1, "auth: an honest block placement", this::placeSetup);
+        this.tests.after(8, "auth: an honest block placement (place)", this::place);
+        this.tests.after(10, "auth: an honest block placement is placed, predicted and needs no correction", this::placeChecked);
+        this.tests.after(5, "auth: killed mid-jump", this::killMidJump);
+        this.tests.after(30, "auth: killed mid-jump: no tick of a dying client is judged", this::killMidJumpChecked);
+        this.tests.after(1, "auth: respawn", this::respawn);
+        this.tests.after(40, "auth: respawn: the new local player is simulated from a standstill, bit for bit", this::respawnChecked);
+        this.tests.after(1, "auth: visibility: a wall between two players", this::visibilitySetup);
+        this.tests.after(30, "auth: visibility: a player behind a wall is not sent", this::visibilityHidden);
+        this.tests.after(20, "auth: visibility: shown again as soon as the wall is gone", this::visibilityShown);
         this.tests.after(2, "auth: cleanup", this::cleanup);
     }
 
@@ -201,11 +221,20 @@ final class AuthLiveScenarios {
                 this.clientView.entityData(data.packedItems(), this.clientEcho);
             } else if (packet instanceof final net.minecraft.network.protocol.game.ClientboundPlayerAbilitiesPacket abilities) {
                 this.clientView.abilities(abilities);
+            } else if (packet instanceof final net.minecraft.network.protocol.game.ClientboundSetHealthPacket health) {
+                this.clientView.health(health);
+            } else if (packet instanceof final net.minecraft.network.protocol.game.ClientboundRespawnPacket respawn) {
+                // A new LocalPlayer: standing still where the server puts it, PlayerLoaded again
+                final boolean keepData = (respawn.dataToKeep() & net.minecraft.network.protocol.game.ClientboundRespawnPacket.KEEP_ENTITY_DATA) != 0;
+                final boolean keepAttributes = (respawn.dataToKeep() & net.minecraft.network.protocol.game.ClientboundRespawnPacket.KEEP_ATTRIBUTE_MODIFIERS) != 0;
+                this.clientView.respawn(keepAttributes, keepData);
+                this.clientModel.respawn(keepData, keepAttributes);
+                this.client.respawned();
             }
         }
         this.preTick.accept(this.client.ticks); // this tick's keybinds, before it moves
         final boolean wasFlying = this.clientView.flying();
-        this.clientModel.tick(this.keys, this.previousKeys, this.yaw, 0.0F, 0, -1, false, this.clientView, this.clientWorld);
+        this.clientModel.tick(this.keys, this.previousKeys, this.yaw, this.pitch, 0, -1, false, this.clientView, this.clientWorld);
         this.previousKeys = this.keys;
         if (this.clientView.flying() != wasFlying) {
             // LocalPlayer.aiStep toggled flight (double jump) and sent it at once, before the tick's input and move
@@ -216,7 +245,7 @@ final class AuthLiveScenarios {
         final Vec3 position = new Vec3(this.clientModel.x(), this.clientModel.y(), this.clientModel.z());
         final List<Packet<? super net.minecraft.network.protocol.game.ServerGamePacketListener>> sent = List.copyOf(this.actions);
         this.actions.clear();
-        this.client.clientTick(sent, this.keys, this.clientModel.sprinting(), position, this.yaw, 0.0F, this.clientModel.onGround(),
+        this.client.clientTick(sent, this.keys, this.clientModel.sprinting(), position, this.yaw, this.pitch, this.clientModel.onGround(),
             this.clientModel.horizontalCollision());
         if (this.viewer != null) {
             this.viewer.clientTick(List.of(), Input.EMPTY, false, this.viewer.clientPosition(), 0.0F, 0.0F, true, false);
@@ -529,6 +558,22 @@ final class AuthLiveScenarios {
         boolean moveFired;
         boolean flightArmed;
         boolean flightFired;
+        final List<String> anomalies = new ArrayList<>();
+
+        @org.bukkit.event.EventHandler
+        public void onAnomaly(final gg.hcfrevival.revival.api.event.AuthInputAnomalyEvent event) {
+            this.anomalies.add(event.getPlayer().getName() + " " + event.getKind() + " " + event.getValue());
+        }
+        double victimDamage = -1.0;
+
+        // The damage dealt, taken at the hit: peaceful regenerates health between the hit and the check
+        @org.bukkit.event.EventHandler(priority = org.bukkit.event.EventPriority.MONITOR, ignoreCancelled = true)
+        public void onDamage(final org.bukkit.event.entity.EntityDamageByEntityEvent event) {
+            final FakeClient victim = AuthLiveScenarios.this.viewer;
+            if (victim != null && event.getEntity().getUniqueId().equals(victim.player.getUUID())) {
+                this.victimDamage = event.getFinalDamage();
+            }
+        }
 
         @org.bukkit.event.EventHandler
         public void onMove(final org.bukkit.event.player.PlayerMoveEvent event) {
@@ -646,6 +691,18 @@ final class AuthLiveScenarios {
         };
     }
 
+    private void mountRefused() {
+        final long before = this.auth.stats().mountsRefused();
+        final net.minecraft.world.entity.Entity boat = net.minecraft.world.entity.EntityTypes.OAK_BOAT.create(this.level,
+            net.minecraft.world.entity.EntitySpawnReason.TRIGGERED);
+        boat.setPos(this.client.player.getX() + 1.5, this.client.player.getY(), this.client.player.getZ());
+        this.level.addFreshEntity(boat);
+        final boolean mounted = this.client.player.startRiding(boat, true, true);
+        this.tests.check(!mounted && this.client.player.getVehicle() == null, "even a forced mount is refused");
+        this.tests.check(this.auth.stats().mountsRefused() == before + 1, "and counted");
+        boat.discard();
+    }
+
     // Replication ----------------------------------------------------------------------------------------------------
 
     private FakeClient viewer;
@@ -724,7 +781,7 @@ final class AuthLiveScenarios {
 
     /** One run's results: the victim's knock and damage, sword then axe. */
     private final Vec3[][] knocks = new Vec3[2][2];
-    private final float[][] damages = new float[2][2];
+    private final double[][] damages = new double[2][2];
     private boolean sprintAtSwing;
     private int hitMark;
     private long acceptedBefore;
@@ -770,6 +827,7 @@ final class AuthLiveScenarios {
     private void hitSwing(final boolean sprintFirst) {
         this.hitMark = this.viewer.received.size();
         this.acceptedBefore = this.auth.stats().attacksAccepted();
+        this.plugins.victimDamage = -1.0;
         this.hotbarStart = -1;
         final int attackAt = sprintFirst ? 3 : 0;
         this.preTick = tick -> {
@@ -801,7 +859,7 @@ final class AuthLiveScenarios {
             }
         }
         this.knocks[run][which] = knock;
-        this.damages[run][which] = 20.0F - this.viewer.player.getHealth();
+        this.damages[run][which] = this.plugins.victimDamage;
         if (which == 0) {
             this.tests.check(this.sprintAtSwing, "the attacker was sprinting when it hit");
         }
@@ -824,7 +882,315 @@ final class AuthLiveScenarios {
         final Vec3 sprintKnock = this.knocks[1][0];
         this.tests.check(Math.abs(sprintKnock.x) < 1.0E-6 && Math.abs(sprintKnock.y - 0.4608) < 1.0E-3 && Math.abs(sprintKnock.z - 0.9) < 1.0E-3,
             "the sword hit carried the armed sprint knock (0, 0.4608, 0.9): " + sprintKnock);
-        this.tests.check(this.damages[1][0] == 8.0F && this.damages[1][1] == 9.0F, "legacy diamond sword 8, charged iron axe 9");
+        this.tests.check(this.damages[1][0] == 8.0 && this.damages[1][1] == 9.0, "legacy diamond sword 8, charged iron axe 9 ("
+            + this.damages[1][0] + ", " + this.damages[1][1] + ")");
+    }
+
+    // §15.4 input grammar ------------------------------------------------------------------------------------------
+
+    private long grammarBefore;
+    private long droppedBefore;
+
+    private void attackWhileBlocking() {
+        this.tests.check(this.auth.mode() == AuthMode.ENFORCE, "the attacker is under enforce again (" + this.auth.mode() + ")");
+        this.grammarBefore = this.auth.inputRules().count(gg.hcfrevival.revival.auth.input.InputRules.ATTACK_WHILE_USING);
+        this.droppedBefore = this.auth.stats().grammarDropped();
+        this.correctionsBefore = this.auth.stats().corrections();
+        this.plugins.victimDamage = -1.0;
+        this.plugins.anomalies.clear();
+        this.hotbarStart = -1;
+        this.preTick = tick -> {
+            if (this.hotbarStart < 0) {
+                this.hotbarStart = tick;
+            }
+            final int k = tick - this.hotbarStart;
+            if (k == 0) {
+                // Right click: block with the sword
+                this.actions.add(new ServerboundUseItemPacket(InteractionHand.MAIN_HAND, 2, this.yaw, 0.0F));
+                this.clientModel.startUsingItem(InteractionHand.MAIN_HAND);
+            } else if (k >= 2 && k <= 4) {
+                // A vanilla client throws attack clicks away while it uses an item; this one sends them
+                this.actions.add(new net.minecraft.network.protocol.game.ServerboundAttackPacket(this.viewer.player.getId()));
+                this.clientModel.clientAttack(true, this.clientView);
+            } else if (k == 6) {
+                this.actions.add(new net.minecraft.network.protocol.game.ServerboundPlayerActionPacket(
+                    net.minecraft.network.protocol.game.ServerboundPlayerActionPacket.Action.RELEASE_USE_ITEM, net.minecraft.core.BlockPos.ZERO,
+                    net.minecraft.core.Direction.DOWN));
+                this.clientModel.releaseUsingItem();
+                this.preTick = ignored -> {
+                };
+            }
+        };
+    }
+
+    private void attackWhileBlockingChecked() {
+        final long broken = this.auth.inputRules().count(gg.hcfrevival.revival.auth.input.InputRules.ATTACK_WHILE_USING) - this.grammarBefore;
+        this.tests.check(broken == 3, "three attacks while blocking broke the grammar (" + broken + ")");
+        this.tests.check(this.auth.stats().grammarDropped() - this.droppedBefore == 3, "and were not handled (" + (this.auth.stats().grammarDropped() - this.droppedBefore) + ")");
+        this.tests.check(this.plugins.victimDamage < 0.0, "the victim took no hit (" + this.plugins.victimDamage + ")");
+        this.tests.check(String.valueOf(this.auth.lastHitVerdict()).startsWith("INVALID grammar attack-while-using"), "the HUD's verdict: " + this.auth.lastHitVerdict());
+        this.tests.check(this.plugins.anomalies.stream().anyMatch(line -> line.startsWith("AuthWalker input-grammar")), "AuthInputAnomalyEvent fired: " + this.plugins.anomalies);
+        this.tests.check(this.auth.stats().corrections() == this.correctionsBefore, "the client's own slowdown from those attacks stayed modelled: no correction");
+        final Simulation sim = this.auth.simulation();
+        this.tests.check(this.clientModel.x() == sim.x() && this.clientModel.y() == sim.y() && this.clientModel.z() == sim.z(), "client and truth agree bit for bit");
+    }
+
+    private void clickWhileWalking() {
+        this.grammarBefore = this.auth.inputRules().count(gg.hcfrevival.revival.auth.input.InputRules.CLICK_WHILE_MOVING);
+        this.droppedBefore = this.auth.stats().grammarDropped();
+        this.receivedMark = this.client.received.size();
+        this.yaw = 180.0F;
+        this.keys = FORWARD;
+        this.walked = 0;
+        this.hotbarStart = -1;
+        this.preTick = tick -> {
+            if (this.hotbarStart < 0) {
+                this.hotbarStart = tick;
+            }
+            if (tick - this.hotbarStart == 3) {
+                // An inventory move: a click in the player's own inventory while W is held
+                this.actions.add(new net.minecraft.network.protocol.game.ServerboundContainerClickPacket(0, this.client.player.inventoryMenu.getStateId(),
+                    (short) 36, (byte) 0, net.minecraft.world.inventory.ContainerInput.PICKUP, new it.unimi.dsi.fastutil.ints.Int2ObjectOpenHashMap<>(),
+                    net.minecraft.network.HashedStack.EMPTY));
+                this.preTick = ignored -> {
+                };
+            }
+        };
+        this.script = tick -> {
+            if (this.keys == FORWARD && ++this.walked >= 6) {
+                this.keys = Input.EMPTY;
+            }
+        };
+    }
+
+    private void clickWhileWalkingChecked() {
+        final long broken = this.auth.inputRules().count(gg.hcfrevival.revival.auth.input.InputRules.CLICK_WHILE_MOVING) - this.grammarBefore;
+        this.tests.check(broken == 1, "the click while walking broke the grammar (" + broken + ")");
+        this.tests.check(this.auth.stats().grammarDropped() - this.droppedBefore == 1, "and was not handled");
+        this.tests.check(!this.client.receivedOfType(net.minecraft.network.protocol.game.ClientboundContainerSetContentPacket.class, this.receivedMark).isEmpty(),
+            "the client got its inventory back as the server has it");
+        this.script = tick -> {
+        };
+    }
+
+    // §15.5: projectile knocks on a running victim ---------------------------------------------------------------------
+
+    private void projectilesRunning() {
+        this.tests.check(this.auth.mode() == AuthMode.ENFORCE, "the victim runs under enforce (" + this.auth.mode() + ")");
+        this.correctionsBefore = this.auth.stats().corrections();
+        this.overBefore = this.auth.stats().overThreshold();
+        this.receivedMark = this.client.received.size();
+        this.hotbarStart = -1;
+        this.yaw = 0.0F;
+        this.keys = FORWARD;
+        final ServerLevel level = this.level;
+        final net.minecraft.server.level.ServerPlayer thrower = this.viewer.player;
+        this.preTick = tick -> {
+            if (this.hotbarStart < 0) {
+                this.hotbarStart = tick;
+            }
+            final int k = tick - this.hotbarStart;
+            final net.minecraft.server.level.ServerPlayer victim = this.client.player;
+            // 25 ticks apart: past the 20-tick damage window, so each one knocks
+            if (k == 5) {
+                final net.minecraft.world.entity.projectile.throwableitemprojectile.Snowball snowball =
+                    new net.minecraft.world.entity.projectile.throwableitemprojectile.Snowball(level, thrower, new ItemStack(Items.SNOWBALL));
+                victim.hurtServer(level, level.damageSources().thrown(snowball, thrower), 0.0F);
+            } else if (k == 30) {
+                final net.minecraft.world.entity.projectile.FishingHook hook = new net.minecraft.world.entity.projectile.FishingHook(thrower, level, 0, 0);
+                victim.hurtServer(level, level.damageSources().thrown(hook, thrower), 0.0F);
+            } else if (k == 55) {
+                final net.minecraft.world.entity.projectile.arrow.Arrow arrow = new net.minecraft.world.entity.projectile.arrow.Arrow(level, thrower,
+                    new ItemStack(Items.ARROW), new ItemStack(Items.BOW));
+                arrow.setDeltaMovement(0.0, 0.0, 2.0);
+                victim.hurtServer(level, level.damageSources().arrow(arrow, thrower), 1.0F);
+            } else if (k == 70) {
+                this.keys = Input.EMPTY;
+                this.preTick = ignored -> {
+                };
+            }
+        };
+    }
+
+    private void projectilesChecked() {
+        final List<Vec3> knocks = this.selfMotions(this.receivedMark);
+        this.tests.check(knocks.size() == 3, "three knocks reached the running client: " + knocks);
+        this.tests.check(this.auth.stats().corrections() == this.correctionsBefore, "no correction: each knock reached the truth at the client's tick ("
+            + (this.auth.stats().corrections() - this.correctionsBefore) + ")");
+        this.tests.check(this.auth.stats().overThreshold() == this.overBefore, "no diverged tick (" + (this.auth.stats().overThreshold() - this.overBefore) + ")");
+        final Simulation sim = this.auth.simulation();
+        this.tests.check(this.clientModel.x() == sim.x() && this.clientModel.y() == sim.y() && this.clientModel.z() == sim.z(), "client and truth agree bit for bit");
+        this.client.player.setHealth(20.0F);
+    }
+
+    // §15.2: an honest placement --------------------------------------------------------------------------------------
+
+    private net.minecraft.core.BlockPos placed;
+    private long refusedBefore;
+
+    private void placeSetup() {
+        this.preTick = tick -> {
+        };
+        this.script = tick -> {
+        };
+        this.keys = Input.EMPTY;
+        final ItemStack stone = new ItemStack(Items.STONE, 16);
+        final int slot = this.client.player.getInventory().getSelectedSlot();
+        this.client.player.getInventory().setItem(slot, stone);
+        this.clientView.items.setInventory(slot, stone);
+        this.yaw = 0.0F;
+        this.pitch = 60.0F; // looking down at the ground ahead
+    }
+
+    private void place() {
+        this.tests.check(this.auth.mode() == AuthMode.ENFORCE, "under enforce (" + this.auth.mode() + ")");
+        this.correctionsBefore = this.auth.stats().corrections();
+        this.refusedBefore = this.auth.stats().predictionsRefused();
+        // What the client's crosshair is on: the server player stands on the truth with the tick's rotation
+        final net.minecraft.world.phys.HitResult hit = this.client.player.pick(this.client.player.blockInteractionRange(), 1.0F, false);
+        this.tests.check(hit instanceof net.minecraft.world.phys.BlockHitResult, "the crosshair is on a block (" + hit + ")");
+        final net.minecraft.world.phys.BlockHitResult block = (net.minecraft.world.phys.BlockHitResult) hit;
+        this.placed = block.getBlockPos().relative(block.getDirection());
+        this.actions.add(new net.minecraft.network.protocol.game.ServerboundUseItemOnPacket(InteractionHand.MAIN_HAND, block, 7));
+    }
+
+    private void placeChecked() {
+        this.tests.check(this.level.getBlockState(this.placed).is(net.minecraft.world.level.block.Blocks.STONE), "the server placed it at " + this.placed);
+        this.tests.check(this.auth.stats().predictionsRefused() == this.refusedBefore, "a vanilla client predicts it: admitted ("
+            + (this.auth.stats().predictionsRefused() - this.refusedBefore) + " refused)");
+        this.tests.check(this.auth.stats().corrections() == this.correctionsBefore, "no correction (" + (this.auth.stats().corrections() - this.correctionsBefore) + ")");
+        this.level.setBlockAndUpdate(this.placed, net.minecraft.world.level.block.Blocks.AIR.defaultBlockState());
+        this.pitch = 0.0F;
+    }
+
+    // §15.3: death is an exempt state from the client stream ----------------------------------------------------------
+
+    private long overBefore;
+    private long withinBefore;
+    private long deadBefore;
+
+    private void killMidJump() {
+        final AuthStats stats = this.auth.stats();
+        this.correctionsBefore = stats.corrections();
+        this.overBefore = stats.overThreshold();
+        this.withinBefore = stats.withinThreshold();
+        this.deadBefore = stats.exempt(AuthStats.EXEMPT_DEAD);
+        this.hotbarStart = -1;
+        this.preTick = tick -> {
+            if (this.hotbarStart < 0) {
+                this.hotbarStart = tick;
+            }
+            final int k = tick - this.hotbarStart;
+            this.keys = k == 0 ? JUMP : Input.EMPTY;
+            if (k == 4) {
+                // A console /kill near the top of the jump, between client ticks
+                this.client.player.kill(this.level);
+                this.preTick = ignored -> {
+                };
+            }
+        };
+    }
+
+    private void killMidJumpChecked() {
+        final AuthStats stats = this.auth.stats();
+        this.tests.check(this.client.player.isDeadOrDying() && this.auth.view().dead(), "the client saw its death");
+        this.tests.check(stats.exempt(AuthStats.EXEMPT_DEAD) > this.deadBefore, "dead ticks are exempt (" + (stats.exempt(AuthStats.EXEMPT_DEAD) - this.deadBefore) + ")");
+        this.tests.check(stats.overThreshold() == this.overBefore && stats.withinThreshold() == this.withinBefore,
+            "no diverged tick around the death (over " + (stats.overThreshold() - this.overBefore) + ", within " + (stats.withinThreshold() - this.withinBefore) + ")");
+        this.tests.check(stats.corrections() == this.correctionsBefore, "no correction (" + (stats.corrections() - this.correctionsBefore) + ")");
+    }
+
+    private void respawn() {
+        this.overBefore = this.auth.stats().overThreshold();
+        this.withinBefore = this.auth.stats().withinThreshold();
+        this.correctionsBefore = this.auth.stats().corrections();
+        this.enforceCompared = this.auth.stats().compared();
+        this.actions.add(new net.minecraft.network.protocol.game.ServerboundClientCommandPacket(
+            net.minecraft.network.protocol.game.ServerboundClientCommandPacket.Action.PERFORM_RESPAWN));
+    }
+
+    private void respawnChecked() {
+        final AuthStats stats = this.auth.stats();
+        this.tests.check(!this.client.player.isDeadOrDying() && !this.auth.view().dead(), "alive again");
+        this.tests.check(stats.compared() > this.enforceCompared, "its claims are compared again (" + (stats.compared() - this.enforceCompared) + ")");
+        this.tests.check(stats.overThreshold() == this.overBefore && stats.withinThreshold() == this.withinBefore,
+            "no diverged tick after the respawn (over " + (stats.overThreshold() - this.overBefore) + ", within " + (stats.withinThreshold() - this.withinBefore) + ")");
+        this.tests.check(stats.corrections() == this.correctionsBefore, "no correction (" + (stats.corrections() - this.correctionsBefore) + ")");
+        final Simulation sim = this.auth.simulation();
+        this.tests.check(this.clientModel.x() == sim.x() && this.clientModel.y() == sim.y() && this.clientModel.z() == sim.z(),
+            "client and truth agree bit for bit: " + new Vec3(this.clientModel.x(), this.clientModel.y(), this.clientModel.z()) + " vs " + new Vec3(sim.x(), sim.y(), sim.z()));
+    }
+
+    // §11 visibility ---------------------------------------------------------------------------------------------------
+
+    private int wallX;
+    private int wallY;
+    private int wallZ;
+
+    private static void visibility(final boolean enabled) {
+        try {
+            final java.io.File file = new java.io.File("revival.yml");
+            final org.bukkit.configuration.file.YamlConfiguration yaml = org.bukkit.configuration.file.YamlConfiguration.loadConfiguration(file);
+            yaml.set("authoritative.visibility.enabled", enabled);
+            yaml.save(file);
+        } catch (final java.io.IOException failure) {
+            throw new IllegalStateException(failure);
+        }
+        gg.hcfrevival.revival.config.RevivalConfig.reload();
+    }
+
+    private void wall(final net.minecraft.world.level.block.state.BlockState state) {
+        for (int x = this.wallX - 8; x <= this.wallX + 8; x++) {
+            for (int y = this.wallY; y < this.wallY + 8; y++) {
+                this.level.setBlockAndUpdate(new net.minecraft.core.BlockPos(x, y, this.wallZ), state);
+            }
+        }
+    }
+
+    private void visibilitySetup() {
+        this.preTick = tick -> {
+        };
+        this.script = tick -> {
+        };
+        this.keys = Input.EMPTY;
+        this.tests.check(this.viewer.player.revivalAuth.mode() != AuthMode.OFF, "the viewer is under authority (" + this.viewer.player.revivalAuth.mode() + ")");
+        final int x = Mth.floor(this.client.player.getX());
+        final int z = Mth.floor(this.client.player.getZ()) + 30;
+        final int ground = this.level.getHeight(Heightmap.Types.MOTION_BLOCKING, x, z);
+        this.wallX = x;
+        this.wallY = ground;
+        this.wallZ = z + 10;
+        this.wall(net.minecraft.world.level.block.Blocks.STONE.defaultBlockState());
+        this.yaw = 0.0F;
+        this.client.player.connection.teleport(x + 0.5, ground, z + 0.5, 0.0F, 0.0F);
+        this.viewer.player.connection.teleport(x + 0.5, ground, z + 20.5, 180.0F, 0.0F);
+        visibility(true);
+        this.tests.check(gg.hcfrevival.revival.Revival.settings().authoritative().visibilityEnabled(), "visibility.enabled after /revival reload");
+        this.receivedMark = this.viewer.received.size();
+    }
+
+    private void visibilityHidden() {
+        this.tests.check(this.viewer.player.revivalAuth.visibility().hidden().contains(this.client.player.getId()),
+            "the walker is hidden from the viewer (hides " + this.viewer.player.revivalAuth.visibility().hides() + ")");
+        boolean removed = false;
+        for (final net.minecraft.network.protocol.game.ClientboundRemoveEntitiesPacket remove
+            : this.viewer.receivedOfType(net.minecraft.network.protocol.game.ClientboundRemoveEntitiesPacket.class, this.receivedMark)) {
+            removed |= remove.entityIds().contains(this.client.player.getId());
+        }
+        this.tests.check(removed, "the viewer's client was told to remove the walker");
+        this.wall(net.minecraft.world.level.block.Blocks.AIR.defaultBlockState());
+        this.receivedMark = this.viewer.received.size();
+    }
+
+    private void visibilityShown() {
+        this.tests.check(!this.viewer.player.revivalAuth.visibility().hidden().contains(this.client.player.getId()), "the walker is visible again");
+        boolean added = false;
+        for (final net.minecraft.network.protocol.game.ClientboundAddEntityPacket add
+            : this.viewer.receivedOfType(net.minecraft.network.protocol.game.ClientboundAddEntityPacket.class, this.receivedMark)) {
+            added |= add.getId() == this.client.player.getId();
+        }
+        this.tests.check(added, "the walker was spawned again on the viewer's client");
+        visibility(false);
     }
 
     private void cleanup() {
@@ -1080,6 +1446,21 @@ final class AuthLiveScenarios {
         @Override
         public boolean retryWithSlot(final int slot, final ClientView view, final WorldView world, final double claimX, final double claimY, final double claimZ) {
             return this.delegate.retryWithSlot(slot, view, world, claimX, claimY, claimZ);
+        }
+
+        @Override
+        public void tabListGameMode(final net.minecraft.world.level.GameType mode) {
+            this.delegate.tabListGameMode(mode);
+        }
+
+        @Override
+        public void externalMover(final boolean moving) {
+            this.delegate.externalMover(moving);
+        }
+
+        @Override
+        public void attachedRockets(final int count) {
+            this.delegate.attachedRockets(count);
         }
 
         @Override

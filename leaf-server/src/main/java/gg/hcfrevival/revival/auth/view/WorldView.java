@@ -35,7 +35,8 @@ import org.jspecify.annotations.Nullable;
  * denied is not honored by the truth, §15.2 {@code honor-denied-predictions: false}); judging what a vanilla client would
  * have predicted on its own is not implemented yet. Main thread only.
  */
-public final class WorldView implements gg.hcfrevival.revival.auth.sim.SimWorld, gg.hcfrevival.revival.auth.combat.PickWorld {
+public final class WorldView implements gg.hcfrevival.revival.auth.sim.SimWorld, gg.hcfrevival.revival.auth.combat.PickWorld,
+    gg.hcfrevival.revival.auth.visibility.OcclusionWorld {
 
     /** Called when a prediction ends with a different block than the client predicted (it may have to snap back). */
     public interface RevertListener {
@@ -303,15 +304,20 @@ public final class WorldView implements gg.hcfrevival.revival.auth.sim.SimWorld,
 
     /**
      * A client prediction made in this tick's keybinds with sequence {@code s}: the client changed the block before this
-     * tick's movement. The predicted state is the live state after the server handled the action; the state the client
+     * tick's movement. {@code admitted}: a vanilla client would have made it (PredictionRules); otherwise only the sequence
+     * is kept. The predicted state is the live state after the server handled the action; the state the client
      * returns to at the ack is what it had before. Returns false for a sequence that did not increase (a violation).
      */
-    public boolean predict(final BlockPos pos, final int sequence, final int window, final double playerX, final double playerY, final double playerZ) {
+    public boolean predict(final BlockPos pos, final int sequence, final int window, final double playerX, final double playerY, final double playerZ,
+                           final boolean admitted) {
         if (sequence < this.lastSequence) {
             this.sequenceViolations++;
             return false;
         }
         this.lastSequence = sequence;
+        if (!admitted) {
+            return true; // not a change a vanilla client predicts (§15.2): the server's block update brings it, at its ack
+        }
         final long key = pos.asLong();
         final BlockState live = this.liveLevel().getBlockState(pos);
         final Prediction existing = this.predictions.get(key);
@@ -379,8 +385,23 @@ public final class WorldView implements gg.hcfrevival.revival.auth.sim.SimWorld,
     }
 
     /** Forgets every overlay entry (resync from the server's world). */
+    /** §11: a full opaque cube as this client was sent it hides what is behind it. */
+    @Override
+    public boolean occludes(final int x, final int y, final int z) {
+        return this.level != null && this.blockState(x, y, z).isSolidRender();
+    }
+
     public void clear() {
         this.sent.clear();
+        this.pinned.clear();
+        this.predictions.clear();
+    }
+
+    /**
+     * A resync from the server: pinned states and predictions go, but never the sent states, which are what the client
+     * was sent (plugin fake blocks included) and which a resync does not change (cheat suite #32).
+     */
+    public void clearUnsent() {
         this.pinned.clear();
         this.predictions.clear();
     }

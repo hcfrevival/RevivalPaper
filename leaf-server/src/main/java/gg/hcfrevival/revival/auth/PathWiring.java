@@ -10,6 +10,7 @@ import java.util.List;
 import java.util.Set;
 import java.util.function.Predicate;
 import net.minecraft.network.protocol.Packet;
+import net.minecraft.server.MinecraftServer;
 import net.minecraft.network.protocol.game.ClientGamePacketListener;
 import net.minecraft.network.protocol.game.ClientboundAddEntityPacket;
 import net.minecraft.network.protocol.game.ClientboundEntityPositionSyncPacket;
@@ -46,6 +47,16 @@ public final class PathWiring implements PathSink {
         final Reference2ObjectOpenHashMap<ServerPlayer, Fed> viewers = new Reference2ObjectOpenHashMap<>();
         /** Viewers that still take the vanilla tracker's movement packets. */
         final Predicate<ServerPlayer> vanilla = viewer -> !this.viewers.containsKey(viewer);
+        /** The server tick each viewer was last re-paired for an inexact mirror. */
+        final it.unimi.dsi.fastutil.objects.Reference2IntOpenHashMap<ServerPlayer> repaired = new it.unimi.dsi.fastutil.objects.Reference2IntOpenHashMap<>();
+
+        boolean mayRepair(final ServerPlayer viewer, final int now, final AuthoritativeSettings settings) {
+            if (this.repaired.containsKey(viewer) && now - this.repaired.getInt(viewer) < settings.repairIntervalTicks()) {
+                return false;
+            }
+            this.repaired.put(viewer, now);
+            return true;
+        }
 
         Target(final int entityId, final AuthoritativeSettings settings) {
             this.feed = new PathFeed(entityId, settings.pathBuffer(),
@@ -140,6 +151,9 @@ public final class PathWiring implements PathSink {
                 if (fed != null) {
                     fed.viewer.despawned();
                 }
+                if (viewer.isRemoved()) {
+                    target.repaired.removeInt(viewer);
+                }
             }
         }
     }
@@ -191,8 +205,10 @@ public final class PathWiring implements PathSink {
                 continue;
             }
             PathFeed.Result result = drainOne(fed, player.getId());
-            if (result == PathFeed.Result.RESPAWN) {
-                // R6: a jump the client would snap; re-pair (onPaired puts a fresh viewer on the feed), then send again
+            if (result == PathFeed.Result.RESPAWN || inexact(fed, player.getId()) && target.mayRepair(viewer, MinecraftServer.currentTick, settings)) {
+                // R6: a jump the client would snap; or the viewer's mirror of the target lost exactness (a lag spike past the
+                // ack deadline, a late pong), which only a spawn restores and without which no hit on it can be judged.
+                // Re-pair (onPaired puts a fresh viewer on the feed), then send again
                 serverEntity.removePairing(viewer);
                 serverEntity.addPairing(viewer);
                 final Fed fresh = target.viewers.get(viewer);
@@ -201,6 +217,15 @@ public final class PathWiring implements PathSink {
                 }
             }
         }
+    }
+
+    // The viewer's mirror of the target is present but no longer the client's exactly, for a reason a spawn fixes
+    private static boolean inexact(final Fed fed, final int targetId) {
+        if (!(fed.player.revivalAuth.combatState instanceof final MirrorBook book)) {
+            return false;
+        }
+        final RemoteMirror mirror = book.mirror(targetId);
+        return mirror != null && mirror.present() && !mirror.exact() && !mirror.passenger() && mirror.pose() != net.minecraft.world.entity.Pose.SLEEPING;
     }
 
     private static PathFeed.Result drainOne(final Fed fed, final int targetId) {

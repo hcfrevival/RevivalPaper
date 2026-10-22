@@ -77,14 +77,19 @@ public final class OutboundClassifier {
     public static final int SELF_INFO = 28;
     /** {@code SetPlayerTeam}: the client's collision rule for itself (the authority precondition). */
     public static final int TEAM = 29;
-    /** {@code BlockEvent} of a piston: pistons move the player on the client. */
+    /** {@code BlockEvent} of a piston or a shulker box: their moving blocks and lids move the player on the client. */
     public static final int PISTON = 30;
     /** {@code SetCamera}: spectating another entity (exempt). */
     public static final int CAMERA = 31;
     /** {@code EntityEvent 31}: a fishing hook pulls its hooked entity on the client. */
     public static final int ROD_PULL = 32;
+    /**
+     * A firework rocket's {@code AddEntity}, its entity data (the attachment) or its {@code RemoveEntities}: a rocket
+     * attached to the player boosts it on the client every tick it is held (auth-sim §3.2).
+     */
+    public static final int ROCKET = 33;
 
-    public static final int KINDS = 33;
+    public static final int KINDS = 34;
 
     // Families: the packet type alone decides, or it decides together with the entity id
     private static final int F_SELF_ID = -1;        // SetEntityMotion, effects, entity event: self or nothing
@@ -158,6 +163,14 @@ public final class OutboundClassifier {
      *                       {@code AddEntity}/{@code RemoveEntities}); moves of anything else are not logged
      */
     public static int classify(final Packet<?> packet, final int self, final java.util.UUID selfUuid, final IntSet trackedPlayers) {
+        return classify(packet, self, selfUuid, trackedPlayers, it.unimi.dsi.fastutil.ints.IntSets.EMPTY_SET);
+    }
+
+    /**
+     * As above, with {@code trackedRockets}: entity ids of the firework rockets this client has been sent (their entity
+     * data and removal matter too).
+     */
+    public static int classify(final Packet<?> packet, final int self, final java.util.UUID selfUuid, final IntSet trackedPlayers, final IntSet trackedRockets) {
         final int family = BY_TYPE.getInt(packet.type());
         if (family >= 0) {
             return family;
@@ -170,10 +183,14 @@ public final class OutboundClassifier {
                     yield packet instanceof ClientboundSetEntityDataPacket ? SELF_ENTITY_DATA
                         : packet instanceof ClientboundUpdateAttributesPacket ? SELF_ATTRIBUTES : SELF_PASSENGERS;
                 }
-                yield trackedPlayers.contains(id) ? REMOTE_PLAYER : NONE;
+                yield trackedPlayers.contains(id) ? REMOTE_PLAYER
+                    : packet instanceof ClientboundSetEntityDataPacket && trackedRockets.contains(id) ? ROCKET : NONE;
             }
-            case F_REMOTE -> remote(packet, trackedPlayers);
-            case F_ADD -> ((ClientboundAddEntityPacket) packet).getType() == net.minecraft.world.entity.EntityTypes.PLAYER ? REMOTE_PLAYER : NONE;
+            case F_REMOTE -> remote(packet, trackedPlayers, trackedRockets);
+            case F_ADD -> {
+                final net.minecraft.world.entity.EntityType<?> type = ((ClientboundAddEntityPacket) packet).getType();
+                yield type == net.minecraft.world.entity.EntityTypes.PLAYER ? REMOTE_PLAYER : type == net.minecraft.world.entity.EntityTypes.FIREWORK_ROCKET ? ROCKET : NONE;
+            }
             case F_CONTAINER -> {
                 final int container = packet instanceof final ClientboundContainerSetSlotPacket slot ? slot.getContainerId()
                     : ((ClientboundContainerSetContentPacket) packet).containerId();
@@ -184,7 +201,10 @@ public final class OutboundClassifier {
             case F_EXPLODE -> ((ClientboundExplodePacket) packet).playerKnockback().isPresent() ? EXPLODE : NONE;
             case F_EQUIPMENT -> ((ClientboundSetEquipmentPacket) packet).getEntity() == self ? INVENTORY : NONE;
             case F_INFO -> selfGameMode((net.minecraft.network.protocol.game.ClientboundPlayerInfoUpdatePacket) packet, selfUuid) ? SELF_INFO : NONE;
-            case F_BLOCK_EVENT -> ((net.minecraft.network.protocol.game.ClientboundBlockEventPacket) packet).getBlock() instanceof net.minecraft.world.level.block.piston.PistonBaseBlock ? PISTON : NONE;
+            case F_BLOCK_EVENT -> {
+                final net.minecraft.world.level.block.Block block = ((net.minecraft.network.protocol.game.ClientboundBlockEventPacket) packet).getBlock();
+                yield block instanceof net.minecraft.world.level.block.piston.PistonBaseBlock || block instanceof net.minecraft.world.level.block.ShulkerBoxBlock ? PISTON : NONE;
+            }
             default -> NONE;
         };
     }
@@ -210,7 +230,18 @@ public final class OutboundClassifier {
         };
     }
 
-    private static int remote(final Packet<?> packet, final IntSet trackedPlayers) {
+    private static int remote(final Packet<?> packet, final IntSet trackedPlayers, final IntSet trackedRockets) {
+        if (packet instanceof final net.minecraft.network.protocol.game.ClientboundRemoveEntitiesPacket remove && !trackedRockets.isEmpty()) {
+            boolean rocket = false;
+            for (int i = 0, n = remove.entityIds().size(); i < n; i++) {
+                final int id = remove.entityIds().getInt(i);
+                if (trackedPlayers.contains(id)) {
+                    return REMOTE_PLAYER; // the apply drops any rockets in it too
+                }
+                rocket |= trackedRockets.contains(id);
+            }
+            return rocket ? ROCKET : NONE;
+        }
         if (trackedPlayers.isEmpty()) {
             return NONE;
         }

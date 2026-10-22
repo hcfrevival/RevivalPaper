@@ -38,6 +38,9 @@ public final class Reconciler {
     private int inFlightTicks;
     private long secondStartNanos;
     private int sentThisSecond;
+    // Correction ids sent lately: an accept for one of these after a reset is stale, any other id in our band is forged
+    private final int[] recentIds = new int[32];
+    private int recentIndex;
     private double inFlightDx;
     private double inFlightDy;
     private double inFlightDz;
@@ -87,6 +90,8 @@ public final class Reconciler {
         this.inFlightDz = Math.abs(dz);
         final int id = this.nextId;
         this.nextId = id == Integer.MIN_VALUE ? ID_MAX : id - 1;
+        this.recentIds[this.recentIndex] = id;
+        this.recentIndex = (this.recentIndex + 1) % this.recentIds.length;
         this.inFlight = true;
         this.applied = false;
         this.inFlightId = id;
@@ -94,6 +99,16 @@ public final class Reconciler {
         this.sentThisSecond++;
         this.budget = 0.0;
         return id;
+    }
+
+    /** Whether {@code id} is one of the last corrections sent (an accept that a reset left behind). */
+    public boolean sentLately(final int id) {
+        for (final int recent : this.recentIds) {
+            if (recent == id && id != 0) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** Whether {@code id} is in our correction band (the vanilla accept path must skip it). */

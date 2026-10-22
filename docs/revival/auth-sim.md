@@ -15,7 +15,8 @@ server jar, so the same sources are proven against vanilla offline and run on th
 
 | Class | Role |
 |---|---|
-| `MovementSim` | The tick (`tick`), the client's own actions (attack, item use) and every server→client change the netcode applies between ticks, plus `fireworkBoost` for attached rockets. Holds scratch state; one per thread. |
+| `MovementSim` | The tick (`tick`), the client's own actions (attack, item use) and every server→client change the netcode applies between ticks, plus `fireworkBoost` for attached rockets, and `velocityAfterMove` (§3.4). Holds scratch state; one per thread. |
+| `MoveVelocity` | `velocityAfterMove`'s work: the tick's start and its aiStep up to the move for each key combination, then the tick's after-move half for every reading of the move the world allows (§3.4). Created on first use. |
 | `SimPlayer` | The whole client-side state of one player (report 01 §11.2): kinematics, pose and dimensions, contact flags, supporting block, fall distance, stuck multiplier, fluid trackers, input, client timers (auto-jump included), shared flags, abilities, game modes, food, the client's copies of items, attributes and effects, exempt states, `movementThisTick`. Public fields; `copyFrom` forks it without allocating. |
 | `SimAttributes` | The attributes movement reads, with client `AttributeInstance` semantics: base + modifiers keyed by `Identifier`, fastutil `Object2ObjectOpenHashMap`/`Object2ObjectArrayMap` fed the client's history (so several `ADD_MULTIPLIED_TOTAL` modifiers multiply in the client's order), vanilla ranges, `applyUpdate` = `handleUpdateAttributes`. The maps are subclassed only to copy their tables and walk their values in fastutil's iterator order without allocating. |
 | `SimWorld` | The narrow world interface the port reads (report 01 §11.3): block and fluid states, chunk loaded, section has fluid, height range, border bounds, solid entity boxes, fast lava. `auth.view.WorldView` implements it live; the rigs over a map. |
@@ -58,6 +59,11 @@ sim.startUsingItem(p, hand, useDuration); sim.releaseUsingItem(p); sim.stopUsing
 ExemptReason r = sim.tick(p, in.set(sentKeys, yRot, xRot), world);
 // after the tick, once per firework rocket attached to the player that the client holds, in the order they were added
 sim.fireworkBoost(p);
+
+// the client's velocity at the end of a tick, from the state before it and the tick's two positions (§3.4): 0 when
+// out is exact, else VELOCITY_X/Y/Z for the axes that are not and VELOCITY_* reasons
+int r = sim.velocityAfterMove(before, fromX, fromY, fromZ, toX, toY, toZ, world, out);
+int r = sim.velocityAfterMove(before, sentKeys, fromX, fromY, fromZ, toX, toY, toZ, world, out); // knowing the keys
 ```
 
 - `p.mainHand`, `offHand`, `feet`, `gliderAvailable`, `foodLevel`, `flying`… are the client's copies; the caller keeps
@@ -73,6 +79,8 @@ sim.fireworkBoost(p);
   client's level (§6); the tick then returns `EXTERNAL_MOVER` and leaves the state untouched.
 - `MovementSim.setSprinting(p, on)` is the client's own `LivingEntity.setSprinting` (flag + `sprinting` modifier).
 - `MovementSim.collide(p, world, dx, dy, dz, out)` is `Entity.collide` alone, for tools and tests.
+- `MovementSim.lastMove(out)` is the last tick's exact move (`Entity.collide`'s result) and
+  `velocityAfterExactMove(before, from, move, world, out)` takes it instead of `to`: for tools and tests (§3.4).
 - `setLocalGameModeSpectator` is a compatibility shim for one-call callers; prefer the two game-mode calls above
   (`PortSimulation` still uses the shim, and its `sync` writes `p.spectator` directly, which skips
   `onGameModeChanged`'s `vy = 0` when the tab-list mode turns spectator).
@@ -139,6 +147,64 @@ effects' attribute modifiers itself (`onEffectAdded/Updated/Removed` are server-
 updates). So a hidden-effect downgrade (a longer weaker effect under a shorter stronger one) happens on the server and
 reaches the client as an update with the lower amplifier; the client keeps an expired effect until the
 `RemoveMobEffect`. The port does the same: `addEffect` replaces the amplifier, `removeEffect` clears it.
+
+### 3.4 Velocity after a move
+
+`velocityAfterMove(p, from, to, world, out)` (auth-sim-requests.md §1) is the `deltaMovement` the client holds at the
+end of a tick whose move went from `from` to `to`: the seed's velocity after one claimed move, and the belief velocity of
+authoritative.md §6.2. `p` is the client's state at the start of that tick (as `tick` would get it); its position,
+velocity and rotation are never read and it is not modified. The result is the velocity at the end of the player's own
+tick, before attached rockets boost it (`fireworkBoost` after it, as after `tick`).
+
+It restates nothing: the tick is split at its move (`startTick`; each travel branch records what it worked out before
+its move and has its after-move half as its own method, `afterAirMove`, `afterWaterMove`, `afterLavaMove`,
+`afterFlyingTravel`; `Entity.move` after collide is `afterCollide`), and `tick` runs exactly these, so the oracle proves
+them with the tick. `velocityAfterMove` runs the tick's start from `from`, its aiStep up to the move (`probeMove`, which
+stops at `move`), then the after-move half: collision flags with `Mth.equal`, support, fall distance, restitution,
+the block speed factor, the branch's climb, gravity or levitation, drag and friction or the fluid slow-downs and
+`jumpOutOfFluid`, the flight rule and `applyEffectsFromBlocks`. What the after-move half needs that the state before the
+tick does not hold, it tries every way, and an axis counts as determined only when all of them give the same bits:
+
+- **The tick's keys** (forward, jump, shift, sprint): sprint, jumping, the shift that bounces and scaffolding read, a
+  double-tap flight, a glide started this tick, and the branch's own values (water's slow-down) depend on them. All 16
+  combinations run the port's aiStep up to the move; backward, left and right change none of these.
+  `velocityAfterMove(p, keys, ...)` takes the keys the client sent for the tick instead.
+- **What collide was given** (the velocity before the move): per axis the move itself, and where a collider sits at the
+  face the box ended on (the world border at any distance, since collide gathers it only for a long enough move), a cut
+  under, just past and far past `Mth.equal`'s 1e-5; for y also step-ups, from a fall or from rises of several heights.
+  Each combination goes through the port's own `collide` and is kept only if it lands exactly on the observed position.
+- **What a still or rounded axis hides**: the other signed zero, a velocity under collide's 1e-7 cut, or one under
+  `Entity.move`'s 3.2e-4 (a move that short is not applied when another axis lost more); and `to - from` is only one of
+  the moves that `from + move` rounds to `to`, so both ends of that range run too.
+
+The result is 0 when `out` is the client's velocity bit for bit. Otherwise `VELOCITY_X`/`Y`/`Z` mark the axes that are
+not, `out` holds the most likely value (the keys as before the tick; a move that ended against something was cut, a
+still axis stood still, a player on the ground pressed down on it), and the reasons say why:
+
+| Reason | What the move cannot show | Error bound |
+|---|---|---|
+| `VELOCITY_ROUNDED` | `from + move` rounds to the ulp of `to`, so the move's bits below it are lost (nearly every move on a moving axis) | half an ulp of `to` per axis, times the drag |
+| `VELOCITY_UNMOVED` | an axis that did not move: `-0.0`, a velocity under 1e-7 (a near-cardinal yaw's sine), or under 3.2e-4 not applied | under 3.2e-4 |
+| `VELOCITY_COLLIDED` | a collision may have cut the move: hit or merely reached a wall (`-0.0` or the move), landed or arrived exactly, a bounce off slime or a bed (impact speed), a cut under 1e-5, a step | none |
+| `VELOCITY_EDGE` | sneaking at an edge may have shortened the move (`maybeBackOffFromEdge`), not the velocity | none |
+| `VELOCITY_KEYS` | the tick's keys decide (water and lava sprint, a glide or flight started, jumping on a climbable, sneaking on a bounce); never with the keys | none |
+| `VELOCITY_PRE_MOVE` | creative flight while gliding or stuck keeps a y from before the move; or the glide fall clamp read it | none |
+| `VELOCITY_NO_TICK` | no tick from `p` makes this move here (an exempt state, a move into a block); `out` is NaN | |
+
+`from` and `to` must be the two ends of one client tick. A tick the client sent no position for (it moved under 2.0E-4
+from the last position it sent, without the 20-tick reminder; `LocalPlayer.sendPosition`) has no `to`, and the tick after
+it no exact `from`: neither has an answer, the caller skips them. In practice (§4) the exact move determines most ticks,
+while from positions `ROUNDED` covers nearly every moving axis: the answer is then within an ulp of the position, not bit
+for bit, and a seed carries that difference until a collision or the 0.003 floor resets the axis. It is exact where
+`from + move` needs no rounding, as for a fall from rest at y = 0. The caller that knows the tick's keys should pass
+them: `KEYS` covered 16% of the oracle's ticks and 27% of the real-client traces.
+
+shortcut: the depths of a cut, the rises and the hidden values are samples, not every value; the rules after a move read
+what collide was given only through restitution (linear, with one gravity threshold the depths straddle), the flight
+rule (linear), the fluid falling test (its sign) and the inside-block walk's axis order (which the far cut flips), so the
+samples show any dependence. The oracle fuzz and the traces check it on every tick (§4); the first full runs found four
+gaps the readings now cover: a step that ends below the start, a rising step to height 0, the border's size-dependent
+reach, and a step height of 0 (no step at all, which hid a rounded axis).
 
 ## 4. Exactness
 
@@ -267,5 +333,8 @@ $R/harness/sim.sh SimBench                           # cost per tick
 
 `sim.sh` compiles the port straight from the checkout (`RP_SIM`, `RP_TESTS` override the paths) together with the rig
 (`harness/src-sim`: `RigWorld`, `RigBootstrap`, `OracleLevel`, `OraclePlayer`, `SimFuzz`, `GoldenGen`, `FuzzRecord`,
-`SimBench`) against the vanilla 26.3 server jar; `fuzz-seeds.sh` compiles once into its own directory and runs two seeds
-at a time. Point `RP_SIM` at a mutated copy of the sources to check the rigs still catch a change.
+`SimBench`, `VelocityCheck`) against the vanilla 26.3 server jar; `fuzz-seeds.sh` compiles once into its own directory
+and runs two seeds at a time. Point `RP_SIM` at a mutated copy of the sources to check the rigs still catch a change.
+`SimFuzz`, `FuzzRecord` and the trace replay also check `velocityAfterMove` on every tick (`rig.sim.VelocityCheck`, its
+report at the end; `RIG_JAVA_OPTS=-Dvelocity=false` skips it in the first two, `-Dvelocity.dump=<reason bits>` prints the
+ticks whose hard reasons are exactly those).

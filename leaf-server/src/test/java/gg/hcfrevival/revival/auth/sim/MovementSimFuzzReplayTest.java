@@ -18,6 +18,7 @@ import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.Vec3;
+import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -46,7 +47,18 @@ class MovementSimFuzzReplayTest {
         assertEquals(0, differ, "runs differing from vanilla (first: " + first + ")");
     }
 
+    /** Called around every tick of {@link #play}: before it, and right after it (before attached rockets boost the player). */
+    interface TickCheck {
+        void before(SimPlayer p);
+
+        void after(MovementSim sim, SimPlayer p, Input keys, SimWorld world);
+    }
+
     static long play(final long seed, final int run) {
+        return play(seed, run, null);
+    }
+
+    static long play(final long seed, final int run, final @Nullable TickCheck check) {
         final SimTestWorld world = new SimTestWorld();
         final SimPlayer p = new SimPlayer();
         final MovementSim sim = new MovementSim();
@@ -135,7 +147,13 @@ class MovementSimFuzzReplayTest {
         long hash = 0;
         for (int t = 0; t < FuzzScript.TICKS; t++) {
             final Input keys = FuzzScript.sent(script.next(p, target), p);
+            if (check != null) {
+                check.before(p);
+            }
             sim.tick(p, in.set(keys, script.yaw(), script.pitch()), world);
+            if (check != null) {
+                check.after(sim, p, keys, world);
+            }
             for (int i = 0; i < script.rockets(); i++) {
                 sim.fireworkBoost(p);
             }

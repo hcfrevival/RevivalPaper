@@ -38,4 +38,36 @@ class OutboundClassifierTest {
         assertEquals(OutboundClassifier.GAME_MODE, OutboundClassifier.classify(new ClientboundGameEventPacket(ClientboundGameEventPacket.CHANGE_GAME_MODE, 1.0F), 7, SELF, players));
         assertEquals(OutboundClassifier.NONE, OutboundClassifier.classify(new ClientboundGameEventPacket(ClientboundGameEventPacket.START_RAINING, 0.0F), 7, SELF, players));
     }
+
+    @Test
+    void attachedRocketsAreFollowed() {
+        final IntOpenHashSet players = new IntOpenHashSet();
+        final IntOpenHashSet rockets = new IntOpenHashSet();
+        final net.minecraft.network.protocol.game.ClientboundAddEntityPacket add = new net.minecraft.network.protocol.game.ClientboundAddEntityPacket(40,
+            new UUID(5L, 6L), 0.0, 64.0, 0.0, 0.0F, 0.0F, net.minecraft.world.entity.EntityTypes.FIREWORK_ROCKET, 0, Vec3.ZERO, 0.0);
+        assertEquals(OutboundClassifier.ROCKET, OutboundClassifier.classify(add, 7, SELF, players, rockets));
+        rockets.add(40);
+        final net.minecraft.network.protocol.game.ClientboundSetEntityDataPacket data = new net.minecraft.network.protocol.game.ClientboundSetEntityDataPacket(40,
+            java.util.List.of(new net.minecraft.network.syncher.SynchedEntityData.DataValue<>(
+                net.minecraft.world.entity.projectile.FireworkRocketEntity.DATA_ATTACHED_TO_TARGET.id(),
+                net.minecraft.network.syncher.EntityDataSerializers.OPTIONAL_UNSIGNED_INT, java.util.OptionalInt.of(7))));
+        assertEquals(OutboundClassifier.ROCKET, OutboundClassifier.classify(data, 7, SELF, players, rockets), "the attachment comes as entity data");
+        assertEquals(OutboundClassifier.ROCKET, OutboundClassifier.classify(new net.minecraft.network.protocol.game.ClientboundRemoveEntitiesPacket(40), 7, SELF, players, rockets));
+        players.add(41);
+        assertEquals(OutboundClassifier.REMOTE_PLAYER, OutboundClassifier.classify(new net.minecraft.network.protocol.game.ClientboundRemoveEntitiesPacket(40, 41), 7, SELF, players, rockets),
+            "a removal of a player and a rocket goes to the mirrors, which drop the rocket too");
+        assertEquals(OutboundClassifier.NONE, OutboundClassifier.classify(new net.minecraft.network.protocol.game.ClientboundRemoveEntitiesPacket(42), 7, SELF, players, rockets));
+    }
+
+    @Test
+    void pistonsAndShulkerBoxesMoveThePlayer() {
+        final IntOpenHashSet players = new IntOpenHashSet();
+        final net.minecraft.core.BlockPos pos = new net.minecraft.core.BlockPos(1, 2, 3);
+        assertEquals(OutboundClassifier.PISTON, OutboundClassifier.classify(new net.minecraft.network.protocol.game.ClientboundBlockEventPacket(pos,
+            net.minecraft.world.level.block.Blocks.PISTON, 0, 1), 7, SELF, players));
+        assertEquals(OutboundClassifier.PISTON, OutboundClassifier.classify(new net.minecraft.network.protocol.game.ClientboundBlockEventPacket(pos,
+            net.minecraft.world.level.block.Blocks.SHULKER_BOX, 1, 1), 7, SELF, players));
+        assertEquals(OutboundClassifier.NONE, OutboundClassifier.classify(new net.minecraft.network.protocol.game.ClientboundBlockEventPacket(pos,
+            net.minecraft.world.level.block.Blocks.NOTE_BLOCK, 0, 0), 7, SELF, players));
+    }
 }

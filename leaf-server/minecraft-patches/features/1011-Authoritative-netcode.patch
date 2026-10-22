@@ -85,7 +85,7 @@ index 2bdb335e0a83ff8f756d66ac3ede58479075262f..3f1e9e0ebc1429928c4e0b22c4df56f2
              CrashReport report = CrashReport.forThrowable(t, "Sending packet");
              CrashReportCategory category = report.addCategory("Packet being sent");
 diff --git a/net/minecraft/server/network/ServerGamePacketListenerImpl.java b/net/minecraft/server/network/ServerGamePacketListenerImpl.java
-index fe9f6ed0ce24680e2abc086173c22e581c3d8b9b..8b42eefe8717fff1986ee086e47ff2b0abe0c240 100644
+index fe9f6ed0ce24680e2abc086173c22e581c3d8b9b..10f015b7d83e78772484d309f8ed4baeba5ae34f 100644
 --- a/net/minecraft/server/network/ServerGamePacketListenerImpl.java
 +++ b/net/minecraft/server/network/ServerGamePacketListenerImpl.java
 @@ -375,6 +375,7 @@ public class ServerGamePacketListenerImpl
@@ -223,7 +223,16 @@ index fe9f6ed0ce24680e2abc086173c22e581c3d8b9b..8b42eefe8717fff1986ee086e47ff2b0
          this.player.resetLastActionTime();
          ServerboundClientCommandPacket.Action action = packet.getAction();
          switch (action) {
-@@ -3257,6 +3274,7 @@ public class ServerGamePacketListenerImpl
+@@ -3241,6 +3258,8 @@ public class ServerGamePacketListenerImpl
+ 
+     @Override
+     public void handleContainerClose(final ServerboundContainerClosePacket packet) {
++        PacketUtils.ensureRunningOnSameThread(packet, this, this.player.level()); // Revival - Authoritative netcode: the client's close on the main thread
++        if (this.player.revivalAuth.intercept(packet)) return; // Revival - Authoritative netcode: handleContainerClose
+         // Paper start - Inventory close reason
+         this.handleContainerClose(packet, org.bukkit.event.inventory.InventoryCloseEvent.Reason.PLAYER);
+     }
+@@ -3257,6 +3276,7 @@ public class ServerGamePacketListenerImpl
      @Override
      public void handleContainerClick(final ServerboundContainerClickPacket packet) {
          PacketUtils.ensureRunningOnSameThread(packet, this, this.player.level());
@@ -231,7 +240,7 @@ index fe9f6ed0ce24680e2abc086173c22e581c3d8b9b..8b42eefe8717fff1986ee086e47ff2b0
          if (this.player.isImmobile()) return; // CraftBukkit
          this.player.resetLastActionTime();
          if (this.player.containerMenu.containerId == packet.containerId() && this.player.containerMenu.stillValid(this.player)) { // CraftBukkit
-@@ -3665,6 +3683,7 @@ public class ServerGamePacketListenerImpl
+@@ -3665,6 +3685,7 @@ public class ServerGamePacketListenerImpl
      @Override
      public void handleContainerButtonClick(final ServerboundContainerButtonClickPacket packet) {
          PacketUtils.ensureRunningOnSameThread(packet, this, this.player.level());
@@ -239,7 +248,7 @@ index fe9f6ed0ce24680e2abc086173c22e581c3d8b9b..8b42eefe8717fff1986ee086e47ff2b0
          if (this.player.isImmobile()) return; // CraftBukkit
          this.player.resetLastActionTime();
          if (this.player.containerMenu.containerId == packet.containerId() && !this.player.isSpectator()) {
-@@ -3683,6 +3702,7 @@ public class ServerGamePacketListenerImpl
+@@ -3683,6 +3704,7 @@ public class ServerGamePacketListenerImpl
      @Override
      public void handleSetCreativeModeSlot(final ServerboundSetCreativeModeSlotPacket packet) {
          PacketUtils.ensureRunningOnSameThread(packet, this, this.player.level());
@@ -247,7 +256,7 @@ index fe9f6ed0ce24680e2abc086173c22e581c3d8b9b..8b42eefe8717fff1986ee086e47ff2b0
          if (this.player.hasInfiniteMaterials()) {
              boolean drop = packet.slotNum() < 0;
              ItemStack itemStack = packet.itemStack();
-@@ -3786,6 +3806,7 @@ public class ServerGamePacketListenerImpl
+@@ -3786,6 +3808,7 @@ public class ServerGamePacketListenerImpl
      @Override
      public void handlePlayerAbilities(final ServerboundPlayerAbilitiesPacket packet) {
          PacketUtils.ensureRunningOnSameThread(packet, this, this.player.level());
@@ -255,7 +264,7 @@ index fe9f6ed0ce24680e2abc086173c22e581c3d8b9b..8b42eefe8717fff1986ee086e47ff2b0
          // CraftBukkit start
          if (this.player.getAbilities().mayfly && this.player.getAbilities().flying != packet.isFlying()) {
              PlayerToggleFlightEvent event = new PlayerToggleFlightEvent(this.player.getBukkitEntity(), packet.isFlying());
-@@ -3933,6 +3954,7 @@ public class ServerGamePacketListenerImpl
+@@ -3933,6 +3956,7 @@ public class ServerGamePacketListenerImpl
      @Override
      public void handleClientTickEnd(final ServerboundClientTickEndPacket packet) {
          PacketUtils.ensureRunningOnSameThread(packet, this, this.player.level());

@@ -64,6 +64,21 @@ public final class CombatWiring implements ViewerMirrors, AttackJudge {
         }
     }
 
+    /**
+     * The client's pick origin at its keybinds: the truth's eye after the last tick (or the client's own while a
+     * correction is in flight, bounded by its Δ, §15.3), the tick's rotation, the client's interaction ranges.
+     */
+    public static AttackerSnapshot snapshot(final AuthPlayer attacker) {
+        final Simulation sim = attacker.simulation();
+        final double ox = attacker.eyeOffset(0);
+        final double oy = attacker.eyeOffset(1);
+        final double oz = attacker.eyeOffset(2);
+        return new AttackerSnapshot(sim.xo() + ox, sim.yo() + oy, sim.zo() + oz, sim.x() + ox, sim.y() + oy, sim.z() + oz,
+            sim.eyeHeight(), attacker.tickYRot(), attacker.tickXRot(), ox == 0.0 && oy == 0.0 && oz == 0.0 ? sim.box() : sim.box().move(ox, oy, oz),
+            attacker.view().attributes.value(Attributes.BLOCK_INTERACTION_RANGE), attacker.view().attributes.value(Attributes.ENTITY_INTERACTION_RANGE),
+            attacker.view().items.mainHand().has(DataComponents.ATTACK_RANGE), attacker.view().passenger());
+    }
+
     @Override
     public int judge(final AuthPlayer attacker, final Entity target, final int tick) {
         if (!(target instanceof ServerPlayer)) {
@@ -76,14 +91,7 @@ public final class CombatWiring implements ViewerMirrors, AttackJudge {
             return UNKNOWN;
         }
         final AuthoritativeSettings settings = Revival.settings().authoritative();
-        // The truth's eye, or the client's own while a correction is in flight (bounded by its Δ, §15.3)
-        final double ox = attacker.eyeOffset(0);
-        final double oy = attacker.eyeOffset(1);
-        final double oz = attacker.eyeOffset(2);
-        final AttackerSnapshot snapshot = new AttackerSnapshot(sim.xo() + ox, sim.yo() + oy, sim.zo() + oz, sim.x() + ox, sim.y() + oy, sim.z() + oz,
-            sim.eyeHeight(), attacker.tickYRot(), attacker.tickXRot(), ox == 0.0 && oy == 0.0 && oz == 0.0 ? sim.box() : sim.box().move(ox, oy, oz),
-            attacker.view().attributes.value(Attributes.BLOCK_INTERACTION_RANGE), attacker.view().attributes.value(Attributes.ENTITY_INTERACTION_RANGE),
-            attacker.view().items.mainHand().has(DataComponents.ATTACK_RANGE), attacker.view().passenger());
+        final AttackerSnapshot snapshot = snapshot(attacker);
         final long rttMillis = attacker.transactions().rttBaseNanos() / 1_000_000L;
         final long cap = Math.min(settings.maxRewindMs(), rttMillis + settings.ackJitterTicks() * 50L + settings.pathStepTicks() * 50L);
         final HitCheck check = this.validator.validate(snapshot, target.getId(), book(attacker), tick, List.of(), attacker.world(),

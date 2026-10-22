@@ -132,6 +132,7 @@ final class AuthCheatScenarios {
     private static final int WARM = 15;
     private static final String TEAM = "authcheat";
     private static final double EPS = 1.0E-9;
+    private static final net.minecraft.resources.Identifier PROBE_MODIFIER = net.minecraft.resources.Identifier.fromNamespaceAndPath("revival", "cheat_probe");
 
     private final RevivalLiveTests tests;
     private final MinecraftServer server;
@@ -146,7 +147,6 @@ final class AuthCheatScenarios {
     private int ox;
     private int gy;
     private int oz;
-    private boolean epsilonChanged;
 
     // The scenario being run
     private String scenario = "";
@@ -256,7 +256,10 @@ final class AuthCheatScenarios {
         this.combatAutoblock();
         this.combatContainerClose();
         this.inventoryMove();
+        this.mountDenied();
+        this.vehiclesStep("vanilla");
         this.combatRiding();
+        this.vehiclesStep("deny");
 
         // World
         this.phantomPlace();
@@ -496,6 +499,7 @@ final class AuthCheatScenarios {
             }
         });
         final int[] onWater = {0};
+        final double[] previousZ = {Double.NaN};
         this.arm(id, () -> {
             this.c.keys = FORWARD;
             this.c.forcePosition = true;
@@ -508,9 +512,10 @@ final class AuthCheatScenarios {
             this.probe = () -> {
                 sample.run();
                 final Simulation s = this.c.auth.simulation();
-                if (s.z() - 0.3 >= this.oz + 3.05 && s.z() + 0.3 <= this.oz + 15 && s.y() >= this.gy - EPS && s.onGround()) {
+                if (previousZ[0] - 0.3 >= this.oz + 3.05 && s.z() + 0.3 <= this.oz + 15 && s.y() >= this.gy - EPS && s.onGround()) {
                     onWater[0]++;
                 }
+                previousZ[0] = s.z();
             };
         });
         this.judge(40, id, () -> {
@@ -530,14 +535,18 @@ final class AuthCheatScenarios {
         this.begin(id, () -> {
         });
         final float[] honest = {0.0F};
+        final float[] lowest = {20.0F, 20.0F};
         final double[] fallen = {0.0, 0.0};
         this.step(1, id + ": honest fall (control)", () -> {
             this.c.player.setHealth(20.0F);
             this.c.forcePosition = true;
-            this.probe = () -> fallen[0] = Math.max(fallen[0], this.c.player.fallDistance);
+            this.probe = () -> {
+                fallen[0] = Math.max(fallen[0], this.c.player.fallDistance);
+                lowest[0] = Math.min(lowest[0], this.c.player.getHealth());
+            };
             this.c.player.connection.teleport(this.c.player.getX(), this.gy + 12.0, this.c.player.getZ(), 0.0F, 0.0F);
         });
-        this.step(45, id + ": honest landed", () -> honest[0] = 20.0F - this.c.player.getHealth());
+        this.step(45, id + ": honest landed", () -> honest[0] = 20.0F - lowest[0]);
         this.step(25, id + ": cheat", () -> {
             this.c.player.setHealth(20.0F);
             this.base = this.snap(this.c);
@@ -546,6 +555,7 @@ final class AuthCheatScenarios {
             this.probe = () -> {
                 this.track.sample(this.c);
                 fallen[1] = Math.max(fallen[1], this.c.player.fallDistance);
+                lowest[1] = Math.min(lowest[1], this.c.player.getHealth());
             };
             this.c.claimOnGround = true;
             this.c.player.connection.teleport(this.c.player.getX(), this.gy + 12.0, this.c.player.getZ(), 0.0F, 0.0F);
@@ -553,7 +563,7 @@ final class AuthCheatScenarios {
         this.judge(45, id, () -> {
             final Snap d = this.delta(this.c);
             final Simulation s = this.c.auth.simulation();
-            final float damage = 20.0F - this.c.player.getHealth();
+            final float damage = 20.0F - lowest[1];
             this.expect(honest[0] >= 1.0F && damage == honest[0], "fall damage " + damage + ", an honest fall took " + honest[0]
                 + " (server fall distance " + f(fallen[1]) + " vs " + f(fallen[0]) + ")");
             this.expect(d.flagMismatches() > 0, "onGround lies counted: " + d.flagMismatches());
@@ -791,8 +801,9 @@ final class AuthCheatScenarios {
         this.judge(12, id, () -> {
             final Snap d = this.delta(this.c);
             this.expect(d.streamViolations() >= 1, "grammar violation counted: " + d.streamViolations());
-            this.expect(this.track.truthMaxZ - start[2] >= 0.5, "the knock still landed on the truth (z +" + f(this.track.truthMaxZ - start[2]) + ")");
-            this.note(this.c.kicked ? "kicked" : "not kicked (counted only)");
+            // §15.1: pongs belong to the drain; a late one would choose when a packet lands, so it is a protocol violation
+            final String reason = this.kicks.getOrDefault(this.c.player.getUUID(), "");
+            this.expect(this.c.kicked && reason.contains("transaction"), "kicked: '" + reason + "'");
         });
         this.honestAfter(id, NONE, 0);
         this.finish(id);
@@ -997,8 +1008,12 @@ final class AuthCheatScenarios {
         this.judge(20, id, () -> {
             final Simulation s = this.c.auth.simulation();
             final double gap = this.c.player.position().distanceTo(new Vec3(s.x(), s.y(), s.z()));
-            this.expect(s.z() >= target[2] + 1.0, "the truth took the teleport and walked on (z +" + f(s.z() - target[2]) + " past it)");
+            // §15.3: the teleport completes at its pong (the ServerPlayer follows the truth from there), and an accept that
+            // never follows is a protocol violation after the ack deadline
+            this.expect(s.z() >= target[2], "the truth took the teleport and walked on (z +" + f(s.z() - target[2]) + " past it)");
             this.expect(gap <= 1.0E-6, "the ServerPlayer follows the truth (it is " + f(gap) + " away, at z +" + f(this.c.player.getZ() - target[2]) + ")");
+            final String reason = this.kicks.getOrDefault(this.c.player.getUUID(), "");
+            this.expect(this.c.kicked && reason.contains("transaction"), "kicked after the ack deadline: '" + reason + "'");
         });
         this.honestAfter(id, NONE, 0);
         this.finish(id);
@@ -1065,9 +1080,11 @@ final class AuthCheatScenarios {
         this.begin(id, () -> {
         });
         final int[] before = {0};
+        final int[] errors = {0};
         this.arm(id, () -> {
             this.c.forcePosition = true;
             before[0] = this.c.positions.size();
+            errors[0] = this.c.serverErrors;
             this.c.before = x -> {
                 x.before = null;
                 claim.accept(x);
@@ -1083,6 +1100,8 @@ final class AuthCheatScenarios {
             this.expect(Double.isFinite(s.x()) && Double.isFinite(s.y()) && Double.isFinite(s.z()) && finite(this.c.player.position())
                 && Float.isFinite(this.c.player.getYRot()) && Float.isFinite(this.c.player.getXRot()), "truth and ServerPlayer stay finite");
             this.expect(bad == 0, "non-finite position packets sent to the client: " + bad);
+            this.expect(this.c.serverErrors == errors[0], "windows handled without an exception (" + (this.c.serverErrors - errors[0]) + " thrown"
+                + (this.c.serverErrors > errors[0] ? ", last " + this.c.lastServerError : "") + ")");
             this.expect(this.c.kicked || d.violations() + d.streamViolations() + d.txViolations() >= 1,
                 "rejected: " + (this.c.kicked ? "kicked '" + this.kicks.get(this.c.player.getUUID()) + "'" : "violations " + d.violations()));
             this.note("corrections " + d.corrections());
@@ -1127,8 +1146,10 @@ final class AuthCheatScenarios {
             final Simulation s = this.c.auth.simulation();
             this.expect(Double.isFinite(s.z()) && finite(this.c.player.position()), "truth and ServerPlayer finite");
             this.expect(d.violations() >= 1, "the NaN accept counted: violations " + d.violations());
-            this.expect(!this.c.auth.reconciler().inFlight(), "the correction is not left in flight (corrections " + d.corrections() + ", reconciler violations "
-                + this.c.auth.reconciler().violations() + ")");
+            // A non-finite accept is a protocol violation under enforce (vanilla kicks one for its own teleports); short of
+            // a kick, the correction must not be left in flight
+            this.expect(this.c.kicked || !this.c.auth.reconciler().inFlight(), "kicked or the correction is not left in flight (corrections "
+                + d.corrections() + ", reconciler violations " + this.c.auth.reconciler().violations() + ", kicked " + this.c.kicked + ")");
         });
         this.honestAfter(id, NONE, 0);
         this.finish(id);
@@ -1233,18 +1254,29 @@ final class AuthCheatScenarios {
 
     private void epsilonStep(final double value) {
         this.step(1, "cheat suite: rebase-epsilon " + value, () -> {
-            try {
-                final File file = new File("revival.yml");
-                final YamlConfiguration yaml = YamlConfiguration.loadConfiguration(file);
-                yaml.set("authoritative.rebase-epsilon", value);
-                yaml.save(file);
-            } catch (final java.io.IOException failure) {
-                throw new IllegalStateException(failure);
-            }
-            gg.hcfrevival.revival.config.RevivalConfig.reload();
-            this.epsilonChanged = value != 0.0;
+            this.configure("authoritative.rebase-epsilon", value);
             this.tests.check(Revival.settings().authoritative().rebaseEpsilon() == value, "authoritative.rebase-epsilon is " + value + " after /revival reload");
         });
+    }
+
+    private void vehiclesStep(final String value) {
+        this.step(1, "cheat suite: vehicles " + value, () -> {
+            this.configure("authoritative.vehicles", value);
+            this.tests.check(value.equals(Revival.settings().authoritative().vehicles()), "authoritative.vehicles is " + value + " after /revival reload");
+        });
+    }
+
+    // Edits revival.yml and reloads it, as an owner would
+    private void configure(final String key, final Object value) {
+        try {
+            final File file = new File("revival.yml");
+            final YamlConfiguration yaml = YamlConfiguration.loadConfiguration(file);
+            yaml.set(key, value);
+            yaml.save(file);
+        } catch (final java.io.IOException failure) {
+            throw new IllegalStateException(failure);
+        }
+        gg.hcfrevival.revival.config.RevivalConfig.reload();
     }
 
     // =================================================================================================================
@@ -1337,12 +1369,21 @@ final class AuthCheatScenarios {
     }
 
     private void combatTeleportPending() {
-        final String id = "combat: reach 4.5 while a server teleport is pending";
+        final String id = "combat: while a server teleport is pending";
         this.combatJoin(id);
+        this.pendingCase("combat: reach 4.5 while a server teleport is pending", 4.8, false);
+        this.pendingCase("combat: honest hit at 2.5 while a server teleport is pending (control)", 2.8, true);
+        this.step(1, id + ": done", this::leaveAll);
+    }
+
+    // The attacker's own server teleport (a pearl landing) is in flight: its pong is held over the attack's window
+    private void pendingCase(final String name, final double dz, final boolean honest) {
         final boolean[] pending = {false};
-        this.step(1, id + ": victim 4.5 away", () -> this.place(0.0, 4.8));
-        this.step(12, id + ": teleport in place, hold its pong, attack", () -> {
-            this.open(id);
+        this.step(1, name + ": place", () -> {
+            this.open(name);
+            this.place(0.0, dz);
+        });
+        this.step(12, name + ": teleport in place, hold its pong, attack", () -> {
             this.base = this.snap(this.c);
             this.attacksBase = this.attacksOf(this.c);
             this.c.holdPongs = true;
@@ -1353,14 +1394,20 @@ final class AuthCheatScenarios {
                 this.attack(x, 1);
             };
         });
-        this.step(3, id + ": release", () -> this.c.releaseHeld());
-        this.judge(3, id, () -> {
+        this.step(3, name + ": release", () -> this.c.releaseHeld());
+        this.step(3, name + ": judge", () -> {
             final Snap d = this.delta(this.c);
             final int landed = this.attacksOf(this.c) - this.attacksBase;
-            this.expect(landed == 0, "refused: landed " + landed + " (teleport pending " + pending[0] + ", judged valid " + d.attacksAccepted() + ", invalid "
-                + d.attacksRejected() + ")");
+            final String detail = "landed " + landed + " (teleport pending " + pending[0] + ", judged valid " + d.attacksAccepted() + ", invalid "
+                + d.attacksRejected() + ")";
+            if (honest) {
+                this.label = "CONTROL";
+                this.honestExpect(landed == 1, "an honest hit lands: " + detail);
+            } else {
+                this.expect(landed == 0, "refused: " + detail);
+            }
+            this.record();
         });
-        this.finish(id);
     }
 
     private void combatBacktrack() {
@@ -1388,6 +1435,7 @@ final class AuthCheatScenarios {
     private void poisoned(final String id) {
         this.attackCase(id + " -> then killaura without aim", 2.0, 0.0, null, 1, 0, null);
         this.attackCase(id + " -> then reach 4.5", 0.0, 4.8, null, 1, 0, null);
+        this.attackCase(id + " -> then an honest hit at 2.5 (control)", 0.0, 2.8, null, 1, 1, null);
         this.step(1, id + ": done", this::leaveAll);
     }
 
@@ -1407,17 +1455,23 @@ final class AuthCheatScenarios {
     private void combatLatePongPoison() {
         final String id = "combat: a pong placed after an attack in its window";
         this.combatJoin(id);
-        this.step(1, id + ": attack, then the pong", () -> this.c.before = x -> {
-            x.before = null;
-            x.drainAfterActions = true;
-            this.attack(x, 1);
+        this.step(1, id + ": attack, then the pong", () -> {
+            this.open(id);
+            this.base = this.snap(this.c);
+            this.attacksBase = this.attacksOf(this.c);
+            this.c.before = x -> {
+                x.before = null;
+                x.drainAfterActions = true;
+                this.attack(x, 1);
+            };
         });
-        this.step(4, id + ": mirror", () -> {
-            final RemoteMirror mirror = CombatWiring.book(this.c.auth).mirror(this.v.player.getId());
-            this.tests.getLogger().info("REVIVAL_CHEAT_NOTE " + id + ": stream violations " + this.c.auth.stream().violations() + ", victim mirror exact "
-                + (mirror != null && mirror.exact()));
+        // §15.1: a pong after the tick's keybinds is a protocol violation, so the poisoned mirror never gets used
+        this.judge(4, id, () -> {
+            final String reason = this.kicks.getOrDefault(this.c.player.getUUID(), "");
+            this.expect(this.c.kicked && reason.contains("transaction"), "kicked: '" + reason + "'");
+            this.expect(this.attacksOf(this.c) - this.attacksBase == 0, "the attack in that window did not land");
         });
-        this.poisoned(id);
+        this.finish(id);
     }
 
     private void combatAutoblock() {
@@ -1482,10 +1536,35 @@ final class AuthCheatScenarios {
         this.finish(id);
     }
 
+    private void mountDenied() {
+        final String id = "vehicles: mount under enforce (authoritative.vehicles: deny)";
+        this.begin(id, () -> {
+        });
+        final Entity[] cart = {null};
+        this.arm(id, () -> {
+            final Entity minecart = EntityTypes.MINECART.create(this.level, EntitySpawnReason.COMMAND);
+            if (minecart != null) {
+                minecart.snapTo(this.c.player.getX(), this.c.player.getY(), this.c.player.getZ(), 0.0F, 0.0F);
+                this.level.addFreshEntity(minecart);
+                this.c.player.startRiding(minecart, true, true);
+                cart[0] = minecart;
+            }
+        });
+        this.judge(5, id, () -> {
+            this.expect(cart[0] != null && !this.c.player.isPassenger() && !this.c.auth.view().passenger(), "a forced mount is refused (passenger "
+                + this.c.player.isPassenger() + ")");
+            if (cart[0] != null) {
+                cart[0].discard();
+            }
+        });
+        this.finish(id);
+    }
+
     private void combatRiding() {
         final String id = "combat: attack from an exempt state (riding)";
         this.combatJoin(id);
         final Entity[] cart = {null};
+        final boolean[] riding = {false};
         this.step(1, id + ": mount", () -> {
             final Entity minecart = EntityTypes.MINECART.create(this.level, EntitySpawnReason.COMMAND);
             if (minecart != null) {
@@ -1497,6 +1576,7 @@ final class AuthCheatScenarios {
         });
         this.step(8, id + ": attack", () -> {
             this.open(id);
+            riding[0] = this.c.player.isPassenger();
             this.base = this.snap(this.c);
             this.attacksBase = this.attacksOf(this.c);
             this.c.pitch = 25.0F;
@@ -1505,7 +1585,8 @@ final class AuthCheatScenarios {
         this.judge(3, id, () -> {
             final Snap d = this.delta(this.c);
             final int landed = this.attacksOf(this.c) - this.attacksBase;
-            this.expect(this.c.auth.stats().exempt(AuthStats.EXEMPT_RIDING) > 0, "riding is exempt (" + this.c.auth.stats().exempt(AuthStats.EXEMPT_RIDING) + " ticks)");
+            this.expect(riding[0] && this.c.auth.stats().exempt(AuthStats.EXEMPT_RIDING) > 0, "riding (authoritative.vehicles: vanilla) is exempt ("
+                + this.c.auth.stats().exempt(AuthStats.EXEMPT_RIDING) + " ticks)");
             this.expect(landed == 0, "refused: landed " + landed + " (judged valid " + d.attacksAccepted() + ")");
             this.c.player.stopRiding();
             if (cart[0] != null) {
@@ -1561,7 +1642,12 @@ final class AuthCheatScenarios {
         final String id = "world: spam placements with block acks held";
         this.begin(id, () -> {
         });
-        this.step(1, id + ": stone", () -> this.give(this.c, new ItemStack(Items.STONE, 64)));
+        this.step(1, id + ": stone", () -> {
+            this.give(this.c, new ItemStack(Items.STONE, 64));
+            // §15.2: a vanilla client places on the block on its crosshair: look down at the floor block two ahead
+            // (eye 1.62 above it, 2.0 away)
+            this.c.pitch = (float) Math.toDegrees(Math.atan2(1.62, 2.0));
+        });
         final int[] seq = {1};
         final int[] admitted = {0};
         this.step(4, id + ": place", () -> {
@@ -1572,6 +1658,10 @@ final class AuthCheatScenarios {
         });
         this.step(2, id + ": spam with acks held", () -> {
             this.note("first placement " + (this.level.getBlockState(new BlockPos(this.ox, this.gy, this.oz + 2)).isAir() ? "refused by the server" : "made"));
+            this.note("diagnostics: hand " + this.c.player.getMainHandItem() + ", windows " + this.c.auth.stats().windows() + ", refused " + this.c.auth.clock().refused()
+                + ", queued " + this.c.auth.stream().queued() + ", grammar " + this.c.auth.inputRules().total() + ", predictions refused "
+                + this.c.auth.stats().predictionsRefused() + ", loaded " + this.c.player.connection.hasClientLoaded() + ", in range "
+                + this.c.player.isWithinBlockInteractionRange(new BlockPos(this.ox, this.gy - 1, this.oz + 2), 1.0) + ", pos " + this.c.player.position());
             this.c.holdPongs = true;
             final int[] left = {3};
             this.c.before = x -> {
@@ -1592,6 +1682,8 @@ final class AuthCheatScenarios {
             this.c.releaseHeld();
         });
         this.judge(4, id, () -> {
+            this.note("the first block is " + (this.level.getBlockState(new BlockPos(this.ox, this.gy, this.oz + 2)).isAir() ? "still not placed" : "placed")
+                + "; predictions refused as not a vanilla client's " + this.c.auth.stats().predictionsRefused());
             this.expect(admitted[0] >= 1, "a placement the server made is a prediction (" + admitted[0] + ")");
             this.expect(left[0] == 0, "with every ack held, no prediction outlived its deadline (" + left[0] + " left, " + expired[0] + " expired)");
             this.expect(this.c.ackedSequence >= seq[0] - 1, "every sequence was acked (" + this.c.ackedSequence + " of " + (seq[0] - 1) + ")");
@@ -1662,6 +1754,12 @@ final class AuthCheatScenarios {
                 if (t == 0) {
                     x.pongDelay = 3;
                 }
+                if (t == 1) {
+                    // Any movement-speed sync while sprinting (a potion, armour): here a no-op modifier
+                    x.player.getAttribute(net.minecraft.world.entity.ai.attributes.Attributes.MOVEMENT_SPEED).addOrUpdateTransientModifier(
+                        new net.minecraft.world.entity.ai.attributes.AttributeModifier(PROBE_MODIFIER, 0.0,
+                            net.minecraft.world.entity.ai.attributes.AttributeModifier.Operation.ADD_VALUE));
+                }
                 if (t < 3) {
                     x.keys = FORWARD_SPRINT;
                 } else if (t < 13) {
@@ -1683,8 +1781,14 @@ final class AuthCheatScenarios {
             final Simulation s = this.c.auth.simulation();
             final double attribute = s instanceof final PortSimulation port ? port.state().attributes.movementSpeed.value() : Double.NaN;
             this.expect(stale[0] == 0, "ticks the truth kept the sprint modifier while not sprinting: " + stale[0] + " (speed attribute now " + f(attribute) + ")");
-            this.expect(this.track.lastDz <= walk[0] + 1.0E-6, "walking " + f(this.track.lastDz) + "/tick, honest walk " + f(walk[0]));
-            this.expect(this.c.player.isSprinting() == s.sprinting(), "ServerPlayer sprinting " + this.c.player.isSprinting() + ", truth " + s.sprinting());
+            // The baseline was taken 20 ticks into a walk, 0.546^20 (about 5e-6 of the speed) short of the steady walk: the
+            // tolerance covers that, and is far below the sprint speed a stale modifier gives (0.2806 against 0.2159)
+            this.expect(this.track.lastDz <= walk[0] + 1.0E-5, "walking " + f(this.track.lastDz) + "/tick, honest walk " + f(walk[0]));
+            this.expect(this.c.auth.combatSprinting() == s.sprinting(), "combat reads the simulated sprint (" + this.c.auth.combatSprinting() + ", truth "
+                + s.sprinting() + ")");
+            this.note("self attribute syncs carrying the sprint modifier: " + this.c.sprintSyncs);
+            this.c.player.getAttribute(net.minecraft.world.entity.ai.attributes.Attributes.MOVEMENT_SPEED).removeModifier(PROBE_MODIFIER);
+            this.note("ServerPlayer.isSprinting " + this.c.player.isSprinting() + " (sprint stays with the replayed commands)");
         });
         this.honestAfter(id, NONE, 0);
         this.finish(id);
@@ -2209,6 +2313,9 @@ final class AuthCheatScenarios {
         int ticks;
         boolean kicked;
         boolean gone;
+        int serverErrors;
+        String lastServerError = "";
+        int sprintSyncs;
         double claimX;
         double claimY;
         double claimZ;
@@ -2513,7 +2620,13 @@ final class AuthCheatScenarios {
                 if (packet instanceof final ServerboundPongPacket pong) {
                     this.lastPongId = pong.getId();
                 }
-                this.fake.deliver(packet);
+                try {
+                    this.fake.deliver(packet);
+                } catch (final RuntimeException failure) {
+                    // On a real connection this surfaces as a packet-handling error; the cheater keeps going
+                    this.serverErrors++;
+                    this.lastServerError = failure.toString();
+                }
             }
         }
 
@@ -2543,6 +2656,13 @@ final class AuthCheatScenarios {
                     }
                 }
                 case final ClientboundUpdateAttributesPacket attributes when attributes.getEntityId() == self -> {
+                    for (final ClientboundUpdateAttributesPacket.AttributeSnapshot snapshot : attributes.getValues()) {
+                        for (final net.minecraft.world.entity.ai.attributes.AttributeModifier modifier : snapshot.modifiers()) {
+                            if (modifier.id().equals(gg.hcfrevival.revival.auth.view.ClientAttributes.SPRINTING_MODIFIER_ID)) {
+                                this.sprintSyncs++;
+                            }
+                        }
+                    }
                     this.view.attributes.apply(attributes.getValues());
                     this.model.attributes(attributes.getValues());
                 }
