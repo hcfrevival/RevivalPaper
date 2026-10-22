@@ -26,6 +26,7 @@ import net.minecraft.world.entity.player.Input;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.equipment.Equippable;
 import net.minecraft.world.level.GameType;
+import org.jspecify.annotations.Nullable;
 
 /**
  * The movement port ({@code auth.sim}: {@link MovementSim} over a {@link SimPlayer}) behind the netcode's
@@ -126,10 +127,14 @@ public final class PortSimulation implements Simulation {
 
     @Override
     public boolean seedFromMove(final double fromX, final double fromY, final double fromZ, final double toX, final double toY, final double toZ,
-                                final float yRot, final float xRot, final boolean onGround, final ClientView view, final WorldView world) {
+                                final @Nullable Input keys, final float yRot, final float xRot, final boolean onGround, final ClientView view,
+                                final WorldView world) {
         this.seed(toX, toY, toZ, 0.0, 0.0, 0.0, yRot, xRot, onGround, view, world);
-        // p is the state the tick started from (its position and velocity are not read): the seed, synced from the view
-        final int why = this.sim.velocityAfterMove(this.player, fromX, fromY, fromZ, toX, toY, toZ, world, this.seedVelocity);
+        // p is the state the tick started from (its position and velocity are not read): the seed, synced from the view.
+        // With the tick's sent keys the port drops the cases the keys decide (auth-sim §3.4); seeding only, never per tick
+        final int why = keys != null
+            ? this.sim.velocityAfterMove(this.player, keys, fromX, fromY, fromZ, toX, toY, toZ, world, this.seedVelocity)
+            : this.sim.velocityAfterMove(this.player, fromX, fromY, fromZ, toX, toY, toZ, world, this.seedVelocity);
         final double[] v = this.seedVelocity;
         if ((why & MovementSim.VELOCITY_NO_TICK) == 0 && Double.isFinite(v[0]) && Double.isFinite(v[1]) && Double.isFinite(v[2])) {
             this.sim.setVelocity(this.player, v[0], v[1], v[2]);
@@ -328,6 +333,13 @@ public final class PortSimulation implements Simulation {
     @Override
     public void releaseUsingItem() {
         this.sim.releaseUsingItem(this.player);
+    }
+
+    @Override
+    public void resetAttackStrength() {
+        // MultiPlayerGameMode.stopDestroyBlock -> resetAttackStrengthTicker, in the drain before the tick
+        this.player.attackStrengthTicker = 0;
+        this.belief.attackStrengthTicker = 0;
     }
 
     @Override

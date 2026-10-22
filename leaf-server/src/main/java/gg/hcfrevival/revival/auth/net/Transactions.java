@@ -137,7 +137,16 @@ public final class Transactions {
     private int rttSampleCount;
     private int rttSampleIndex;
     private long rttBaseNanos = 100_000_000L;
+    private long rttHighNanos = 100_000_000L;
     private long lastAckedSentNanos;
+    // The ack clock as the timer may use it (review timer-backlog-permanent): a drain's pongs count only once they have
+    // settled, so the catch-up ticks that follow them in the same frame keep the credit the stall left
+    private long settledAckSentNanos;
+    private long pendingAckSentNanos;
+    private long pendingAckArrivalNanos;
+    // Pings dropped by a reset or overflow whose pongs may still come back: tolerated as duplicates, not unknown
+    private int droppedNewestId;
+    private int droppedCount;
     private long lastRttNanos;
     private int lastRttTicks;
     private long acked;
@@ -357,8 +366,18 @@ public final class Transactions {
         }
     }
 
+    /**
+     * Sends and flushes the bundle a coalescing scope outside the server tick gathered (review PT-02: windows replayed
+     * between ticks share one ping), if one is open.
+     */
+    public void flushOpen(final Connection connection) {
+        synchronized (this) {
+            this.closeOpen(connection, null, true);
+        }
+    }
+
     /** Sends the open bundle now (a packet that can't join it is next, or the open bundle is full). */
-    private void closeOpen(final Connection connection, final Context context, final boolean flush) {
+    private void closeOpen(final Connection connection, final @Nullable Context context, final boolean flush) {
         final List<Packet<? super ClientGamePacketListener>> bundle = this.open;
         this.open = null;
         if (bundle == null) {
@@ -518,6 +537,7 @@ public final class Transactions {
     }
 
     private void overflow() {
+        this.dropOutstanding();
         this.snapshots.clear();
         this.auditExpected.clear();
         Arrays.fill(this.entryPackets, null);
@@ -527,6 +547,28 @@ public final class Transactions {
         this.pingHead = 0;
         this.overflows++;
         this.lostSync = true;
+    }
+
+    // Remembers the outstanding ids being dropped (consecutive, decreasing, wrapping at PING_MIN)
+    private void dropOutstanding() {
+        if (this.pingCount == 0) {
+            return;
+        }
+        final int newest = this.pingIds[(this.pingHead + this.pingCount - 1) & (this.pingIds.length - 1)];
+        this.droppedCount = this.droppedCount == 0 ? this.pingCount : this.droppedCount + this.pingCount;
+        this.droppedNewestId = newest;
+    }
+
+    // Whether id is one of the droppedCount ids at or before droppedNewestId (older ids are larger)
+    private boolean dropped(final int id) {
+        if (this.droppedCount == 0 || !ours(id)) {
+            return false;
+        }
+        long distance = (long) id - this.droppedNewestId;
+        if (distance < 0) {
+            distance += (long) PING_MAX - PING_MIN + 1; // the range wrapped from PING_MIN back to PING_MAX
+        }
+        return distance < this.droppedCount;
     }
 
     private void growPings() {
@@ -617,9 +659,14 @@ public final class Transactions {
                         return DUPLICATE;
                     }
                 }
+                if (this.dropped(id)) {
+                    this.duplicates++;
+                    return DUPLICATE; // a ping a reset or overflow dropped: answered, but nothing of it is left to apply
+                }
                 this.violations++;
                 return UNKNOWN;
             }
+            this.droppedCount = 0; // a pong for a newer ping: every dropped one was answered or skipped by now
             final int slot = (this.pingHead + found) & mask;
             final long seq = this.pingSeqs[slot];
             final long sentNanos = this.pingSentNanos[slot];
@@ -634,6 +681,10 @@ public final class Transactions {
             this.acked++;
             final long now = System.nanoTime();
             this.lastAckedSentNanos = Math.max(this.lastAckedSentNanos, sentNanos);
+            if (this.pendingAckArrivalNanos == 0L) {
+                this.pendingAckArrivalNanos = now;
+            }
+            this.pendingAckSentNanos = Math.max(this.pendingAckSentNanos, sentNanos);
             this.lastRttNanos = now - sentNanos;
             this.lastRttTicks = serverTick - sentTick;
             this.sampleRtt(this.lastRttNanos);
@@ -699,7 +750,13 @@ public final class Transactions {
             final long[] sorted = Arrays.copyOf(this.rttSamples, this.rttSampleCount);
             Arrays.sort(sorted);
             this.rttBaseNanos = sorted[this.rttSampleCount / 10];
+            this.rttHighNanos = sorted[Math.min(this.rttSampleCount - 1, this.rttSampleCount * 9 / 10)];
         }
+    }
+
+    /** The p90 of the last 256 ack round trips: with {@link #rttBaseNanos}, the player's own jitter. */
+    public long rttHighNanos() {
+        return this.rttHighNanos;
     }
 
     /** Age of the oldest unanswered ping, or 0. */
@@ -719,6 +776,7 @@ public final class Transactions {
     /** Drops every outstanding ping and entry (mode turned off, resync). */
     public void reset() {
         synchronized (this) {
+            this.dropOutstanding();
             this.snapshots.clear();
             this.auditExpected.clear();
             Arrays.fill(this.entryPackets, null);
@@ -737,6 +795,21 @@ public final class Transactions {
     /** {@code System.nanoTime()} at which the newest acked ping was sent: the client's clock is at least this. */
     public long lastAckedSentNanos() {
         return this.lastAckedSentNanos;
+    }
+
+    /**
+     * The ack clock for the tick timer: like {@link #lastAckedSentNanos}, but pongs count only once {@code settleNanos}
+     * has passed since the first of them arrived. A client back from a stall answers every ping it queued and then runs
+     * its catch-up ticks in the same frame; those ticks are owed for the stall, which the pongs just before them must
+     * not erase. A client that keeps answering while it sends no ticks still has its idle time forfeited, a settle later.
+     */
+    public long settledAckSentNanos(final long nowNanos, final long settleNanos) {
+        if (this.pendingAckArrivalNanos != 0L && nowNanos - this.pendingAckArrivalNanos >= settleNanos) {
+            this.settledAckSentNanos = Math.max(this.settledAckSentNanos, this.pendingAckSentNanos);
+            this.pendingAckArrivalNanos = 0L;
+            this.pendingAckSentNanos = 0L;
+        }
+        return this.settledAckSentNanos;
     }
 
     public long lastRttNanos() {

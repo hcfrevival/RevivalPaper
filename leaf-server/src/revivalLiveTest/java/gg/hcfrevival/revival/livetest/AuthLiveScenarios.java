@@ -160,6 +160,8 @@ final class AuthLiveScenarios {
         this.tests.after(1, "auth: visibility: a wall between two players", this::visibilitySetup);
         this.tests.after(30, "auth: visibility: a player behind a wall is not sent", this::visibilityHidden);
         this.tests.after(20, "auth: visibility: shown again as soon as the wall is gone", this::visibilityShown);
+        this.tests.after(5, "auth: a far teleport, into chunks the client hasn't got yet", this::farTeleport);
+        this.tests.after(80, "auth: a far teleport needs no correction: the truth holds the client's chunks", this::farTeleportChecked);
         this.tests.after(2, "auth: cleanup", this::cleanup);
     }
 
@@ -204,7 +206,10 @@ final class AuthLiveScenarios {
         if (this.clientWorld.level() == null) {
             // The model starts where the client is after the join teleport, as the server's view was seeded
             this.clientView.seed(this.client.player);
-            this.clientWorld.setLevel(this.level, false);
+            // The client's chunks: what Moonrise has sent it so far, then every chunk and forget packet it applies
+            this.clientWorld.setLevel(this.level, true);
+            this.clientWorld.seedChunks(this.client.player.moonrise$getChunkLoader().getSentChunksRaw());
+            this.clientWorld.endProvisional(); // the client knows exactly what it holds: no server-loaded fallback for its model
             final Vec3 at = this.client.clientPosition();
             this.clientModel.seed(at.x, at.y, at.z, 0.0, 0.0, 0.0, this.yaw, 0.0F, this.client.player.onGround(), this.clientView, this.clientWorld);
         }
@@ -221,6 +226,10 @@ final class AuthLiveScenarios {
                 this.clientView.entityData(data.packedItems(), this.clientEcho);
             } else if (packet instanceof final net.minecraft.network.protocol.game.ClientboundPlayerAbilitiesPacket abilities) {
                 this.clientView.abilities(abilities);
+            } else if (packet instanceof final net.minecraft.network.protocol.game.ClientboundLevelChunkWithLightPacket chunk) {
+                this.clientWorld.onChunk(chunk.x(), chunk.z());
+            } else if (packet instanceof final net.minecraft.network.protocol.game.ClientboundForgetLevelChunkPacket forget) {
+                this.clientWorld.onForgetChunk(forget.pos().x(), forget.pos().z());
             } else if (packet instanceof final net.minecraft.network.protocol.game.ClientboundSetHealthPacket health) {
                 this.clientView.health(health);
             } else if (packet instanceof final net.minecraft.network.protocol.game.ClientboundRespawnPacket respawn) {
@@ -234,7 +243,10 @@ final class AuthLiveScenarios {
         }
         this.preTick.accept(this.client.ticks); // this tick's keybinds, before it moves
         final boolean wasFlying = this.clientView.flying();
-        this.clientModel.tick(this.keys, this.previousKeys, this.yaw, this.pitch, 0, -1, false, this.clientView, this.clientWorld);
+        if (this.client.loaded()) {
+            // LocalPlayer.tick does nothing until the client has loaded (its loading screen waits for its chunk)
+            this.clientModel.tick(this.keys, this.previousKeys, this.yaw, this.pitch, 0, -1, false, this.clientView, this.clientWorld);
+        }
         this.previousKeys = this.keys;
         if (this.clientView.flying() != wasFlying) {
             // LocalPlayer.aiStep toggled flight (double jump) and sent it at once, before the tick's input and move
@@ -559,6 +571,17 @@ final class AuthLiveScenarios {
         boolean flightArmed;
         boolean flightFired;
         final List<String> anomalies = new ArrayList<>();
+        int failedMoves;
+
+        // Paper's moved-too-quickly / moved-wrongly / clipped-into-block checks must never judge an authoritative truth
+        @org.bukkit.event.EventHandler
+        public void onFailMove(final io.papermc.paper.event.player.PlayerFailMoveEvent event) {
+            final FakeClient walker = AuthLiveScenarios.this.client;
+            if (walker != null && event.getPlayer().getUniqueId().equals(walker.player.getUUID()) && walker.player.revivalAuth.mode() == AuthMode.ENFORCE) {
+                this.failedMoves++;
+                AuthLiveScenarios.this.tests.getLogger().warning("Paper judged a truth: " + event.getFailReason());
+            }
+        }
 
         @org.bukkit.event.EventHandler
         public void onAnomaly(final gg.hcfrevival.revival.api.event.AuthInputAnomalyEvent event) {
@@ -1021,6 +1044,31 @@ final class AuthLiveScenarios {
         final Simulation sim = this.auth.simulation();
         this.tests.check(this.clientModel.x() == sim.x() && this.clientModel.y() == sim.y() && this.clientModel.z() == sim.z(), "client and truth agree bit for bit");
         this.client.player.setHealth(20.0F);
+        this.tests.check(this.plugins.failedMoves == 0, "Paper's movement checks never judged a truth under enforce (" + this.plugins.failedMoves + ")");
+    }
+
+    // §15.2: the client's chunks after a far teleport ------------------------------------------------------------------
+
+    private void farTeleport() {
+        this.correctionsBefore = this.auth.stats().corrections();
+        this.overBefore = this.auth.stats().overThreshold();
+        this.keys = Input.EMPTY;
+        this.preTick = tick -> {
+        };
+        final int x = Mth.floor(this.client.player.getX()) + 400;
+        final int z = Mth.floor(this.client.player.getZ());
+        this.client.player.connection.teleport(x + 0.5, this.client.player.getY(), z + 0.5, this.yaw, 0.0F);
+        this.tests.check(this.auth.world().chunksKnown(), "the server knows which chunks the client holds");
+    }
+
+    private void farTeleportChecked() {
+        final Simulation sim = this.auth.simulation();
+        this.tests.check(this.auth.world().hasChunkAt(Mth.floor(sim.x()), Mth.floor(sim.z())), "the destination chunk reached the client");
+        this.tests.check(this.auth.stats().corrections() == this.correctionsBefore, "no correction (" + (this.auth.stats().corrections() - this.correctionsBefore)
+            + "; exempt chunk-unknown " + this.auth.stats().exempt(gg.hcfrevival.revival.auth.AuthStats.EXEMPT_CHUNK_UNKNOWN) + ", inexact seeds "
+            + this.auth.stats().inexactSeeds() + ", missing positions " + this.auth.stats().missingPositionViolations() + ")");
+        this.tests.check(this.clientModel.x() == sim.x() && this.clientModel.y() == sim.y() && this.clientModel.z() == sim.z(),
+            "client and truth agree bit for bit: " + new Vec3(this.clientModel.x(), this.clientModel.y(), this.clientModel.z()) + " vs " + new Vec3(sim.x(), sim.y(), sim.z()));
     }
 
     // §15.2: an honest placement --------------------------------------------------------------------------------------
@@ -1212,6 +1260,40 @@ final class AuthLiveScenarios {
 
     /** The real port, with every velocity the netcode hands it recorded with the window it was applied in. */
     private record Recording(Simulation delegate, AuthPlayer owner, List<int[]> velocities) implements Simulation {
+
+        // Every default of Simulation goes to the port too: a default left here would run the server's truth on a no-op
+
+        @Override
+        public boolean beliefValid() {
+            return this.delegate.beliefValid();
+        }
+
+        @Override
+        public void rebaseBelief(final double x, final double y, final double z, final double vx, final double vy, final double vz) {
+            this.delegate.rebaseBelief(x, y, z, vx, vy, vz);
+        }
+
+        @Override
+        public boolean beliefInsideShape(final gg.hcfrevival.revival.auth.view.WorldView world) {
+            return this.delegate.beliefInsideShape(world);
+        }
+
+        @Override
+        public void beliefCorrected(final net.minecraft.world.entity.PositionMoveRotation change, final java.util.Set<net.minecraft.world.entity.Relative> relatives) {
+            this.delegate.beliefCorrected(change, relatives);
+        }
+
+        @Override
+        public void resetAttackStrength() {
+            this.delegate.resetAttackStrength();
+        }
+
+        @Override
+        public boolean seedFromMove(final double fromX, final double fromY, final double fromZ, final double toX, final double toY, final double toZ,
+                                    final @org.jspecify.annotations.Nullable Input keys, final float yRot, final float xRot, final boolean onGround,
+                                    final ClientView view, final gg.hcfrevival.revival.auth.view.WorldView world) {
+            return this.delegate.seedFromMove(fromX, fromY, fromZ, toX, toY, toZ, keys, yRot, xRot, onGround, view, world);
+        }
 
         @Override
         public void setVelocity(final double x, final double y, final double z) {

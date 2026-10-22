@@ -14,23 +14,25 @@ import net.minecraft.world.level.entity.EntityTypeTest;
 import net.minecraft.world.phys.AABB;
 
 /**
- * Movers outside the player's own tick in the client's level (design §15.6, auth-sim §6): a tick near one is the port's
- * {@code EXTERNAL_MOVER} exemption (the claim through vanilla's checks, a re-seed after) instead of a correction.
+ * Movers outside the player's own tick in the client's level (design §15.6, auth-sim §6):
  * <ul>
- *   <li>a piston's moving blocks or a shulker box's lid, from the {@code BlockEvent} the client applied, for
- *       {@code external-movers.block-window-ticks} within {@code external-movers.block-range} of it;</li>
- *   <li>solid entities the port has no collider for (boats, shulkers, adult happy ghasts) within
- *       {@code external-movers.entity-range} of the player's box;</li>
- *   <li>a potent sulfur geyser under a player in water, down to {@code external-movers.geyser-depth} blocks;</li>
- *   <li>a fishing rod pull ({@code EntityEvent 31}), on the tick the client applies it.</li>
+ *   <li>{@link #PUSH}: a piston's moving blocks or a shulker box's lid, from the {@code BlockEvent} the client applied,
+ *       for {@code external-movers.block-window-ticks} within {@code external-movers.block-range} of it. The truth is
+ *       still simulated; a claim within {@code external-movers.band} of it is adopted, up to
+ *       {@code external-movers.drift-cap} per drift window (review E2: an exemption handed the tick to vanilla);</li>
+ *   <li>{@link #SOLID}: solid entities the port has no collider for (boats, shulkers, adult happy ghasts) touching the
+ *       player's box, and a potent sulfur geyser under a player in water: the port's {@code EXTERNAL_MOVER} exemption,
+ *       vanilla taking the claim only within {@code external-movers.max-move} of where the server holds the player.</li>
  * </ul>
+ * A fishing rod pull is no mover: the client adds {@code (owner - hook) * 0.1} to its own velocity in the drain
+ * ({@code FishingHook.pullEntity}), which the truth does too.
  * Entity pushes need no flag: the enforce precondition (the client's own team collision rule is {@code NEVER}) turns
  * every push of the local player off on the client ({@code EntitySelector.pushableBy}). Main thread, per player.
  */
 final class ExternalMovers {
 
     private static final EntityTypeTest<Entity, Entity> ANY = EntityTypeTest.forClass(Entity.class);
-    private static final Predicate<Entity> SOLID = entity -> entity instanceof net.minecraft.world.entity.vehicle.boat.AbstractBoat
+    private static final Predicate<Entity> SOLID_ENTITY = entity -> entity instanceof net.minecraft.world.entity.vehicle.boat.AbstractBoat
         || entity instanceof net.minecraft.world.entity.monster.Shulker
         || entity instanceof final net.minecraft.world.entity.animal.happyghast.HappyGhast ghast && !ghast.isBaby();
 
@@ -40,7 +42,11 @@ final class ExternalMovers {
     private double blockX;
     private double blockY;
     private double blockZ;
-    private int rodTick = Integer.MIN_VALUE / 2;
+
+    /** {@link #near} results. */
+    static final int NONE = 0;
+    static final int PUSH = 1;
+    static final int SOLID = 2;
 
     /** A piston or shulker box {@code BlockEvent} the client applied before tick {@code tick}. */
     void blockEvent(final int tick, final BlockPos pos) {
@@ -50,21 +56,26 @@ final class ExternalMovers {
         this.blockZ = pos.getZ() + 0.5;
     }
 
-    /** The client applied a rod pull on itself before tick {@code tick}. */
-    void rodPull(final int tick) {
-        this.rodTick = tick;
-    }
-
     void reset() {
         this.blockTick = Integer.MIN_VALUE / 2;
-        this.rodTick = Integer.MIN_VALUE / 2;
     }
 
-    /** Whether something may move the player at {@code (x, y, z)} with box {@code box} in client tick {@code tick}. */
-    boolean near(final ServerPlayer player, final int tick, final double x, final double y, final double z, final AABB box, final WorldView world,
-                 final AuthoritativeSettings settings) {
-        if (tick == this.rodTick) {
-            return true;
+    /**
+     * What may move the player at {@code (x, y, z)} with box {@code box} in client tick {@code tick}: {@link #NONE},
+     * {@link #PUSH} or {@link #SOLID}.
+     */
+    int near(final ServerPlayer player, final int tick, final double x, final double y, final double z, final AABB box, final WorldView world,
+             final AuthoritativeSettings settings) {
+        final double entityRange = settings.externalMoverEntityRange();
+        if (entityRange > 0.0) {
+            player.level().getEntities(ANY, box.inflate(entityRange), SOLID_ENTITY, this.found, 1);
+            if (!this.found.isEmpty()) {
+                this.found.clear();
+                return SOLID;
+            }
+        }
+        if (this.geyserBelow(box, world, settings.externalMoverGeyserDepth())) {
+            return SOLID;
         }
         if (tick - this.blockTick <= settings.externalMoverBlockWindowTicks()) {
             final double dx = x - this.blockX;
@@ -72,18 +83,10 @@ final class ExternalMovers {
             final double dz = z - this.blockZ;
             final double range = settings.externalMoverBlockRange();
             if (dx * dx + dy * dy + dz * dz <= range * range) {
-                return true;
+                return PUSH;
             }
         }
-        final double entityRange = settings.externalMoverEntityRange();
-        if (entityRange > 0.0) {
-            player.level().getEntities(ANY, box.inflate(entityRange), SOLID, this.found, 1);
-            if (!this.found.isEmpty()) {
-                this.found.clear();
-                return true;
-            }
-        }
-        return this.geyserBelow(box, world, settings.externalMoverGeyserDepth());
+        return NONE;
     }
 
     // LAUNCH_ENTITY_TICKER launches entities in the water column above potent sulfur (PotentSulfurBlockEntity)

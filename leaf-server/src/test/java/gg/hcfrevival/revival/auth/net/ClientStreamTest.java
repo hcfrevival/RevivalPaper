@@ -31,7 +31,7 @@ class ClientStreamTest {
     @Test
     void aVanillaTickIsOneLegalWindow() {
         final ClientStream stream = new ClientStream();
-        assertTrue(stream.recordAck(0, 0, false, 0));
+        assertTrue(stream.recordAck(0, 0, 0, 0));
         assertTrue(stream.record(new ServerboundSetCarriedItemPacket(2)));
         assertTrue(stream.record(new ServerboundAttackPacket(9)));
         assertTrue(stream.record(ServerboundPunchPacket.INSTANCE));
@@ -61,7 +61,7 @@ class ClientStreamTest {
     void pongsAndAcceptsBelongToTheDrain() {
         final ClientStream stream = new ClientStream();
         stream.record(new ServerboundAttackPacket(1));
-        assertFalse(stream.recordAck(0, 0, false, 0), "a pong after a keybind packet");
+        assertFalse(stream.recordAck(0, 0, 0, 0), "a pong after a keybind packet");
         assertFalse(stream.recordAccept(new ServerboundAcceptTeleportationPacket(3, 0.0, 0.0, 0.0, 0.0F, 0.0F)));
         assertEquals(2, stream.violations());
     }
@@ -76,7 +76,7 @@ class ClientStreamTest {
     @Test
     void theRotationReplyIsTheMoveRightAfterItsPong() {
         final ClientStream stream = new ClientStream();
-        stream.recordAck(0, 1, true, 0);
+        stream.recordAck(0, 1, 1, 0);
         assertTrue(stream.record(new ServerboundMovePlayerPacket.Rot(90.0F, 0.0F, false, false)));
         assertTrue(stream.record(new ServerboundMovePlayerPacket.PosRot(new Vec3(1.0, 2.0, 3.0), 90.0F, 0.0F, true, false)),
             "the tick's own move is still allowed after the reply");
@@ -89,8 +89,8 @@ class ClientStreamTest {
     @Test
     void aRotationPacketNotRightAfterThePongIsAClaim() {
         final ClientStream stream = new ClientStream();
-        stream.recordAck(0, 1, true, 0);
-        stream.recordAck(1, 1, false, 0);
+        stream.recordAck(0, 1, 1, 0);
+        stream.recordAck(1, 1, 0, 0);
         stream.record(new ServerboundMovePlayerPacket.Rot(90.0F, 0.0F, false, false));
         final ClientStream.Window window = stream.close(ServerboundClientTickEndPacket.INSTANCE, 0L);
         assertEquals(ClientStream.PACKET, window.kind(2));
@@ -99,13 +99,13 @@ class ClientStreamTest {
     @Test
     void aCorrectionsAcceptMustFollowItsPong() {
         final ClientStream stream = new ClientStream();
-        stream.recordAck(0, 1, false, -1_500_000_000);
+        stream.recordAck(0, 1, 0, -1_500_000_000);
         assertTrue(stream.recordAccept(new ServerboundAcceptTeleportationPacket(-1_500_000_000, 0.0, 0.0, 0.0, 0.0F, 0.0F)));
-        stream.recordAck(1, 2, false, -1_500_000_001);
-        stream.recordAck(2, 2, false, 0);
+        stream.recordAck(1, 2, 0, -1_500_000_001);
+        stream.recordAck(2, 2, 0, 0);
         assertTrue(stream.recordAccept(new ServerboundAcceptTeleportationPacket(-1_500_000_001, 0.0, 0.0, 0.0, 0.0F, 0.0F)),
             "late but still in the drain");
-        stream.recordAck(2, 3, false, -1_500_000_002);
+        stream.recordAck(2, 3, 0, -1_500_000_002);
         assertFalse(stream.recordAccept(new ServerboundAcceptTeleportationPacket(-7, 0.0, 0.0, 0.0, 0.0F, 0.0F)), "the wrong accept next");
     }
 
@@ -149,5 +149,128 @@ class ClientStreamTest {
         }
         assertEquals(10, overflow);
         assertTrue(stream.openWindowAgeNanos(System.nanoTime() + 1_000_000L) > 0L, "the open window has an age");
+    }
+
+    @Test
+    void everyRotationOfABundleIsAnsweredAfterItsAccepts() {
+        // Review rotation-reply-adjacency-kick: [ping, position, rotation] -> Pong, Accept, Rot; two rotations -> two Rots
+        final ClientStream stream = new ClientStream();
+        stream.recordAck(0, 3, 2, 0);
+        assertTrue(stream.recordAccept(new ServerboundAcceptTeleportationPacket(5, 0.0, 0.0, 0.0, 0.0F, 0.0F)));
+        assertTrue(stream.record(new ServerboundMovePlayerPacket.Rot(90.0F, 0.0F, false, false)));
+        assertTrue(stream.record(new ServerboundMovePlayerPacket.Rot(45.0F, 0.0F, false, false)));
+        assertTrue(stream.record(new ServerboundMovePlayerPacket.PosRot(new Vec3(1.0, 2.0, 3.0), 45.0F, 0.0F, true, false)),
+            "the tick's own move is not a second claim");
+        final ClientStream.Window window = stream.close(ServerboundClientTickEndPacket.INSTANCE, 0L);
+        assertEquals(ClientStream.ROTATION_REPLY, window.kind(2));
+        assertEquals(ClientStream.ROTATION_REPLY, window.kind(3));
+        assertEquals(ClientStream.PACKET, window.kind(4));
+        assertEquals(0, window.violations());
+    }
+
+    @Test
+    void theAbortAfterAnAcceptIsADrainReply() {
+        // Review abort-destroy-after-accept-kick: handleMovePlayer accepts, then stopDestroyBlock sends ABORT
+        final ClientStream stream = new ClientStream();
+        stream.recordAck(0, 1, 0, 0);
+        stream.recordAccept(new ServerboundAcceptTeleportationPacket(5, 0.0, 0.0, 0.0, 0.0F, 0.0F));
+        assertTrue(stream.record(new ServerboundPlayerActionPacket(ServerboundPlayerActionPacket.Action.ABORT_DESTROY_BLOCK, BlockPos.ZERO, Direction.DOWN)));
+        assertTrue(stream.recordAck(1, 1, 0, 0), "another pong of the same drain stays legal");
+        assertTrue(stream.record(new ServerboundAttackPacket(7)));
+        final ClientStream.Window window = stream.close(ServerboundClientTickEndPacket.INSTANCE, 0L);
+        assertEquals(ClientStream.DRAIN_ABORT, window.kind(2));
+        assertEquals(0, window.violations());
+        // Not after an accept: a keybind like any other
+        stream.recordAck(1, 1, 0, 0);
+        stream.record(new ServerboundPlayerActionPacket(ServerboundPlayerActionPacket.Action.ABORT_DESTROY_BLOCK, BlockPos.ZERO, Direction.DOWN));
+        assertFalse(stream.recordAck(1, 1, 0, 0));
+    }
+
+    private static final long MS = 1_000_000L;
+
+    @Test
+    void catchUpTicksAfterAStallKeepTheirCredit() {
+        // Review timer-backlog-permanent: the drain's pongs come right before the frame's catch-up ticks, which the
+        // stall is owed; with the old floor (newest ack) only about (rtt + drift) / 50 of them ran and the rest queued
+        final ClientStream stream = new ClientStream();
+        final TickClock clock = new TickClock();
+        final long start = 1_000_000 * MS;
+        final long rtt = 30 * MS;
+        clock.start(start, 50 * MS, 10);
+        long now = start;
+        for (int tick = 0; tick < 40; tick++) {
+            now += 50 * MS;
+            stream.notePong(now - 2 * MS, now - rtt);
+            stream.close(ServerboundClientTickEndPacket.INSTANCE, now);
+            assertTrue(clock.tryRun(now, stream.poll().timerAckNanos(), 50 * MS, 120 * MS, 10), "steady tick " + tick);
+        }
+        // 400 ms frame stall: no pongs, no ticks. Then the drain answers the 8 queued pings and 8 catch-up ticks follow
+        now += 400 * MS;
+        for (int ping = 7; ping >= 0; ping--) {
+            stream.notePong(now, now - rtt / 2 - ping * 50 * MS);
+        }
+        int ran = 0;
+        for (int tick = 0; tick < 8; tick++) {
+            now += 3 * MS; // each catch-up tick takes the client 3 ms
+            stream.close(ServerboundClientTickEndPacket.INSTANCE, now);
+            if (clock.tryRun(now, stream.poll().timerAckNanos(), 50 * MS, 120 * MS, 10)) {
+                ran++;
+            }
+        }
+        assertEquals(8, ran, "every catch-up tick runs at once: no queue is left behind");
+    }
+
+    @Test
+    void answeringWhileSendingNoTicksStillForfeitsTheTime() {
+        final ClientStream stream = new ClientStream();
+        final TickClock clock = new TickClock();
+        final long start = 1_000_000 * MS;
+        clock.start(start, 50 * MS, 10);
+        long now = start;
+        for (int tick = 0; tick < 20; tick++) {
+            now += 50 * MS;
+            stream.notePong(now - 2 * MS, now - 30 * MS);
+            stream.close(ServerboundClientTickEndPacket.INSTANCE, now);
+            assertTrue(clock.tryRun(now, stream.poll().timerAckNanos(), 50 * MS, 120 * MS, 10));
+        }
+        // 500 ms of pongs and no TickEnd (banking while visibly alive), then a burst of 10 ticks
+        for (int i = 0; i < 10; i++) {
+            now += 50 * MS;
+            stream.notePong(now, now - 30 * MS);
+        }
+        int ran = 0;
+        for (int tick = 0; tick < 10; tick++) {
+            now += MS;
+            stream.close(ServerboundClientTickEndPacket.INSTANCE, now);
+            if (clock.tryRun(now, stream.peek().timerAckNanos(), 50 * MS, 120 * MS, 10)) {
+                stream.poll();
+                ran++;
+            }
+        }
+        assertTrue(ran <= 6, "pongs from well before the burst bind it: about (settle + rtt + drift) / 50 ticks of credit, ran " + ran);
+    }
+
+    @Test
+    void aContainerCloseFromAiStepIsInOrder() {
+        // client-compat N8: standing in a portal with a screen open, LocalPlayer.aiStep closes it after the keybinds
+        final ClientStream stream = new ClientStream();
+        assertTrue(stream.record(new ServerboundAttackPacket(7)));
+        assertTrue(stream.record(new net.minecraft.network.protocol.game.ServerboundContainerClosePacket(0)), "the aiStep close");
+        assertTrue(stream.record(new ServerboundPlayerInputPacket(Input.EMPTY)));
+        assertTrue(stream.record(new ServerboundMovePlayerPacket.PosRot(new Vec3(1.0, 2.0, 3.0), 0.0F, 0.0F, true, false)));
+        final ClientStream.Window window = stream.close(ServerboundClientTickEndPacket.INSTANCE, 0L);
+        assertEquals(0, window.violations());
+        assertEquals(ClientStream.AISTEP, window.a(1));
+        // After the input it is out of place again
+        stream.record(new ServerboundPlayerInputPacket(Input.EMPTY));
+        assertFalse(stream.record(new net.minecraft.network.protocol.game.ServerboundContainerClosePacket(0)));
+    }
+
+    @Test
+    void aSecondInputIsCountedNotASecondClaim() {
+        // Design §15.8: a frame-time key press on a modded client; only a second move claim stays a protocol violation
+        final ClientStream stream = new ClientStream();
+        assertEquals(ClientStream.RECORDED, stream.recordChecked(new ServerboundPlayerInputPacket(Input.EMPTY)));
+        assertEquals(ClientStream.EXTRA_INPUT, stream.recordChecked(new ServerboundPlayerInputPacket(FORWARD)));
     }
 }

@@ -29,6 +29,7 @@ import net.minecraft.resources.Identifier;
  * @param rodReelDurability rod durability used by reeling in a hooked entity
  * @param rodCastSpeed the hook's launch speed
  * @param rodGravity the hook's gravity per tick
+ * @param rules 1.7 throws, flight and hit detection, splash potions, ender pearls and lag-compensated hits ({@link ProjectileRules})
  */
 public record LegacyProjectileSettings(
     boolean enabled,
@@ -50,7 +51,8 @@ public record LegacyProjectileSettings(
     boolean rodReelLegacyOther,
     int rodReelDurability,
     double rodCastSpeed,
-    double rodGravity
+    double rodGravity,
+    ProjectileRules rules
 ) {
 
     public static final String INHERIT = "inherit";
@@ -87,7 +89,8 @@ public record LegacyProjectileSettings(
             choice(reader, world, "fishing-rod.reel-pull-other", "legacy", "vanilla"),
             reader.getWorldInt(world, PATH + "fishing-rod.reel-durability", 3),
             reader.getWorldDouble(world, PATH + "fishing-rod.cast-speed", 1.5),
-            reader.getWorldDouble(world, PATH + "fishing-rod.gravity", 0.04)
+            reader.getWorldDouble(world, PATH + "fishing-rod.gravity", 0.04),
+            ProjectileRules.read(reader, world)
         );
     }
 

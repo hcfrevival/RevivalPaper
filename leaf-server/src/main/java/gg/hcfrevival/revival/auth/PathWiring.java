@@ -129,8 +129,8 @@ public final class PathWiring implements PathSink {
         if (old != null) {
             old.viewer.despawned();
         }
-        if (distanceSq(player, viewer) > settings.exactRadius() * settings.exactRadius()) {
-            return;
+        if (distanceSq(player, viewer) > settings.exactRadius() * settings.exactRadius() || !viewer.revivalAuth.eligible()) {
+            return; // a ViaVersion or Geyser viewer keeps vanilla tracking: stepped moves through a translator are untested (N9)
         }
         for (final Packet<?> packet : pairing) {
             if (packet instanceof final ClientboundAddEntityPacket add && add.getId() == player.getId()) {
@@ -145,6 +145,10 @@ public final class PathWiring implements PathSink {
     /** {@code ServerEntity.removePairing}. */
     static void onUnpaired(final Entity entity, final ServerPlayer viewer) {
         if (entity instanceof final ServerPlayer player) {
+            if (player.isRemoved() || player.level() != viewer.level()) {
+                // Review E12: no decision kept for a player gone (an unpair while hidden is visibility's own doing)
+                viewer.revivalAuth.visibility().forget(player.getId());
+            }
             final Target target = target(player.revivalAuth);
             if (target != null) {
                 final Fed fed = target.viewers.remove(viewer);
@@ -190,7 +194,7 @@ public final class PathWiring implements PathSink {
             Fed fed = target.viewers.get(viewer);
             final double distance = distanceSq(player, viewer);
             if (fed == null) {
-                if (distance > enter) {
+                if (distance > enter || !viewer.revivalAuth.eligible()) {
                     continue;
                 }
                 // Into range: the client's codec base is the vanilla tracker's

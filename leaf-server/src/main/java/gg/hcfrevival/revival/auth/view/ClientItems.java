@@ -139,6 +139,9 @@ public final class ClientItems {
     public static ItemStack @org.jspecify.annotations.Nullable [] snapshot(final net.minecraft.network.protocol.Packet<?> packet) {
         return switch (packet) {
             case final net.minecraft.network.protocol.game.ClientboundSetPlayerInventoryPacket slot -> new ItemStack[]{toClient(slot.contents())};
+            // Review PT-12: another container's slots are not taken stack by stack; the inventory is re-read once at the ack
+            case final net.minecraft.network.protocol.game.ClientboundContainerSetSlotPacket slot when slot.getContainerId() != 0 -> null;
+            case final net.minecraft.network.protocol.game.ClientboundContainerSetContentPacket content when content.containerId() != 0 -> null;
             case final net.minecraft.network.protocol.game.ClientboundContainerSetSlotPacket slot -> new ItemStack[]{toClient(slot.getItem())};
             case final net.minecraft.network.protocol.game.ClientboundContainerSetContentPacket content -> {
                 final ItemStack[] client = new ItemStack[content.items().size()];

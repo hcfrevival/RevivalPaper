@@ -3,6 +3,19 @@
 The netcode (`auth`, `auth.net`, `auth.view`) owns `PortSimulation`, the adapter between `AuthPlayer` and
 `MovementSim`/`SimPlayer`. These are things it needs from `auth.sim` and can't write itself. Newest first.
 
+## 2. Colliders for solid entities (2026-10-22)
+
+**Need:** the port to collide with the solid entities a 26.3 client collides with: boats (`AbstractBoat.canBeCollidedWith`),
+shulkers, and adult happy ghasts (standing on them, and the ghast carrying its riders' platform), read from a list the
+netcode passes in (their boxes as this client shows them: the viewer's mirror once the combat side mirrors non-players,
+the server's boxes until then). `SimWorld` could grow `entityColliders(AABB sweep, out)`.
+
+**Why:** review E2. Today a tick touching one of them is the port's `EXTERNAL_MOVER` exemption: vanilla takes the claim
+(bounded by `external-movers.max-move`, 1 block per axis since 2026-10-22, and contact only). With colliders the
+exemption goes and the truth stays authoritative next to boats (HCF boat clutches, shulker bases).
+
+**Where it's used:** `ExternalMovers.near` would stop returning `SOLID` for entities the port collides with.
+
 ## 1. Seed velocity from a claimed move (2026-10-21) — done 2026-10-21
 
 **Done:** `MovementSim.velocityAfterMove(p, fromX, fromY, fromZ, toX, toY, toZ, world, out)`, plus an overload taking the
@@ -21,6 +34,10 @@ tick's sent `Input` after `p` (use it: the keys remove `VELOCITY_KEYS`, 16% of t
   client seeded mid-air falls with a velocity within an ulp of the position instead of a tick of gravity off, and a
   fall from rest at y = 0 is exact.
 - The result is before attached rockets: call `fireworkBoost` per rocket after it, as after `tick`.
+- Cost: about 30-120 µs per call with the keys, 200-600 µs without; allocation-free after the first call. For seeds and
+  corrections, not every tick.
+- Proof (auth-sim.md §4 item 5): 0 wrong determined axes on 4.8M oracle ticks, the 80 real-client traces and the 60k
+  fuzz-script ticks, with the state's position, velocity and rotation poisoned.
 
 **Need:** `MovementSim.velocityAfterMove(SimPlayer p, double fromX, fromY, fromZ, double toX, toY, toZ, SimWorld world, double[] out)`:
 the `deltaMovement` the client has at the end of a tick whose `move` went from `from` to `to`, run through the port's

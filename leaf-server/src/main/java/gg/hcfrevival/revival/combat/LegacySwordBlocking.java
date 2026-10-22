@@ -41,13 +41,19 @@ public final class LegacySwordBlocking {
         return settings.swordBlocking().enabled() && LegacyAttack.isLegacyWeapon(stack, settings.legacyCombat());
     }
 
-    /** Right click with a legacy weapon: whether to start blocking. Re-arms the sprint knock when configured. */
+    /**
+     * Right click with a legacy weapon: whether to start blocking. Re-arms the sprint knock when configured, and starts
+     * the block's Neue parry clock ({@link NeueCombat}; the netcode also reports it at the client tick it went up).
+     */
     public static boolean startBlocking(final Player player, final ItemStack stack) {
         if (!isBlockingWeapon(stack)) {
             return false;
         }
-        if (Revival.settings().swordBlocking().rearmSprintOnBlock() && player instanceof final ServerPlayer serverPlayer) {
-            serverPlayer.revivalSprintLedger.rearm(serverPlayer.onGround());
+        if (player instanceof final ServerPlayer serverPlayer) {
+            if (Revival.settings().swordBlocking().rearmSprintOnBlock()) {
+                serverPlayer.revivalSprintLedger.rearm(serverPlayer.onGround());
+            }
+            NeueCombat.blockStarted(serverPlayer);
         }
         return true;
     }

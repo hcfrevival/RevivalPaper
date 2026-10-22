@@ -9,12 +9,16 @@ package gg.hcfrevival.revival.auth.input;
  *       included;</li>
  *   <li>{@link #ATTACK_AFTER_USE}: attack clicks are handled before use clicks, so no attack follows a use in one
  *       tick;</li>
- *   <li>{@link #ATTACK_AFTER_CLOSE}: a screen eats the clicks made while it is open, and closing it adds none, so an
+ *   <li>{@link #ATTACK_AFTER_CLOSE}: a screen eats the clicks made while it is open, and closing it adds none: every
+ *       tick the screen was open set {@code missTime = 10000}, so the next tick's {@code startAttack} drops every
+ *       click until {@code continueAttack} clears it (report 02 §2.3, {@code Minecraft.java:1816-1826, 1658}). An
  *       attack in the tick a container closed means a click no screen saw;</li>
  *   <li>{@link #CLICK_WHILE_MOVING}: opening a screen releases every key ({@code KeyMapping.releaseAll}) and keys pressed
  *       over a screen don't reach the game, so a container click in a tick whose sent input still walks or jumps is an
- *       inventory move, unless the container closed after the click (closing re-reads the held keys, and toggled
- *       sneak and sprint come back, so those two never count);</li>
+ *       inventory move. The exception is a container that closed after the click (closing re-reads the held keys, and
+ *       toggled sneak and sprint come back, so those two never count), and only when some tick since the last close
+ *       sent no walking keys: the release of the screen's opening. A click and a close every tick while the keys stay
+ *       down never opened a screen (review E8);</li>
  *   <li>{@link #AFTER_MOVE}: nothing but {@code TickEnd} follows the move claim.</li>
  * </ul>
  * In enforce, an action that breaks a rule is not handled; the client's own prediction of it still updates the model.
@@ -51,6 +55,8 @@ public final class InputRules {
     private boolean used;
     private boolean closed;
     private boolean moved;
+    // Some tick since the last container close ran with no walking keys: a screen may have opened (releaseAll)
+    private boolean keysReleasedSinceClose = true;
 
     /** A window starts. {@code walking}: the input the window ends with has a movement or jump key down. */
     public void startWindow(final boolean walking) {
@@ -59,6 +65,15 @@ public final class InputRules {
         this.used = false;
         this.closed = false;
         this.moved = false;
+        if (!walking) {
+            this.keysReleasedSinceClose = true;
+        }
+    }
+
+    /** Whether an action breaking {@code rule} is not handled in enforce. Every rule drops for now; client profiles
+     * (design §15.8) may relax one where a client provably behaves differently. */
+    public static boolean drops(final int rule) {
+        return rule != OK;
     }
 
     /** The window's keybinds start (after its drain and screens): {@code using}, the client uses an item now. */
@@ -96,7 +111,10 @@ public final class InputRules {
         final int rule = this.rule(action, closesLater);
         switch (action) {
             case USE -> this.used = true;
-            case CONTAINER_CLOSE -> this.closed = true;
+            case CONTAINER_CLOSE -> {
+                this.closed = true;
+                this.keysReleasedSinceClose = false;
+            }
             case MOVE -> this.moved = true;
             default -> {
             }
@@ -114,7 +132,7 @@ public final class InputRules {
         return switch (action) {
             case ATTACK -> this.usingAtKeybinds ? ATTACK_WHILE_USING : this.used ? ATTACK_AFTER_USE : this.closed ? ATTACK_AFTER_CLOSE : OK;
             case USE -> this.usingAtKeybinds ? USE_WHILE_USING : OK;
-            case CONTAINER_CLICK -> this.walking && !closesLater ? CLICK_WHILE_MOVING : OK;
+            case CONTAINER_CLICK -> this.walking && !(closesLater && this.keysReleasedSinceClose) ? CLICK_WHILE_MOVING : OK;
             default -> OK;
         };
     }

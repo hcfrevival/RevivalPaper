@@ -97,6 +97,22 @@ class MovementSimTest {
     }
 
     @Test
+    void aMissingChunkKeepsGravityAndHoldsNothing() {
+        // travelInAir falls at -0.1 over a chunk only where !level.hasChunkAt(posBelow) (LivingEntity.java:2474), and
+        // ClientLevel.hasChunk is always true (ClientLevel.java:519-522): a 26.3 client keeps normal gravity over a chunk it
+        // does not have, and reads its blocks as void air (EmptyLevelChunk), so they hold nothing up. Seen live: after a
+        // 218-block teleport the client fell at -0.0784 over void air until the chunk arrived two ticks later
+        final SimTestWorld world = stone().unload(0, 0);
+        final SimPlayer p = at(0.5, 64.0, 0.5);
+        this.tick(p, world, NONE, 0.0F);
+        assertEquals((0.0 - 0.08) * modified(0.98F, 1.0F), p.vy); // -0.0784, not -0.1 × 0.98F
+        this.tick(p, world, NONE, 0.0F);
+        assertFalse(p.onGround);
+        assertEquals(64.0 + -0.0784000015258789, p.y); // through the floor the client does not have
+        assertEquals((-0.0784000015258789 - 0.08) * modified(0.98F, 1.0F), p.vy);
+    }
+
+    @Test
     void firstWalkingTickOnStone() {
         final SimTestWorld world = stone();
         final SimPlayer p = this.standing(world);

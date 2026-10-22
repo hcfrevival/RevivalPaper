@@ -21,10 +21,11 @@ import org.jspecify.annotations.Nullable;
  *       left and right change none of these.
  *   <li><b>What collide was given</b>, the velocity before the move (Entity.move: {@code xCollision} is
  *       {@code !Mth.equal(given, moved)}, restitution reads the velocity that was cut). Per axis: the move itself
- *       (free); when a collider touches the face the box ended on, a cut near the face (under Mth.equal's 1e-5, so no
- *       collision flag but a velocity that is not the move), just past it and far past it (two depths, so a bounce or a
- *       flight rule that depends on the depth shows); for y also a step-up, from a fall or from a rise of several
- *       heights (what the rise ran into sideways decides the step). The world border counts at any distance (collide
+ *       (free); when a collider touches the face the box ended on, cuts under Mth.equal's 1e-5 (no collision flag but a
+ *       velocity that is not the move; one only ulps deep, since a longer one can swap collide's x/z order), just past
+ *       it and far past it, and where a bounce or the flight rule can carry the depth into the velocity (a slime or bed
+ *       under the box, the bounciness attribute, creative flight) 39 depths from 1e-5 to 3.6; for y also a step-up,
+ *       from a fall or from a rise of several heights (what it ran into sideways decides the step). The world border counts at any distance (collide
  *       gathers it only for a move long enough to reach it). Each combination goes through the port's own
  *       {@link SimCollision#collide} and is kept only if it lands exactly on the observed move
  *       ({@link MovementSim#VELOCITY_COLLIDED} when kept ones disagree).
@@ -37,12 +38,15 @@ import org.jspecify.annotations.Nullable;
  * Plus two rules that cannot run from the move: Player.maybeBackOffFromEdge may have shortened a sneaking move, which
  * leaves the velocity longer than the move (checked by whether ground lies under every box the back-off could have
  * tested, {@link MovementSim#VELOCITY_EDGE}); and Player.travel's flight rule keeps a y from before the branch that a
- * glide or a consumed stuck multiplier changed before the move ({@link MovementSim#VELOCITY_PRE_MOVE}).
+ * glide or a consumed stuck multiplier changed before the move, so that y runs over a range and every axis it reaches
+ * (honey and slime read it) is open ({@link MovementSim#VELOCITY_PRE_MOVE}).
  * <p>
- * shortcut: the depths of a cut, the rises and the zero cases are samples, not every value. The rules after a move read what
- * collide was given only through restitution (linear in it, with one gravity threshold that the two depths straddle),
- * the flight rule (linear), travelInFluid's falling test (its sign) and the order of the inside-block walk (which of x
- * and z is larger, which the far depth flips), so two depths show any dependence; the oracle fuzz checks the claim.
+ * shortcut: the depths of a cut, the rises and the zero cases are samples, not every value. The rules after a move read
+ * what collide was given only through restitution (a bounce: linear in it, after a gravity threshold), the flight rule
+ * (linear), travelInFluid's falling test (its sign) and the order of the inside-block walk (which of x and z is larger,
+ * which the far depth flips). Without a bounce or flight only the cut's sign counts, so a few depths do; with one, the
+ * bounced velocity meets more thresholds (slime scales x and z under |vy| 0.1), so the depths are dense. The oracle fuzz
+ * checks the claim.
  * <p>
  * Not thread-safe; one per {@link MovementSim}, created on its first use (that allocates the scratch players).
  */
@@ -50,12 +54,31 @@ final class MoveVelocity {
 
     /** A cut this far past the face: under Mth.equal's 9.999999747378752E-6, so no collision flag. */
     private static final double NEAR = 5.0E-6;
-    /** A cut just past Mth.equal's threshold. */
+    /** A cut just past Mth.equal's threshold (9.999999747378752E-6), and one a little further. */
+    private static final double JUST_CUT = 1.0E-5;
     private static final double SHORT_CUT = 2.0E-5;
     /** A cut far past it: past any gravity (the attribute is at most 1), so a bounce that depends on it shows. */
     private static final double LONG_CUT = 2.0;
     /** Rises above a stepped move, from just over it to a jump (0.42) and past the step height. */
     private static final double[] RISES = {SHORT_CUT, 0.1, 0.25, 0.41999998688697815, LONG_CUT};
+    /** Player.travel's y before a glide or a stuck multiplier changed it: 0 and ±1e-3 to ±3.3 in steps of x1.5. */
+    private static final double[] BEFORE_GLIDE = new double[43];
+
+    static {
+        for (int i = 0; i < 21; i++) {
+            BEFORE_GLIDE[2 * i] = 1.0E-3 * Math.pow(1.5, i);
+            BEFORE_GLIDE[2 * i + 1] = -BEFORE_GLIDE[2 * i];
+        }
+    }
+
+    /** Depths of a cut where the depth shows in the velocity: 1e-5 to 3.6 in steps of x1.4. */
+    private static final double[] DEPTHS = new double[39];
+
+    static {
+        for (int i = 0; i < DEPTHS.length; i++) {
+            DEPTHS[i] = 1.0E-5 * Math.pow(1.4, i);
+        }
+    }
     /** Under Shapes.collide's 1e-7 early exit (Shapes.java:223-233): collide returns 0 once anything is in reach. */
     private static final double UNDER_CUT = 5.0E-8;
     /** Under Entity.move's 1e-7 squared length (Entity.java:775): not applied when another axis lost more. */
@@ -93,7 +116,7 @@ final class MoveVelocity {
     private boolean[] unclamped = new boolean[0];
     private int stateCount;
     // per axis (x, y, z): what collide may have been given
-    private final double[][] given = new double[3][24];
+    private final double[][] given = new double[3][256];
     private final int[] counts = new int[3];
     // this state's readings that land, as candidate indices (x, y, z), and the velocity each gave
     private int[] landing = new int[3 * 16];
@@ -209,7 +232,7 @@ final class MoveVelocity {
             }
             final SimPlayer s = this.states[i];
             final MovementSim.Travel t = this.travels[i];
-            this.candidates(s);
+            this.candidates(s, t);
             this.landingCount = 0;
             for (int iy = 0; iy < this.counts[1]; iy++) {
                 for (int ix = 0; ix < this.counts[0]; ix++) {
@@ -239,13 +262,22 @@ final class MoveVelocity {
                                 }
                             }
                         }
+                        this.landing(ix, iy, iz);
                         if (t.flying && (t.kind == MovementSim.Travel.GLIDE || MovementSim.isStuck(s))) {
-                            result |= MovementSim.VELOCITY_Y | MovementSim.VELOCITY_PRE_MOVE;
+                            // Player.travel's y before the branch is not the move's: a glide or a stuck multiplier changed
+                            // it first. Every axis it reaches (the flight rule, then honey or slime reading that y) is open
+                            final int at = (this.landingCount - 1) * 3;
+                            for (final double before : BEFORE_GLIDE) {
+                                this.run(s, t, dx, dy, dz, before);
+                                final int differ = this.differ(this.readingVelocity, at);
+                                if (differ != 0) {
+                                    result |= differ | MovementSim.VELOCITY_PRE_MOVE;
+                                }
+                            }
                         }
                         if (this.backedOff(s, dx, dy, dz)) {
                             result |= MovementSim.VELOCITY_X | MovementSim.VELOCITY_Z | MovementSim.VELOCITY_EDGE;
                         }
-                        this.landing(ix, iy, iz);
                     }
                 }
             }
@@ -327,8 +359,11 @@ final class MoveVelocity {
      * returned when they disagree: a move that ended against something was cut (arriving there exactly is rare), a
      * player on the ground presses down on it (gravity) or stepped up, and one that did not move on an axis stood still.
      */
-    private void candidates(final SimPlayer s) {
+    private void candidates(final SimPlayer s, final MovementSim.Travel t) {
         this.after.set(s.bb).move(this.move[0], this.move[1], this.move[2]);
+        // a cut's depth shows in the velocity only through a bounce (Entity.restituteMovementAfterCollisions) or the
+        // flight rule; then thresholds after it (the bounce's gravity test, slime's |vy| < 0.1) need many depths
+        final boolean bouncy = s.attributes.bounciness.value() > 0.0;
         for (int a = 0; a < 3; a += 2) {
             this.counts[a] = 0;
             final double m = this.move[a];
@@ -336,11 +371,11 @@ final class MoveVelocity {
                 this.add(a, m);
                 for (int side = 1; side >= -1; side -= 2) {
                     if (this.touches(s, a, side)) {
-                        this.cuts(a, m, side);
+                        this.cuts(a, m, side, bouncy);
                     }
                 }
             } else if (this.touches(s, a, m > 0.0 ? 1 : -1)) {
-                this.cuts(a, m, m > 0.0 ? 1 : -1);
+                this.cuts(a, m, m > 0.0 ? 1 : -1, bouncy);
                 this.add(a, m);
             } else {
                 this.add(a, m);
@@ -350,60 +385,111 @@ final class MoveVelocity {
         final boolean still = Math.abs(my) < 1.0E-7;
         final boolean down = (still || my < 0.0) && this.touches(s, 1, -1);
         final boolean up = (still || my > 0.0) && this.touches(s, 1, 1);
+        final boolean deepDown = bouncy || t.flying || this.bouncesBelow(s);
+        final boolean deepUp = bouncy || t.flying;
         this.counts[1] = 0;
         if (down) {
-            this.add(1, my - SHORT_CUT);
-            this.add(1, my - (Math.abs(my) + LONG_CUT));
+            this.cuts(1, my, -1, deepDown);
         }
         if (up && !still) {
-            this.add(1, my + SHORT_CUT);
-            this.add(1, my + (Math.abs(my) + LONG_CUT));
+            this.cuts(1, my, 1, deepUp);
         }
         // Entity.collide's step (Entity.java:1190-1207) needs a step height and a horizontal cut; it lifts the box by at most
         // the step height from where a fall was cut, which may still be below the start
         final float stepHeight = (float) s.attributes.stepHeight.value();
         final boolean steppable = stepHeight > 0.0F && (this.move[0] != 0.0 || this.move[2] != 0.0) && my <= stepHeight;
         if (steppable && s.onGround) {
-            this.steps(s, my);
+            this.steps(s, my, deepDown, deepUp);
         }
         this.add(1, my);
         if (steppable && !s.onGround) {
-            this.steps(s, my);
+            this.steps(s, my, deepDown, deepUp);
         }
         if (up && still) {
-            this.add(1, my + SHORT_CUT);
-            this.add(1, my + (Math.abs(my) + LONG_CUT));
+            this.cuts(1, my, 1, deepUp);
         }
     }
 
     /**
      * What a stepped y move may have been given: a fall cut at once or far below (deeper than the move, which the step
      * lifted from there); or, from the ground, a rise lower than the step, or higher (the box rose into something
-     * sideways, so collide stepped at a lower candidate, even 0). Whether a rise hits that depends on how high it went,
-     * so rises of several heights.
+     * sideways, so collide stepped at a lower candidate, even 0). Whether a fall or a rise hits that depends on how far it
+     * went, so several depths; all of them where the depth shows in the velocity.
      */
-    private void steps(final SimPlayer s, final double my) {
+    private void steps(final SimPlayer s, final double my, final boolean deepDown, final boolean deepUp) {
         this.add(1, -SHORT_CUT);
         this.add(1, -LONG_CUT);
         if (my < 0.0) {
             this.add(1, my - (Math.abs(my) + LONG_CUT));
         }
+        if (deepDown) {
+            for (final double depth : DEPTHS) {
+                this.add(1, Math.min(my, 0.0) - depth);
+            }
+        }
         if (s.onGround) {
             if (my > 0.0) {
+                this.add(1, my * 0.25);
                 this.add(1, my * 0.5);
+                this.add(1, my * 0.75);
             }
             for (final double rise : RISES) {
                 this.add(1, my + rise);
             }
             this.add(1, my + (float) s.attributes.stepHeight.value());
+            if (deepUp) {
+                for (final double depth : DEPTHS) {
+                    this.add(1, Math.max(my, 0.0) + depth);
+                }
+            }
         }
     }
 
-    /** A cut of {@code m} towards {@code dir}: just past Mth.equal's threshold, far past it, and near (under it). */
-    private void cuts(final int axis, final double m, final int dir) {
+    /**
+     * Cuts of {@code m} towards {@code dir}: just past Mth.equal's threshold, a little further, far past it, and under it
+     * (by 5e-6, and by a few ulps of the position, which keeps collide's axis order where a longer cut would swap it: the
+     * larger of x and z goes first). The box swept by a cut must overlap the collider to gather it (BlockCollisions), so
+     * the cut goes past the face by more than the position's rounding. With {@code deep}, every depth of {@link #DEPTHS}.
+     */
+    private void cuts(final int axis, final double m, final int dir, final boolean deep) {
+        this.add(axis, m + dir * JUST_CUT);
         this.add(axis, m + dir * SHORT_CUT);
         this.add(axis, m + dir * (Math.abs(m) + LONG_CUT));
-        this.add(axis, m + dir * NEAR);
+        if (axis != 1) {
+            this.add(axis, m + dir * NEAR);
+            // the face is within 16 of from + m (half the widest box: 0.6 x a scale of 16 is 9.6)
+            this.add(axis, m + dir * 4.0 * Math.ulp(Math.abs(this.from[axis]) + Math.abs(m) + 16.0));
+        }
+        if (deep) {
+            for (final double depth : DEPTHS) {
+                this.add(axis, m + dir * depth);
+            }
+        }
+    }
+
+    /**
+     * Whether the box may have landed on a block that bounces (slime, beds): restitution reads the one 0.2 under the box
+     * (Entity.getOnPosLegacy, by the supporting block) or the supporting block itself, somewhere under the start or the end.
+     */
+    private boolean bouncesBelow(final SimPlayer s) {
+        final SimBox fb = s.bb;
+        final SimBox tb = this.after;
+        final int x0 = Mth.floor(Math.min(fb.minX, tb.minX));
+        final int x1 = Mth.floor(Math.max(fb.maxX, tb.maxX));
+        final int z0 = Mth.floor(Math.min(fb.minZ, tb.minZ));
+        final int z1 = Mth.floor(Math.max(fb.maxZ, tb.maxZ));
+        final int y0 = Mth.floor(tb.minY - 0.20000000298023224);
+        final int y1 = Mth.floor(tb.minY - 1.0E-6);
+        for (int x = x0; x <= x1; x++) {
+            for (int z = z0; z <= z1; z++) {
+                for (int y = y0; y <= y1; y++) {
+                    if (this.world.blockState(x, y, z).getBlock().getBounceRestitution() > 0.0F) {
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
     }
 
     /** Adds a reading for {@code axis}, unless it already has the same one. */
@@ -481,6 +567,11 @@ final class MoveVelocity {
      * {@code velocity}.
      */
     private void run(final SimPlayer s, final MovementSim.Travel t, final double dx, final double dy, final double dz) {
+        this.run(s, t, dx, dy, dz, Double.NaN);
+    }
+
+    /** {@link #run}, with Player.travel's y before the branch given ({@code beforeBranchY}), or NaN for the move's. */
+    private void run(final SimPlayer s, final MovementSim.Travel t, final double dx, final double dy, final double dz, final double beforeBranchY) {
         final SimPlayer w = this.work;
         w.copyFrom(s);
         MovementSim.setDelta(w, dx, dy, dz);
@@ -488,7 +579,7 @@ final class MoveVelocity {
         // nothing to y) and Player.travel's y (Player.java:1385, no climbing or y input while flying)
         final boolean isFalling = w.vy <= 0.0;
         final double baseGravity = MovementSim.effectiveGravity(w);
-        final double originalMovementY = w.vy;
+        final double originalMovementY = Double.isNaN(beforeBranchY) ? w.vy : beforeBranchY;
         if (w.noPhysics) {
             MovementSim.noPhysicsMove(w, dx, dy, dz);
         } else {
@@ -498,7 +589,7 @@ final class MoveVelocity {
             this.sim.afterCollide(w, this.world, dx, dy, dz, this.landed[0], this.landed[1], this.landed[2]);
         }
         switch (t.kind) {
-            case MovementSim.Travel.AIR -> this.sim.afterAirMove(w, this.world, t.blockFriction, t.belowX, t.belowZ);
+            case MovementSim.Travel.AIR -> this.sim.afterAirMove(w, this.world, t.blockFriction);
             case MovementSim.Travel.WATER -> this.sim.afterWaterMove(w, this.world, t.slowDown, baseGravity, isFalling, s.y);
             case MovementSim.Travel.LAVA -> this.sim.afterLavaMove(w, baseGravity, isFalling, s.y);
             default -> {

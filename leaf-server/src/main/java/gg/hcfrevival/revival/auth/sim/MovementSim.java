@@ -65,9 +65,9 @@ public final class MovementSim {
 
     /**
      * What the travel branch of a tick worked out before its move and reads after it: the branch, Player.travel's flight
-     * rule, travelFallFlying's climbable exit, and the branch's own pre-move values (travelInAir's friction and the column
-     * of the block it came from, travelInWater's slow-down). Recorded right before the move, so velocityAfterMove can run
-     * the after-move half by itself.
+     * rule, travelFallFlying's climbable exit, and the branch's own pre-move values (travelInAir's friction,
+     * travelInWater's slow-down). Recorded right before the move, so velocityAfterMove can run the after-move half by
+     * itself.
      */
     static final class Travel {
         static final int AIR = 0;
@@ -81,8 +81,6 @@ public final class MovementSim {
         /** travelFallFlying on a climbable: travelInAir, then stopFallFlying. */
         boolean stopsGliding;
         float blockFriction;
-        int belowX;
-        int belowZ;
         float slowDown;
 
         void copyFrom(final Travel o) {
@@ -90,15 +88,13 @@ public final class MovementSim {
             this.flying = o.flying;
             this.stopsGliding = o.stopsGliding;
             this.blockFriction = o.blockFriction;
-            this.belowX = o.belowX;
-            this.belowZ = o.belowZ;
             this.slowDown = o.slowDown;
         }
 
         boolean same(final Travel o) {
             return this.kind == o.kind && this.flying == o.flying && this.stopsGliding == o.stopsGliding
-                && Float.floatToRawIntBits(this.blockFriction) == Float.floatToRawIntBits(o.blockFriction) && this.belowX == o.belowX
-                && this.belowZ == o.belowZ && Float.floatToRawIntBits(this.slowDown) == Float.floatToRawIntBits(o.slowDown);
+                && Float.floatToRawIntBits(this.blockFriction) == Float.floatToRawIntBits(o.blockFriction)
+                && Float.floatToRawIntBits(this.slowDown) == Float.floatToRawIntBits(o.slowDown);
         }
     }
 
@@ -605,29 +601,25 @@ public final class MovementSim {
     /** LivingEntity.travelInAir (LivingEntity.java:2464-2491). */
     private void travelInAir(final SimPlayer p, final SimWorld world, final double inputX, final double inputZ) {
         this.blocks.onPos(p, world, 0.500001F, this.support);
-        final int belowX = this.support.getX();
-        final int belowY = this.support.getY();
-        final int belowZ = this.support.getZ();
         final float blockFriction = p.onGround
-            ? computeModifiedFriction(world.blockState(belowX, belowY, belowZ).getBlock().getFriction(), (float) p.attributes.frictionModifier.value())
+            ? computeModifiedFriction(world.blockState(this.support.getX(), this.support.getY(), this.support.getZ()).getBlock().getFriction(),
+                (float) p.attributes.frictionModifier.value())
             : 1.0F;
         // handleRelativeFrictionAndCalculateMovement (LivingEntity.java:2674-2684)
         this.moveRelative(p, this.frictionInfluencedSpeed(p, blockFriction), inputX, 0.0, inputZ);
         this.handleOnClimbable(p, world);
         this.travel.kind = Travel.AIR;
         this.travel.blockFriction = blockFriction;
-        this.travel.belowX = belowX;
-        this.travel.belowZ = belowZ;
         this.move(p, world, p.vx, p.vy, p.vz);
-        this.afterAirMove(p, world, blockFriction, belowX, belowZ);
+        this.afterAirMove(p, world, blockFriction);
     }
 
     /**
      * travelInAir after its move: handleRelativeFrictionAndCalculateMovement's climb (LivingEntity.java:2678-2681), then
-     * levitation, gravity or the unloaded-chunk fall, then drag and the block's friction (:2470-2490). {@code belowX/Z}
-     * is the column of the block under the start position the friction came from.
+     * levitation or gravity, then drag and the block's friction (:2470-2490). {@code blockFriction} is the one under the
+     * start position.
      */
-    void afterAirMove(final SimPlayer p, final SimWorld world, final float blockFriction, final int belowX, final int belowZ) {
+    void afterAirMove(final SimPlayer p, final SimWorld world, final float blockFriction) {
         final double movementX = p.vx;
         double movementY = p.vy;
         final double movementZ = p.vz;
@@ -636,14 +628,13 @@ public final class MovementSim {
             movementY = 0.2;
         }
         final double movementYBase = movementY;
+        // vanilla falls at -0.1 (or stays at the bottom) over a chunk the level lacks, but only where
+        // level.hasChunkAt(posBelow), and ClientLevel.hasChunk is always true (ClientLevel.java:519-522): a 26.3 client
+        // keeps normal gravity over a chunk it does not have, whose blocks read as void air
         if (p.levitation >= 0) {
             movementY += (0.05 * (p.levitation + 1) - movementYBase) * 0.2;
-        } else if (world.isChunkLoaded(belowX >> 4, belowZ >> 4)) {
-            movementY -= effectiveGravity(p);
-        } else if (p.y > world.minY()) {
-            movementY = -0.1;
         } else {
-            movementY = 0.0;
+            movementY -= effectiveGravity(p);
         }
         // shouldDiscardFriction is false for players
         final float entityAirDragModifier = (float) p.attributes.airDragModifier.value();

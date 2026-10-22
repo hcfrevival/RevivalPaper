@@ -65,6 +65,40 @@ class PathFeedTest {
         }
     }
 
+    /**
+     * Review PT-16: viewers whose codec base gives the same delta get the same packet object, as the vanilla tracker fans
+     * one packet out to every viewer; a viewer with another base gets its own. A still player's alternating keep-alive
+     * (+1, -1 codec units) is built once each.
+     */
+    @Test
+    void viewersOnTheSameBaseShareOnePacket() {
+        final PathFeed feed = new PathFeed(ID, 64, PathFeed.Settings.DEFAULT);
+        final PathFeed.Viewer a = feed.viewer();
+        final PathFeed.Viewer b = feed.viewer();
+        final PathFeed.Viewer c = feed.viewer();
+        a.spawned(10.0, 64.0, 10.0, 0.0F, 0.0F, true, 0L);
+        b.spawned(10.0, 64.0, 10.0, 0.0F, 0.0F, true, 0L);
+        c.spawned(10.0 + 7.0 * UNIT, 64.0, 10.0, 0.0F, 0.0F, true, 0L); // spawned off by 7 units
+        feed.append(10.5, 64.0, 10.25, 45.0F, 0.0F, true, 1L);
+        final List<Packet<ClientGamePacketListener>> sentA = new ArrayList<>();
+        final List<Packet<ClientGamePacketListener>> sentB = new ArrayList<>();
+        final List<Packet<ClientGamePacketListener>> sentC = new ArrayList<>();
+        a.drain((packet, stamp) -> sentA.add(packet), Double.NaN, Double.NaN, Double.NaN);
+        b.drain((packet, stamp) -> sentB.add(packet), Double.NaN, Double.NaN, Double.NaN);
+        c.drain((packet, stamp) -> sentC.add(packet), Double.NaN, Double.NaN, Double.NaN);
+        assertTrue(sentA.get(0) == sentB.get(0) && sentA.get(1) == sentB.get(1), "same base: the same pre-roll and step objects");
+        assertTrue(sentA.get(1) != sentC.get(1), "another base: its own packet");
+        assertEquals(a.baseX(), b.baseX());
+        // A still player for 20 steps, three viewers: keep-alive +1 / -1 packets are built once each, then shared
+        for (int i = 0; i < 20; i++) {
+            feed.append(10.5, 64.0, 10.25, 45.0F, 0.0F, true, 2L + i);
+            a.drain((packet, stamp) -> { }, Double.NaN, Double.NaN, Double.NaN);
+            b.drain((packet, stamp) -> { }, Double.NaN, Double.NaN, Double.NaN);
+        }
+        assertTrue(feed.builtMoves() <= 6, "built " + feed.builtMoves() + " packets for " + (feed.builtMoves() + feed.sharedMoves()) + " moves");
+        assertTrue(a.keepAlives() > 0);
+    }
+
     @Test
     void eachStepIsOnePosRotWithATwoTickSteppedDeltaThatSurvivesTheWire() {
         final PathFeed feed = new PathFeed(ID, 64, PathFeed.Settings.DEFAULT);

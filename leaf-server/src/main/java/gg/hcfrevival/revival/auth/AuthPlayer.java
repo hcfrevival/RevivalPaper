@@ -73,6 +73,7 @@ import net.minecraft.network.protocol.game.ServerboundUseItemPacket;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.util.Mth;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.Pose;
@@ -184,6 +185,16 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
     private double prevClaimZ;
     private int prevClaimTick;
     private boolean hasPrevClaim;
+    // The window's claim was recorded; at the window's end it stays a seed candidate only if the server holds it
+    private boolean claimToConfirm;
+    // A refused window since the last exact claim: the next correction goes absolute
+    private boolean beliefStale;
+    // The onGround of the client's last move packet
+    private boolean clientOnGround;
+    // This tick a piston or shulker box may push the client: claims within the band are adopted
+    private boolean pushTick;
+    private final RebaseGuard pushGuard = new RebaseGuard();
+    private static final int EXEMPT_EXTERNAL_MOVER = AuthStats.EXEMPT_SIMULATION_BASE + gg.hcfrevival.revival.auth.sim.ExemptReason.EXTERNAL_MOVER.ordinal();
     /** The next seed is a new local player's (login, respawn): standing still where the server put it. */
     private boolean seedStill;
 
@@ -270,6 +281,11 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
         return this.rules;
     }
 
+    /** The locked-cadence detector (neue-combat §12.2). */
+    public gg.hcfrevival.revival.auth.input.CadenceWatch cadence() {
+        return this.cadence;
+    }
+
     public InputStats inputStats() {
         return this.inputStats;
     }
@@ -351,6 +367,22 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
         return Revival.settings().authoritative();
     }
 
+    /**
+     * Whether this player can be under authority (§15.3), decided once: logged at INFO and counted when it can't, and
+     * also asked by the path feed, which only steps eligible viewers (client-compat N9).
+     */
+    public boolean eligible() {
+        if (!this.eligibilityChecked) {
+            this.eligibilityChecked = true;
+            this.ineligible = this.checkEligibility();
+            if (this.ineligible != null && this.player.isRealPlayer) {
+                Authority.countIneligible();
+                LOGGER.info("[auth] {} stays outside authoritative movement: {}", this.player.getScoreboardName(), this.ineligible);
+            }
+        }
+        return this.ineligible == null;
+    }
+
     // Eligibility per player (§15.3): a real 26.3 connection, not a bot and not Bedrock
     private @Nullable String checkEligibility() {
         if (!this.player.isRealPlayer || this.player.connection == null) {
@@ -374,11 +406,12 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
             this.deactivate();
             return;
         }
-        if (!this.eligibilityChecked) {
-            this.eligibilityChecked = true;
-            this.ineligible = this.checkEligibility();
-        }
-        if (this.ineligible != null) {
+        if (!this.eligible()) {
+            if (wanted == AuthMode.ENFORCE && this.settings().ineligible().equals("deny") && !this.kicked) {
+                this.kicked = true;
+                this.player.connection.disconnect(Component.literal("This server needs a Minecraft "
+                    + net.minecraft.SharedConstants.getCurrentVersion().name() + " client"));
+            }
             return;
         }
         if (this.mode == AuthMode.OFF) {
@@ -390,6 +423,41 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
         this.mode = wanted;
         this.reconciler.reset();
         this.simulation.trackBelief(wanted == AuthMode.ENFORCE);
+    }
+
+    // HR-2: the newest acked position of each player this client sees, by the server time it was produced
+    private final it.unimi.dsi.fastutil.ints.Int2LongOpenHashMap newestStamps = new it.unimi.dsi.fastutil.ints.Int2LongOpenHashMap();
+    private long lastRewindCap;
+    private long lastDisplayDelay;
+
+    {
+        this.newestStamps.defaultReturnValue(Long.MIN_VALUE);
+    }
+
+    /** A position of player {@code id} this client applied (main thread, in the drain). */
+    public void noteStamp(final int id, final long stamp) {
+        if (stamp > this.newestStamps.get(id)) {
+            this.newestStamps.put(id, stamp);
+        }
+    }
+
+    /** Server time of the newest position of player {@code id} this client has acked, or {@code Long.MIN_VALUE}. */
+    public long newestStamp(final int id) {
+        return this.newestStamps.get(id);
+    }
+
+    void recordRewindCap(final long cap, final long display) {
+        this.lastRewindCap = cap;
+        this.lastDisplayDelay = display;
+    }
+
+    /** The last attack's rewind cap before the ceiling, and the display delay it measured (inspect, HUD). */
+    public long lastRewindCap() {
+        return this.lastRewindCap;
+    }
+
+    public long lastDisplayDelay() {
+        return this.lastDisplayDelay;
     }
 
     // §11 visibility ---------------------------------------------------------------------------------------------------
@@ -411,8 +479,9 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
         }
         final int id = target.getId();
         final int tick = MinecraftServer.currentTick;
-        if (!this.visibility.due(id, tick, settings.visibilityCheckIntervalTicks())) {
-            return this.visibility.sent(id);
+        if (!this.visibility.due(id, tick, settings.visibilityCheckIntervalTicks())
+            || !Authority.takeVisibilityCheck(tick, settings.visibilityMaxChecksPerTick())) {
+            return this.visibility.sent(id); // between checks, or past this tick's budget: the last decision (shown if none)
         }
         final Simulation sim = this.simulation;
         final double eyeX = sim.x();
@@ -426,7 +495,7 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
         boolean seen = cx * cx + cy * cy + cz * cz <= always * always;
         if (!seen) {
             final double speed = settings.visibilityMaxSpeed();
-            final double rttTicks = this.transactions.rttBaseNanos() / 50_000_000.0;
+            final double rttTicks = this.slackRttNanos() / 50_000_000.0;
             final double grow = speed * (rttTicks + settings.visibilityCheckIntervalTicks());
             final double targetGrow = speed * (settings.visibilityCheckIntervalTicks() + settings.pathStepTicks());
             seen = gg.hcfrevival.revival.auth.visibility.Occlusion.boxesSeeEachOther(this.world, eyeX - grow, eyeY - grow, eyeZ - grow,
@@ -440,18 +509,35 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
         return sent;
     }
 
-    // §11: sounds and particles that would give a hidden player away
+    // §11: sounds, particles, level events (a potion splash, a block break) and break progress that would give a hidden
+    // player away (review E12). No allocation: the boxes are read in place
     private boolean givesAwayHidden(final Packet<?> packet) {
         final it.unimi.dsi.fastutil.ints.IntOpenHashSet hidden = this.visibility.hidden();
         if (hidden.isEmpty()) {
             return false;
         }
-        double x;
-        double y;
-        double z;
+        final double x;
+        final double y;
+        final double z;
         switch (packet) {
             case final net.minecraft.network.protocol.game.ClientboundSoundEntityPacket sound -> {
-                return hidden.contains(sound.getId());
+                return this.culled(hidden.contains(sound.getId()));
+            }
+            case final net.minecraft.network.protocol.game.ClientboundBlockDestructionPacket destruction -> {
+                if (hidden.contains(destruction.getId())) {
+                    return this.culled(true);
+                }
+                x = destruction.getPos().getX() + 0.5;
+                y = destruction.getPos().getY() + 0.5;
+                z = destruction.getPos().getZ() + 0.5;
+            }
+            case final net.minecraft.network.protocol.game.ClientboundLevelEventPacket event -> {
+                if (event.isGlobalEvent()) {
+                    return false;
+                }
+                x = event.getPos().getX() + 0.5;
+                y = event.getPos().getY() + 0.5;
+                z = event.getPos().getZ() + 0.5;
             }
             case final net.minecraft.network.protocol.game.ClientboundSoundPacket sound -> {
                 x = sound.getX();
@@ -467,14 +553,42 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
                 return false;
             }
         }
+        final double reach = this.settings().visibilityEffectReach();
+        boolean gone = false;
         for (final it.unimi.dsi.fastutil.ints.IntIterator it = hidden.iterator(); it.hasNext(); ) {
             final net.minecraft.world.entity.Entity target = this.player.level().getEntity(it.nextInt());
-            if (target != null && target.getBoundingBox().inflate(this.settings().visibilityEffectReach()).contains(x, y, z)) {
-                this.stats.culledEffects++;
-                return true;
+            if (target == null) {
+                gone = true; // left the level: forgotten below
+                continue;
+            }
+            final net.minecraft.world.phys.AABB box = target.getBoundingBox();
+            if (x >= box.minX - reach && x <= box.maxX + reach && y >= box.minY - reach && y <= box.maxY + reach
+                && z >= box.minZ - reach && z <= box.maxZ + reach) {
+                return this.culled(true);
             }
         }
+        if (gone) {
+            this.forgetGoneHidden();
+        }
         return false;
+    }
+
+    private boolean culled(final boolean culled) {
+        if (culled) {
+            this.stats.culledEffects++;
+        }
+        return culled;
+    }
+
+    // Hidden ids whose entity is no longer in the level (review E12, PT-11): out of every visibility map
+    private void forgetGoneHidden() {
+        final it.unimi.dsi.fastutil.ints.IntOpenHashSet hidden = this.visibility.hidden();
+        final int[] ids = hidden.toIntArray();
+        for (final int id : ids) {
+            if (this.player.level().getEntity(id) == null) {
+                this.visibility.forget(id);
+            }
+        }
     }
 
     // §15.1 bypass audit: physics packets that reached the client around our choke point, logged at the next ping
@@ -538,22 +652,77 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
         }
     }
 
+    private final gg.hcfrevival.revival.auth.view.ClientProfile profile = new gg.hcfrevival.revival.auth.view.ClientProfile();
+
+    /** The player's client, as far as the server can tell (design §15.8). */
+    public gg.hcfrevival.revival.auth.view.ClientProfile profile() {
+        return this.profile;
+    }
+
     private void activate() {
         this.installAuditor();
         this.simulation = Authority.newSimulation(this);
         this.view.seed(this.player);
         this.simulation.attributes(this.player.getAttributes().getSyncableAttributesPacket());
-        this.world.setLevel(this.player.level(), false);
+        this.world.setLevel(this.player.level(), true);
+        final ca.spottedleaf.moonrise.patches.chunk_system.player.RegionizedPlayerChunkLoader.PlayerChunkLoaderData chunkLoader =
+            this.player.moonrise$getChunkLoader();
+        if (chunkLoader != null) {
+            this.world.seedChunks(chunkLoader.getSentChunksRaw()); // the client's chunks as Moonrise sent them
+        } else {
+            this.world.setLevel(this.player.level(), false); // unknown: read the server's loaded chunks
+        }
         this.stream.forgetClient();
         this.transactions.reset();
         this.clock.start(System.nanoTime(), this.view.tickPeriodNanos(), this.settings().maxBankedTicks());
         this.warm = false;
-        this.teleportsPending = 0;
+        this.clearTeleportBookkeeping();
         this.reseedFromServer = true;
         this.frozen = false;
+        this.speedSyncsPending = 0; // syncs a reset dropped are never applied
+        this.speedSyncSprint = false;
         this.netActive = true;
         Authority.activated(this);
         Authority.mirrors().onReset(this);
+        this.repairMirrors(true, this.settings()); // review mirrors-empty-after-activation
+    }
+
+    /**
+     * Re-pairs tracked players through their tracker so this client's mirror of them starts from a logged spawn
+     * ({@code removePairing} + {@code addPairing}, as the path feed repairs its own viewers). {@code all}: every tracked
+     * player (activation, a resync emptied the book). Otherwise only players in {@code exact-radius} whose mirror is
+     * missing, or present but inexact for a reason a spawn fixes, that the path feed does not repair itself (review
+     * mirrors-empty-after-activation, unknown-player-verdict-unrepaired).
+     */
+    private void repairMirrors(final boolean all, final AuthoritativeSettings settings) {
+        if (this.player.connection == null || !this.netActive) {
+            return;
+        }
+        final gg.hcfrevival.revival.auth.combat.MirrorBook book = CombatWiring.book(this);
+        final double radiusSq = settings.exactRadius() * settings.exactRadius();
+        for (final ServerPlayer other : ((ServerLevel) this.player.level()).players()) {
+            if (other == this.player) {
+                continue;
+            }
+            final net.minecraft.server.level.ChunkMap.TrackedEntity tracked = other.moonrise$getTrackedEntity();
+            if (tracked == null || !tracked.seenBy.contains(this.player.connection)) {
+                continue;
+            }
+            if (!all) {
+                if (other.distanceToSqr(this.player) > radiusSq || PathWiring.feeds(other.revivalAuth, this.player)) {
+                    continue;
+                }
+                final gg.hcfrevival.revival.auth.combat.RemoteMirror mirror = book.mirror(other.getId());
+                final boolean broken = mirror == null
+                    || mirror.present() && !mirror.exact() && !mirror.passenger() && mirror.pose() != Pose.SLEEPING;
+                if (!broken) {
+                    continue;
+                }
+            }
+            tracked.serverEntity.removePairing(this.player);
+            tracked.serverEntity.addPairing(this.player);
+            this.stats.mirrorRepairs++;
+        }
     }
 
     private void deactivate() {
@@ -564,13 +733,18 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
         // Nothing the client sent is lost: buffered windows run through the handlers now, as vanilla would have
         this.stream.drainTo(window -> {
             for (int i = 0; i < window.items(); i++) {
-                if (window.kind(i) == ClientStream.PACKET || window.kind(i) == ClientStream.ROTATION_REPLY) {
+                if (window.kind(i) == ClientStream.PACKET || window.kind(i) == ClientStream.ROTATION_REPLY || window.kind(i) == ClientStream.DRAIN_ABORT) {
                     this.replay((Packet<?>) window.ref(i));
                 }
             }
             this.stream.recycle(window);
         });
+        if (this.player.connection != null) {
+            this.transactions.flushOpen(this.player.connection.connection); // a bundle gathered so far still goes out
+        }
         this.transactions.reset();
+        this.speedSyncsPending = 0;
+        this.speedSyncSprint = false;
         Authority.mirrors().onReset(this);
     }
 
@@ -661,7 +835,8 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
             return true;
         }
         switch (this.stream.recordChecked(packet)) {
-            case ClientStream.SECOND_CLAIM -> this.protocolViolation("a second move claim, input or sprint command in one client tick");
+            case ClientStream.SECOND_CLAIM -> this.protocolViolation("a second move claim in one client tick");
+            case ClientStream.EXTRA_INPUT -> this.softViolation("a second input or sprint command in one client tick");
             case ClientStream.OVERFLOW -> {
                 this.protocolViolation("a client tick past " + ClientStream.MAX_ITEMS + " packets (no TickEnd)");
                 return true; // dropped
@@ -715,22 +890,28 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
         switch (status) {
             case Transactions.ACKED, Transactions.SKIPPED -> {
                 this.warm = true;
-                boolean rotation = false;
+                this.world.endProvisional(); // everything sent before activation has been applied by now
+                this.stream.notePong(System.nanoTime(), this.transactions.lastAckedSentNanos());
+                int rotations = 0;
                 int correction = 0;
                 for (int i = from; i < acked.size(); i++) {
                     final Packet<?> entry = acked.packet(i);
                     if (entry instanceof ClientboundPlayerRotationPacket) {
-                        rotation = true;
+                        rotations++;
                     } else if (entry instanceof final ClientboundPlayerPositionPacket position && Reconciler.ours(position.id())) {
                         correction = position.id();
                     }
                 }
-                if (!this.stream.recordAck(from, acked.size(), rotation, correction)) {
+                if (!this.stream.recordAck(from, acked.size(), rotations, correction)) {
                     // Pongs belong to the drain, before the tick's keybinds: a late one would choose when a packet lands
-                    this.protocolViolation("a pong after the tick's keybinds");
+                    // Kept at its arrival (no backtrack; rewind ages come from acked state): counted, design §15.8
+                    this.softViolation("a pong after the tick's keybinds");
                 }
                 if (status == Transactions.SKIPPED) {
                     this.protocolViolation("skipped pings");
+                }
+                if (this.stream.overflowing()) {
+                    this.windowOverflow();
                 }
             }
             case Transactions.UNKNOWN -> this.protocolViolation("pong for a ping never sent");
@@ -761,18 +942,20 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
         if (recorder != null) {
             recorder.teleportAck(packet.id(), packet.x(), packet.y(), packet.z(), packet.yRot(), packet.xRot());
         }
-        if (this.mode == AuthMode.ENFORCE && !(Double.isFinite(packet.x()) && Double.isFinite(packet.y()) && Double.isFinite(packet.z())
+        if (!(Double.isFinite(packet.x()) && Double.isFinite(packet.y()) && Double.isFinite(packet.z())
             && Float.isFinite(packet.yRot()) && Float.isFinite(packet.xRot()))) {
-            this.protocolViolation("a non-finite teleport accept"); // vanilla kicks these too; under enforce it never sees them
-            return true;
-        }
-        this.stream.recordAccept(packet);
-        if (this.mode == AuthMode.ENFORCE && !Reconciler.ours(packet.id())) {
-            // A teleport sent before authority started has no pong of ours: vanilla's bookkeeping happens here (its
-            // destination, never the accept's coordinates); a no-op when its pong already completed it
-            if (this.player.connection.revivalCompleteServerTeleport(packet.id())) {
-                this.acceptedBeforeAuthority.add(packet.id());
+            if (this.mode == AuthMode.ENFORCE) {
+                this.protocolViolation("a non-finite teleport accept"); // vanilla kicks these too; under enforce it never sees them
+                return true;
             }
+            return false; // observe: never into the model (review E9); vanilla disconnects it
+        }
+        if (!this.stream.recordAccept(packet)) {
+            this.softViolation("an accept after the tick's keybinds"); // design §15.8: counted
+        }
+        if (this.stream.overflowing()) {
+            this.windowOverflow();
+            return true;
         }
         // Enforce: every accept is ours, judged as a claim in its window; vanilla never takes its coordinates (§15.3)
         return this.mode == AuthMode.ENFORCE || Reconciler.ours(packet.id());
@@ -781,16 +964,48 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
     // Server teleports applied at their pong window whose accept hasn't come yet: ids and the window they were applied in
     private final it.unimi.dsi.fastutil.ints.IntArrayList awaitingAccepts = new it.unimi.dsi.fastutil.ints.IntArrayList();
     private final it.unimi.dsi.fastutil.ints.IntArrayList awaitingSince = new it.unimi.dsi.fastutil.ints.IntArrayList();
+    // Accepts that came before their teleport was applied (a bypass or an oversized bundle pings after the teleport), and
+    // the window each came in: matched when the teleport lands, a protocol violation if it never does
     private final it.unimi.dsi.fastutil.ints.IntArrayList earlyAccepts = new it.unimi.dsi.fastutil.ints.IntArrayList();
-    private final it.unimi.dsi.fastutil.ints.IntArrayList acceptedBeforeAuthority = new it.unimi.dsi.fastutil.ints.IntArrayList();
+    private final it.unimi.dsi.fastutil.ints.IntArrayList earlySince = new it.unimi.dsi.fastutil.ints.IntArrayList();
+    private static final int EARLY_ACCEPTS_MAX = 8;
+    // Vanilla teleports sent under authority whose pong hasn't been applied, and the first such id since activation:
+    // an accept older than it is for a teleport sent before authority started (review teleport-accept-bookkeeping-kicks)
+    private final it.unimi.dsi.fastutil.ints.IntArrayList teleportsLogged = new it.unimi.dsi.fastutil.ints.IntArrayList();
+    private int firstLoggedTeleport;
+    private boolean anyLoggedTeleport;
 
     // A server teleport's accept must follow its pong in the same drain; past the ack deadline it never will
     private void checkAwaitingAccepts(final int tick, final int deadline) {
         if (!this.awaitingAccepts.isEmpty() && tick - this.awaitingSince.getInt(0) > deadline) {
             this.awaitingAccepts.clear();
             this.awaitingSince.clear();
-            this.protocolViolation("a server teleport was never accepted");
+            this.softViolation("a server teleport was never accepted"); // the truth applied it at its pong: no advantage
         }
+        if (!this.earlyAccepts.isEmpty() && tick - this.earlySince.getInt(0) > 2 * deadline) {
+            this.earlyAccepts.clear();
+            this.earlySince.clear();
+            this.protocolViolation("accept for a server teleport never sent"); // review E9: a forged accept is no warning
+        }
+    }
+
+    private void clearTeleportBookkeeping() {
+        this.awaitingAccepts.clear();
+        this.awaitingSince.clear();
+        this.earlyAccepts.clear();
+        this.earlySince.clear();
+        this.teleportsLogged.clear();
+        this.anyLoggedTeleport = false;
+        this.teleportsPending = 0;
+    }
+
+    // Whether vanilla teleport id a was sent before b (ids count up from 0 and wrap to 0 on reaching Integer.MAX_VALUE)
+    static boolean teleportBefore(final int a, final int b) {
+        long distance = (long) b - a;
+        if (distance < 0L) {
+            distance += Integer.MAX_VALUE;
+        }
+        return distance > 0L && distance < 1 << 24;
     }
 
     /** {@code internalTeleport}, right before the packet is sent: a server teleport is a transaction (§15.3). */
@@ -801,26 +1016,60 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
         this.teleportsPending++;
         this.stats.serverTeleports++;
         this.reconciler.reset();
+        this.teleportsLogged.add(id);
+        if (!this.anyLoggedTeleport) {
+            this.anyLoggedTeleport = true;
+            this.firstLoggedTeleport = id;
+        }
+        this.hasLastClaim = false; // claims from before a server teleport are no seed's pair (review E1)
+        this.hasPrevClaim = false;
     }
 
     /** {@code SGPLI.tick()}: windows the clock now allows run; frozen and kick checks for unanswered pings. */
     public void onServerTick() {
+        // Neue's landing pass (neue-combat §5.2): a held click lands here, past the bucket, the envelope and the judge
+        final ServerboundAttackPacket landing = gg.hcfrevival.revival.combat.NeueCombat.serverTick(this.player);
+        if (landing != null) {
+            this.replay(landing);
+            gg.hcfrevival.revival.combat.NeueCombat.settle(this.player);
+        }
         if (this.mode == AuthMode.OFF) {
             return; // activation happens at a TickEnd, at a window boundary
         }
         this.drainBypasses();
         final long now = System.nanoTime();
-        // Unanswered pings, or a client tick that never ends while packets keep coming: frozen, then kicked
-        final long unanswered = Math.max(this.transactions.oldestOutstandingNanos(now), this.stream.openWindowAgeNanos(now));
-        final long limit = this.settings().maxUnackedMs() * 1_000_000L;
-        this.frozen = unanswered > limit;
-        if (unanswered > 3 * limit && this.mode == AuthMode.ENFORCE && !this.kicked) {
-            this.kicked = true;
-            this.player.connection.disconnect(Component.literal("Timed out (no transaction replies)"));
-            return;
+        // Unanswered pings, or a client tick that never ends: frozen (pvp-issues NW-2). A stall is not a kick: in HCF a
+        // kick is a combat-logger death. The frozen player stays where the truth is, hittable, its knocks force-applied
+        // at their deadline; vanilla's keep-alive timeout disconnects a connection that is really gone. Only protocol
+        // violations kick, and the memory caps (a 512-packet tick, the outbound log) resync rather than kick
+        final AuthoritativeSettings settings = this.settings();
+        this.updateFrozen(now, settings);
+        if (MinecraftServer.currentTick % 20 == 0 && this.player.connection != null
+            && this.transactions.rttBaseNanos() / 1_000_000L - this.player.connection.latency() > settings.pongLagMs()) {
+            this.stats.pongsBehindKeepAlive++; // review E5: the keep-alive RTT is the client's real one
+        }
+        if (MinecraftServer.currentTick % settings.repairIntervalTicks() == this.player.getId() % settings.repairIntervalTicks()) {
+            this.repairMirrors(false, settings); // spread over the interval, one pass per player
         }
         this.runReady();
         DebugHud.tick(this, this.settings());
+    }
+
+    /**
+     * The round trip the slack this client gets is sized from (review E5): its base RTT, at most {@code rtt-ceiling-ms}.
+     * rttBase is the client's own pongs, so a client delaying them would otherwise widen its own deadlines.
+     */
+    long slackRttNanos() {
+        return Math.min(this.transactions.rttBaseNanos(), this.settings().rttCeilingMs() * 1_000_000L);
+    }
+
+    private void updateFrozen(final long now, final AuthoritativeSettings settings) {
+        final long unanswered = Math.max(this.transactions.oldestOutstandingNanos(now), this.stream.openWindowAgeNanos(now));
+        final boolean wasFrozen = this.frozen;
+        this.frozen = unanswered > settings.maxUnackedMs() * 1_000_000L;
+        if (this.frozen && !wasFrozen) {
+            this.stats.freezes++;
+        }
     }
 
     /**
@@ -908,21 +1157,43 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
     // Running windows ------------------------------------------------------------------------------------------------
 
     private void runReady() {
+        // Review PT-02: windows replayed between server ticks (packet handling) gather what they send into one bundle and
+        // one ping, flushed at the end, as the server tick does; inside the tick the tick's own scope already holds them
+        final boolean scope = this.netActive && !this.coalescing && this.stream.peek() != null;
+        if (!scope) {
+            this.runReadyWindows();
+            return;
+        }
+        this.coalescing = true;
+        try {
+            this.runReadyWindows();
+        } finally {
+            this.coalescing = false;
+            if (this.player.connection != null) {
+                this.transactions.flushOpen(this.player.connection.connection);
+            }
+        }
+    }
+
+    private void runReadyWindows() {
         final AuthoritativeSettings settings = this.settings();
         final long period = this.view.tickPeriodNanos();
         final long drift = settings.timerDriftMs() * 1_000_000L;
         final long cap = settings.timerQueueCapMs() * 1_000_000L;
+        this.stream.setAckSettle(settings.timerAckSettleMs() * 1_000_000L);
         ClientStream.Window window;
         while ((window = this.stream.peek()) != null && this.mode != AuthMode.OFF) {
             final long now = System.nanoTime();
+            // Packets run between server ticks: a stall's pongs and catch-up ticks arrive together, so frozen is as of now
+            this.updateFrozen(now, settings);
             final boolean refused;
-            if (this.frozen) {
+            if (this.frozen && this.mode == AuthMode.ENFORCE) {
                 refused = true;
                 this.clock.refuse();
-            } else if (this.clock.tryRun(now, this.transactions.lastAckedSentNanos(), period, drift, settings.maxBankedTicks())) {
+            } else if (this.clock.tryRun(now, window.timerAckNanos(), period, drift, settings.maxBankedTicks())) {
                 refused = false;
             } else if (now - window.closedNanos() > cap) {
-                refused = true;
+                refused = this.mode == AuthMode.ENFORCE; // observe never refuses: it only measures
                 this.clock.refuse();
             } else {
                 return; // waits for budget
@@ -940,6 +1211,10 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
         final int tick = window.tick();
         this.runningTick = tick;
         this.stats.windows++;
+        this.profile.maybeRefresh(this.player, tick, settings.apolloRules().equals("follow"));
+        if (refused) {
+            this.beliefStale = true; // the client moved in a tick the truth refused: its velocity is not the belief's
+        }
         if (this.transactions.takeLostSync()) {
             this.resync();
             this.stats.lostSync++;
@@ -950,11 +1225,11 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
         }
 
         // Deadlines: entries still unacked past ceil(rttBase / 50) + jitter windows are applied now (§15.1)
-        final int deadline = (int) Math.ceil(this.transactions.rttBaseNanos() / 50_000_000.0) + settings.ackJitterTicks();
+        final int deadline = (int) Math.ceil(this.slackRttNanos() / 50_000_000.0) + settings.ackJitterTicks();
         this.forced.clear();
         if (this.transactions.forceDue(tick, deadline, this.forced) > 0) {
             for (int i = 0; i < this.forced.size(); i++) {
-                this.apply(this.forced.packet(i), this.forced.kind(i), tick, false, this.forced.sentMillis(i));
+                this.applyGuarded(this.forced.packet(i), this.forced.kind(i), tick, false, this.forced.sentMillis(i));
                 this.stats.forcedEntries++;
             }
             this.forced.clear();
@@ -963,7 +1238,11 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
         this.checkAwaitingAccepts(tick, deadline);
         this.expireMeant(System.currentTimeMillis(), deadline * 50L + 1000L);
         if (this.deferredCorrection) {
-            this.resolveCorrection(window);
+            try {
+                this.resolveCorrection(window);
+            } catch (final RuntimeException e) {
+                this.simulationError(e);
+            }
         }
 
         // The window's sendChanges packets, read ahead: the simulated tick needs them before they replay
@@ -996,6 +1275,12 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
             }
         }
         this.attacksThisTick = 0;
+        this.punchesThisTick = 0;
+        final gg.hcfrevival.revival.config.CombatRules combatRules = gg.hcfrevival.revival.combat.NeueCombat.rules(this.player);
+        if (!refused && combatRules.capsClicks()) {
+            this.clicks.refill(combatRules.clickRefill(), combatRules.clickBurst()); // once per window that runs, before its keybinds
+        }
+        final boolean usingAtStart = this.simulation.seeded() && this.simulation.usingItem();
         // The input grammar (§15.4) judges each action against the input the tick ends with
         this.rules.startWindow(InputRules.walking(sentInput != null ? sentInput : this.stream.input()));
 
@@ -1006,10 +1291,25 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
             switch (window.kind(i)) {
                 case ClientStream.ACK -> {
                     for (int e = window.a(i); e < window.b(i); e++) {
-                        this.apply(window.acked.packet(e), window.acked.kind(e), tick, !window.acked.upperBound(e), window.acked.sentMillis(e));
+                        this.applyGuarded(window.acked.packet(e), window.acked.kind(e), tick, !window.acked.upperBound(e), window.acked.sentMillis(e));
                     }
                 }
-                case ClientStream.ACCEPT -> this.checkAccept((ServerboundAcceptTeleportationPacket) window.ref(i), settings);
+                case ClientStream.ACCEPT -> {
+                    try {
+                        this.checkAccept((ServerboundAcceptTeleportationPacket) window.ref(i), settings);
+                    } catch (final RuntimeException e) {
+                        this.simulationError(e);
+                    }
+                }
+                case ClientStream.DRAIN_ABORT -> {
+                    // The abort a teleport made a mining client send: state, so replayed even in a refused window
+                    this.replay((Packet<?>) window.ref(i));
+                    try {
+                        this.simulation.resetAttackStrength();
+                    } catch (final RuntimeException e) {
+                        this.simulationError(e);
+                    }
+                }
                 case ClientStream.ROTATION_REPLY -> {
                     final ServerboundMovePlayerPacket reply = (ServerboundMovePlayerPacket) window.ref(i);
                     this.stream.setRotation(reply.getYRot(this.stream.yRot()), reply.getXRot(this.stream.xRot()));
@@ -1024,11 +1324,14 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
                         // The tick's rotation, after the drain applied any teleport or rotation packet (report 02 §2.2)
                         this.resolveRotation(claim);
                         rotationResolved = true;
-                        this.rules.keybinds(this.simulation.seeded() && this.simulation.usingItem());
+                        // The tick's own exemption, from the state the drain left (review last-exempt-off-by-one)
+                        this.keybindExempt = refused ? AuthStats.EXEMPT_REFUSED : this.exemptReason();
+                        this.keybindsUsing = this.simulation.seeded() && this.simulation.usingItem();
+                        this.rules.keybinds(this.keybindsUsing);
                     }
                     final int rule = this.rules.check(InputRules.action(packet), i < lastClose);
                     // Enforce: an action no vanilla client sends is not handled; the client's own prediction still runs
-                    final boolean dropped = rule != InputRules.OK && this.mode == AuthMode.ENFORCE;
+                    final boolean dropped = InputRules.drops(rule) && this.mode == AuthMode.ENFORCE;
                     if (rule != InputRules.OK && settings.debugLog()) {
                         DebugHud.grammar(this, tick, InputRules.name(rule), packet, dropped);
                     }
@@ -1040,7 +1343,13 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
                         this.simulate(sentInput, sprint, flying, fallFlying, claim, refused, settings);
                         simulated = true;
                     }
-                    this.runPacket(packet, category, tick, refused || dropped, settings);
+                    if (refused && !dropped && changesStateOnly(packet)) {
+                        // Sent once, on change, never again: a refused tick still takes it, or the server keeps the old
+                        // slot, keys, sneak or open screen until the player happens to change them again
+                        this.runPacket(packet, category, tick, false, settings);
+                    } else {
+                        this.runPacket(packet, category, tick, refused || dropped, settings);
+                    }
                     if (dropped) {
                         this.stats.grammarDropped++;
                         if (packet instanceof ServerboundAttackPacket) {
@@ -1061,7 +1370,24 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
         if (tickEnd != null) {
             this.replay(tickEnd); // vanilla's per-tick resets (known movement, the two-positions guard) at the right point
         }
+        if (this.claimToConfirm) {
+            // Review E1: a claim vanilla refused (moved too quickly, a setback) or the truth corrected is no seed's pair
+            this.claimToConfirm = false;
+            if (this.player.getX() != this.lastClaimX || this.player.getY() != this.lastClaimY || this.player.getZ() != this.lastClaimZ) {
+                this.hasLastClaim = false;
+            }
+        }
 
+        if (usingAtStart && this.simulation.seeded() && !this.simulation.usingItem()) {
+            gg.hcfrevival.revival.combat.NeueCombat.useStopped(this.player, tick); // T_E: released, slot changed or stopped by the server
+        }
+        // Detector A (neue-combat §12.2): eligible windows ran, alive, not using at the keybinds, no screen, no mining
+        final boolean cadenceEligible = !refused && this.keybindExempt == AuthStats.EXEMPT_NONE && this.lastExempt == AuthStats.EXEMPT_NONE
+            && this.player.isAlive() && !this.keybindsUsing && this.player.containerMenu == this.player.inventoryMenu
+            && !this.clientDigging && !this.dugThisTick;
+        this.cadence.onWindow(cadenceEligible, this.punchesThisTick);
+        this.dugThisTick = false;
+        this.keybindsUsing = false;
         this.reconciler.afterWindow();
         this.mirrorTick(tick);
         this.inputStats.onTick(tick, this.attacksThisTick, claim != null && claim.hasRotation(), this.tickYRot);
@@ -1080,6 +1406,7 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
         this.anomaly(AnomalyWatch.AIM_GCD, input.turns() == 0 ? 0.0 : (double) input.gcdMisses() / input.turns(), settings.anomalyAimGcdMissRatio(),
             input.turns() >= settings.anomalyMinTurns());
         this.anomaly(AnomalyWatch.INPUT_GRAMMAR, this.rules.total(), settings.anomalyGrammarViolations(), true);
+        this.anomaly(AnomalyWatch.CLICK_STREAK, this.cadence.streak(), settings.anomalyClickStreakTicks(), true);
     }
 
     private void anomaly(final int kind, final double value, final double threshold, final boolean enough) {
@@ -1103,12 +1430,31 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
                 switch (action.getAction()) {
                     case DROP_ITEM -> this.view.items.dropSelected(false);
                     case DROP_ALL_ITEMS -> this.view.items.dropSelected(true);
-                    case RELEASE_USE_ITEM -> this.simulation.releaseUsingItem();
+                    case RELEASE_USE_ITEM -> {
+                        try {
+                            this.simulation.releaseUsingItem();
+                        } catch (final RuntimeException e) {
+                            this.simulationError(e);
+                        }
+                    }
                     default -> {
                     }
                 }
                 final boolean breaking = action.getAction() == ServerboundPlayerActionPacket.Action.START_DESTROY_BLOCK
                     || action.getAction() == ServerboundPlayerActionPacket.Action.STOP_DESTROY_BLOCK;
+                switch (action.getAction()) {
+                    // The client's MultiPlayerGameMode.isDestroying, for the cadence detector: mining punches every tick
+                    case START_DESTROY_BLOCK -> {
+                        this.clientDigging = true;
+                        this.dugThisTick = true;
+                    }
+                    case STOP_DESTROY_BLOCK, ABORT_DESTROY_BLOCK -> {
+                        this.clientDigging = false;
+                        this.dugThisTick = true;
+                    }
+                    default -> {
+                    }
+                }
                 // §15.2: the client breaks (and predicts) only the block on its crosshair; judged before the handler runs
                 final boolean admitted = breaking && this.onCrosshair(action.getPos());
                 this.replayUnless(refused, packet);
@@ -1126,7 +1472,12 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
                     predicted = !refused && this.player.isUsingItem() && this.player.getUsedItemHand() == hand;
                 }
                 if (predicted) {
-                    this.simulation.startUsingItem(hand); // a refusal's resync (onServerResync) reaches the client as meant
+                    try {
+                        this.simulation.startUsingItem(hand); // a refusal's resync (onServerResync) reaches the client as meant
+                        gg.hcfrevival.revival.combat.NeueCombat.useStarted(this.player, this.view.items.hand(hand), tick); // T_B
+                    } catch (final RuntimeException e) {
+                        this.simulationError(e);
+                    }
                 }
             }
             case final ServerboundUseItemOnPacket useOn -> {
@@ -1139,13 +1490,25 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
                 this.predict(hit.getBlockPos().relative(hit.getDirection()), useOn.sequence(), tick, admitted);
             }
             case final ServerboundAttackPacket attack -> this.runAttack(attack, tick, refused, settings);
+            case final net.minecraft.network.protocol.game.ServerboundPunchPacket punch -> {
+                this.punchesThisTick++; // every attack click sends one (neue-combat §12.2)
+                if (!gg.hcfrevival.revival.combat.NeueCombat.lockedOut(this.player)) {
+                    this.replayUnless(refused, punch); // viewers see no swing from a staggered attacker
+                }
+            }
             case final ServerboundPlayerLoadedPacket ignored -> {
                 this.view.setLoaded(true);
                 this.replay(packet);
             }
             case final ServerboundMovePlayerPacket move -> {
                 if (!refused && (this.mode == AuthMode.OBSERVE || this.lastExempt != AuthStats.EXEMPT_NONE)) {
-                    this.replay(move);
+                    if (this.mode == AuthMode.ENFORCE && this.lastExempt == EXEMPT_EXTERNAL_MOVER && move.hasPosition()
+                        && !withinMove(move.getX(0.0) - this.player.getX(), move.getY(0.0) - this.player.getY(), move.getZ(0.0) - this.player.getZ(),
+                        settings.externalMoverMaxMove())) {
+                        this.stats.moverClaimsRefused++; // review E2: a boat nearby is no licence to move as vanilla allows
+                    } else {
+                        this.replay(move);
+                    }
                 }
             }
             default -> {
@@ -1176,7 +1539,7 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
             this.stats.predictionsRefused++;
         }
         if (!this.world.predict(pos, sequence, tick, this.simulation.x(), this.simulation.y(), this.simulation.z(), admitted)) {
-            this.violation("block prediction sequence went backwards");
+            this.softViolation("block prediction sequence went backwards or jumped"); // review E10: counted, rate-kicked
         }
     }
 
@@ -1202,17 +1565,41 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
         // The sprint state the client attacked with, before its own attack stops it (sprint knock, §15.5)
         this.combatSprinting = this.simulation.sprinting();
         // The client already slowed itself (report 02 §2.4.1); it did, whatever the server decides
-        this.simulation.clientAttack(target instanceof Player, this.view);
+        // The client slows itself for a target it shows as a player, which the server may have removed already (a
+        // combat logger, a pearl through a portal): its mirror says (review client-attack-uses-server-target-type)
+        final gg.hcfrevival.revival.auth.combat.RemoteMirror shown = CombatWiring.book(this).mirror(attack.entityId());
+        final boolean clientPlayer = shown != null ? shown.present() : target instanceof Player;
+        try {
+            this.simulation.clientAttack(clientPlayer, this.view);
+        } catch (final RuntimeException e) {
+            this.simulationError(e);
+        }
         this.stats.attacksQueued++;
         final boolean admitted = this.envelope.admitAttack(settings.maxAttacksPerClientTick());
         if (!admitted) {
             this.stats.attacksOverCap++;
         }
+        // Neue: a staggered attacker spends no token and no ray (the combat side refuses it anyway); the click cap charges
+        // each attack past the grammar and the envelope (neue-combat §4.3, §7)
+        final boolean lockedOut = gg.hcfrevival.revival.combat.NeueCombat.lockedOut(this.player);
+        boolean paced = true;
+        if (!refused && admitted && !lockedOut) {
+            final gg.hcfrevival.revival.config.CombatRules rules = gg.hcfrevival.revival.combat.NeueCombat.rules(this.player);
+            if (rules.capsClicks() && !this.clicks.take(rules.clickBurst())) {
+                paced = false;
+                this.stats.attacksOverCps++;
+            }
+        }
         int verdict = AttackJudge.UNKNOWN;
-        if (target != null && !refused) {
+        if (target != null && !refused && !lockedOut && paced) {
             // Also while a server teleport is pending: the windows in flight are simulated from the pre-teleport state,
             // which is where the client really is when it attacks
-            verdict = Authority.attackJudge().judge(this, target, tick);
+            try {
+                verdict = Authority.attackJudge().judge(this, target, tick);
+            } catch (final RuntimeException e) {
+                this.simulationError(e); // unjudged: a player target isn't hit
+                verdict = AttackJudge.UNKNOWN;
+            }
         }
         if (verdict == AttackJudge.VALID) {
             this.stats.attacksAccepted++;
@@ -1231,18 +1618,29 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
             // teleport pending, no seed, the mirror out of reach of the rewind) is not delivered. Other targets keep
             // Paper's own validation.
             final boolean judged = target instanceof Player ? verdict == AttackJudge.VALID : verdict != AttackJudge.INVALID;
-            deliver = !refused && admitted && judged && this.lastExempt == AuthStats.EXEMPT_NONE;
+            deliver = !refused && admitted && paced && !lockedOut && judged && this.keybindExempt == AuthStats.EXEMPT_NONE && !portExempt(this.lastExempt);
         } else {
-            deliver = !refused;
+            deliver = !refused && paced;
         }
         if (deliver) {
+            // Neue's context around the replay: the judge's distance for the tipper (NaN: none), then held/landed/cleared
+            gg.hcfrevival.revival.combat.NeueCombat.begin(this.player, attack, verdict == AttackJudge.VALID ? this.lastHitDistance : Double.NaN);
             this.replay(attack);
+            gg.hcfrevival.revival.combat.NeueCombat.settle(this.player);
         }
     }
 
     private int speedSyncsPending;
     private boolean speedSyncSprint;
+    // Neue (neue-combat §4.3, §12.2): the click cap and the locked-cadence detector, per client tick
+    private final gg.hcfrevival.revival.auth.input.ClickBucket clicks = new gg.hcfrevival.revival.auth.input.ClickBucket();
+    private final gg.hcfrevival.revival.auth.input.CadenceWatch cadence = new gg.hcfrevival.revival.auth.input.CadenceWatch();
+    private int punchesThisTick;
+    private boolean keybindsUsing;
+    private boolean clientDigging;
+    private boolean dugThisTick;
     private int lastExempt = AuthStats.EXEMPT_NONE;
+    private int keybindExempt = AuthStats.EXEMPT_NONE;
     private int mirroredTick;
     private double eyeOffsetX;
     private double eyeOffsetY;
@@ -1274,7 +1672,31 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
     }
 
     // The client's tick T, from the entity tick on (report 01 §11.4)
+    /**
+     * A bug in the port or the combat code must not take the player down (§15.6): the tick falls back to the claim
+     * through vanilla's handler, the next one re-seeds from server-owned state; logged once per player.
+     */
+    private void simulationError(final RuntimeException e) {
+        this.stats.simulationErrors++;
+        if (this.stats.simulationErrors == 1) {
+            LOGGER.error("Movement simulation failed for {}; its ticks fall back to the client's claims until a re-seed", this.player.getScoreboardName(), e);
+        }
+        this.lastExempt = AuthStats.EXEMPT_SIMULATION_ERROR;
+        this.reseedFromServer = true;
+        this.deferredCorrection = false;
+    }
+
     private void simulate(final @Nullable Input sentInput, final int sprint, final int flying, final boolean fallFlying,
+                          final @Nullable ServerboundMovePlayerPacket claim, final boolean refused, final AuthoritativeSettings settings) {
+        try {
+            this.simulateUnguarded(sentInput, sprint, flying, fallFlying, claim, refused, settings);
+        } catch (final RuntimeException e) {
+            this.simulationError(e);
+            this.stats.countExempt(AuthStats.EXEMPT_SIMULATION_ERROR);
+        }
+    }
+
+    private void simulateUnguarded(final @Nullable Input sentInput, final int sprint, final int flying, final boolean fallFlying,
                           final @Nullable ServerboundMovePlayerPacket claim, final boolean refused, final AuthoritativeSettings settings) {
         final Simulation sim = this.simulation;
         final Input keys = this.stream.advanceInput(sentInput);
@@ -1283,15 +1705,27 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
         final double cy = hasPos ? claim.getY(0.0) : 0.0;
         final double cz = hasPos ? claim.getZ(0.0) : 0.0;
 
+        this.pushTick = false;
         int exempt = refused ? AuthStats.EXEMPT_REFUSED : this.exemptReason();
         if (exempt == AuthStats.EXEMPT_NONE && (this.reseedFromServer || !sim.seeded())) {
             this.seedFromServer();
         }
         if (exempt == AuthStats.EXEMPT_NONE) {
-            // §15.6: a piston, shulker box, solid entity, geyser or rod pull may move the client this tick
-            sim.externalMover(sim.seeded() && this.movers.near(this.player, this.runningTick, sim.x(), sim.y(), sim.z(), sim.box(), this.world, settings));
+            // §15.6: a piston or shulker box may push the client this tick (claims adopted within a band), a solid entity
+            // or geyser the port can't model exempts it
+            final int mover = sim.seeded() ? this.movers.near(this.player, this.runningTick, sim.x(), sim.y(), sim.z(), sim.box(), this.world, settings)
+                : ExternalMovers.NONE;
+            sim.externalMover(mover == ExternalMovers.SOLID);
+            this.pushTick = mover == ExternalMovers.PUSH;
             sim.attachedRockets(this.rocketsOnSelf.size());
             exempt = sim.unsupported(this.view);
+            if (exempt == AuthStats.EXEMPT_NONE && (claim != null ? claim.isOnGround() : this.clientOnGround)
+                && this.world.unknownChunkUnder(sim.seeded() ? sim.box() : this.player.getBoundingBox())) {
+                // The client says it stands on ground in a chunk our record says it lacks (and the server has): our
+                // bookkeeping, not the client, so no fall through its floor. A client that really lacks the chunk (a far
+                // teleport) falls with the truth and says so
+                exempt = AuthStats.EXEMPT_CHUNK_UNKNOWN;
+            }
         }
         final boolean wasSprinting = sim.sprinting();
         final boolean wasOnGround = sim.onGround();
@@ -1299,11 +1733,7 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
             try {
                 sim.tick(keys, this.stream.previousInput(), this.tickYRot, this.tickXRot, sprint, flying, fallFlying, this.view, this.world);
             } catch (final RuntimeException e) {
-                // A bug in the port must not take the player down: this tick falls back to the claim, and the next re-seeds
-                this.stats.simulationErrors++;
-                if (this.stats.simulationErrors == 1) {
-                    LOGGER.error("Movement simulation failed for {}; the tick falls back to the client's claim", this.player.getScoreboardName(), e);
-                }
+                this.simulationError(e); // this tick falls back to the claim, the next re-seeds
                 exempt = AuthStats.EXEMPT_SIMULATION_ERROR;
             }
         }
@@ -1322,9 +1752,16 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
                 }
             }
             this.compare(claim, hasPos, cx, cy, cz, settings);
+            // No position this tick: the client is within 2e-4 of what it last sent (LocalPlayer.sendPosition), so a truth
+            // that moved further off it has diverged now, not at the next claim (load-test regression, 2026-10-22)
+            final boolean implied = !hasPos && this.impliedClaim(sim);
             if (this.mode == AuthMode.ENFORCE) {
                 if (this.teleportsPending == 0) {
-                    this.reconcile(claim, hasPos, cx, cy, cz, settings);
+                    if (implied) {
+                        this.reconcile(null, true, this.stream.lastSentX(), this.stream.lastSentY(), this.stream.lastSentZ(), settings);
+                    } else {
+                        this.reconcile(claim, hasPos, cx, cy, cz, settings);
+                    }
                     this.applyTruth();
                 }
             } else if (hasPos) {
@@ -1342,9 +1779,11 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
                 case AuthStats.EXEMPT_NO_SIMULATION, AuthStats.EXEMPT_WARMUP -> {
                     // No port yet (or the first acks still outstanding): the claim is all there is
                     if (hasPos) {
-                        final double vx = this.hasLastClaim ? cx - this.lastClaimX : 0.0;
-                        final double vy = this.hasLastClaim ? cy - this.lastClaimY : 0.0;
-                        final double vz = this.hasLastClaim ? cz - this.lastClaimZ : 0.0;
+                        // Review E1: a claim-delta velocity is bounded like a seed's
+                        final double bound = settings.seedMaxMove();
+                        final double vx = this.hasLastClaim ? Mth.clamp(cx - this.lastClaimX, -bound, bound) : 0.0;
+                        final double vy = this.hasLastClaim ? Mth.clamp(cy - this.lastClaimY, -bound, bound) : 0.0;
+                        final double vz = this.hasLastClaim ? Mth.clamp(cz - this.lastClaimZ, -bound, bound) : 0.0;
                         sim.seed(cx, cy, cz, vx, vy, vz, this.tickYRot, this.tickXRot, claim.isOnGround(), this.view, this.world);
                     }
                     if (exempt == AuthStats.EXEMPT_WARMUP) {
@@ -1361,7 +1800,15 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
                 Authority.pathSink().onTick(this, this.runningTick, cx, cy, cz, this.tickYRot, this.tickXRot, claim.isOnGround());
             }
         }
-        if (hasPos) {
+        if (claim != null) {
+            this.clientOnGround = claim.isOnGround(); // every move packet carries it; none means it didn't change
+        }
+        if (exempt == AuthStats.EXEMPT_NOT_LOADED || exempt == AuthStats.EXEMPT_REFUSED) {
+            // Review E1: claims nobody ran are never a seed's pair
+            this.hasLastClaim = false;
+            this.hasPrevClaim = false;
+        } else if (hasPos) {
+            this.claimToConfirm = true; // a seed's pair only if the server ends the window there (runWindow)
             this.prevClaimX = this.lastClaimX;
             this.prevClaimY = this.lastClaimY;
             this.prevClaimZ = this.lastClaimZ;
@@ -1373,11 +1820,17 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
             this.lastClaimTick = this.runningTick;
             this.hasLastClaim = true;
         }
-        // §15.3: while a correction is in flight, the next attack is judged from where the client is, within the Δ
-        if (this.reconciler.inFlight() && hasPos && exempt == AuthStats.EXEMPT_NONE) {
-            this.eyeOffsetX = Reconciler.bounded(cx - sim.x(), this.reconciler.inFlightDelta(0));
-            this.eyeOffsetY = Reconciler.bounded(cy - sim.y(), this.reconciler.inFlightDelta(1));
-            this.eyeOffsetZ = Reconciler.bounded(cz - sim.z(), this.reconciler.inFlightDelta(2));
+        // §15.3: while the client is off the truth (a correction decided, rate-limited or in flight), the next attack is
+        // judged from where the client is (review attack-eye-on-deciding-tick), but only a small way off the truth: the
+        // claim itself chose how far off it is, so a far one casts from the truth (review E3)
+        final double offX = cx - sim.x();
+        final double offY = cy - sim.y();
+        final double offZ = cz - sim.z();
+        if (hasPos && exempt == AuthStats.EXEMPT_NONE && this.mode == AuthMode.ENFORCE && this.teleportsPending == 0
+            && withinMove(offX, offY, offZ, settings.attackEyeOffsetCap())) {
+            this.eyeOffsetX = offX;
+            this.eyeOffsetY = offY;
+            this.eyeOffsetZ = offZ;
         } else {
             this.eyeOffsetX = 0.0;
             this.eyeOffsetY = 0.0;
@@ -1397,23 +1850,40 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
      */
     private void seedFromServer() {
         this.rebaseGuard.reset();
+        this.pushGuard.reset();
+        final double bound = this.settings().seedMaxMove();
         final ServerPlayer p = this.player;
         final Simulation sim = this.simulation;
         if (this.seedStill) {
             sim.seed(p.getX(), p.getY(), p.getZ(), 0.0, 0.0, 0.0, this.tickYRot, this.tickXRot, p.onGround(), this.view, this.world);
         } else if (this.hasPrevClaim && this.lastClaimTick == this.prevClaimTick + 1
-            && p.getX() == this.lastClaimX && p.getY() == this.lastClaimY && p.getZ() == this.lastClaimZ) {
+            && p.getX() == this.lastClaimX && p.getY() == this.lastClaimY && p.getZ() == this.lastClaimZ
+            && withinMove(this.lastClaimX - this.prevClaimX, this.lastClaimY - this.prevClaimY, this.lastClaimZ - this.prevClaimZ, bound)) {
+            // The keys of the claim's own tick when it was the last one (advanceInput already ran for this tick)
+            final Input moveKeys = this.lastClaimTick == this.runningTick - 1 ? this.stream.previousInput() : null;
             if (!sim.seedFromMove(this.prevClaimX, this.prevClaimY, this.prevClaimZ, this.lastClaimX, this.lastClaimY, this.lastClaimZ,
-                this.tickYRot, this.tickXRot, p.onGround(), this.view, this.world)) {
+                moveKeys, this.tickYRot, this.tickXRot, p.onGround(), this.view, this.world)) {
                 this.stats.inexactSeeds++;
             }
         } else {
             final Vec3 known = p.getKnownMovement();
-            sim.seed(p.getX(), p.getY(), p.getZ(), known.x, known.y, known.z, this.tickYRot, this.tickXRot, p.onGround(), this.view, this.world);
+            sim.seed(p.getX(), p.getY(), p.getZ(), Mth.clamp(known.x, -bound, bound), Mth.clamp(known.y, -bound, bound), Mth.clamp(known.z, -bound, bound),
+                this.tickYRot, this.tickXRot, p.onGround(), this.view, this.world);
             this.stats.inexactSeeds++;
         }
         this.seedStill = false;
         this.reseedFromServer = false;
+    }
+
+    // An exemption of the port's own (an unsupported state, a solid mover) that carries into the next tick's keybinds; the
+    // view-based ones (warmup, not loaded, refused, riding, dead...) are judged from the tick itself
+    private static boolean portExempt(final int exempt) {
+        return exempt >= AuthStats.EXEMPT_SIMULATION_BASE;
+    }
+
+    /** Whether a claimed move fits on every axis within {@code bound} blocks (review E1: the port sweeps the whole move). */
+    static boolean withinMove(final double dx, final double dy, final double dz, final double bound) {
+        return Math.abs(dx) <= bound && Math.abs(dy) <= bound && Math.abs(dz) <= bound;
     }
 
     /** Why the tick can't be simulated, from what the client has applied (§15.3), or 0. */
@@ -1476,6 +1946,18 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
         }
     }
 
+    // A tick with no position claim whose truth moved more than LocalPlayer.sendPosition's 2e-4 from the last position
+    // the client sent, outside the 20-tick reminder: the client is still there, so the truth diverged this tick
+    private boolean impliedClaim(final Simulation sim) {
+        if (!this.stream.lastSentKnown() || this.stream.reminderDue() || this.reconciler.inFlight()) {
+            return false;
+        }
+        final double dx = sim.x() - this.stream.lastSentX();
+        final double dy = sim.y() - this.stream.lastSentY();
+        final double dz = sim.z() - this.stream.lastSentZ();
+        return dx * dx + dy * dy + dz * dz > 4.0E-8;
+    }
+
     // Enforce: the reconciler decides; a correction is relative in position, absolute in velocity (v1, see the doc)
     private void reconcile(final @Nullable ServerboundMovePlayerPacket claim, final boolean hasPos, final double cx, final double cy, final double cz,
                            final AuthoritativeSettings settings) {
@@ -1487,6 +1969,15 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
         final double dy = sim.y() - cy;
         final double dz = sim.z() - cz;
         final double distance = Math.sqrt(dx * dx + dy * dy + dz * dz);
+        if (this.pushTick && distance > 0.0 && withinMove(dx, dy, dz, settings.externalMoverBand()) && sim.clearPath(-dx, -dy, -dz, this.world)
+            && this.pushGuard.admit(this.runningTick, -dx, -dy, -dz, settings.externalMoverDriftCap(), settings.rebaseDriftWindowTicks())) {
+            // A push the port doesn't model (review E2): the client's position, the truth's own velocity
+            sim.rebase(cx, cy, cz);
+            sim.belief(true, cx, cy, cz);
+            this.stats.pushesAdopted++;
+            this.withinStreak = 0;
+            return;
+        }
         int decision = this.reconciler.judge(distance, settings.rebaseEpsilon(), settings.correctionThreshold(), settings.correctionBudget(),
             settings.correctionBudgetDecay(), settings.maxCorrectionsPerSecond(), System.nanoTime());
         if (decision == Reconciler.EXACT && distance > 0.0) {
@@ -1509,6 +2000,9 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
             this.withinStreak = 0;
         }
         final boolean exact = decision == Reconciler.EXACT;
+        if (exact) {
+            this.beliefStale = false;
+        }
         if (decision != Reconciler.IN_FLIGHT) {
             sim.belief(exact, cx, cy, cz);
         }
@@ -1541,7 +2035,17 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
             this.applyTruth();
             return;
         }
-        if (sim.correction(this.correctionAhead(), this.stream.input(), this.tickYRot, this.tickXRot, this.view, this.world, this.delta)) {
+        final boolean forecast = sim.correction(this.correctionAhead(), this.stream.input(), this.tickYRot, this.tickXRot, this.view, this.world, this.delta);
+        if (this.beliefStale) {
+            // After refused ticks (a stall, a timer refusal) the client's velocity is unknown: land it absolutely,
+            // position and velocity, where the truth will be (pvp-issues NW-2: recover with one correction)
+            this.beliefStale = false;
+            if (forecast) {
+                this.sendAbsolute(this.delta[7], this.delta[8], this.delta[9], this.delta[10], this.delta[11], this.delta[12]);
+            } else {
+                this.sendAbsolute(sim.x(), sim.y(), sim.z(), sim.vx(), sim.vy(), sim.vz());
+            }
+        } else if (forecast) {
             this.sendForecast();
         } else {
             this.sendFallback(sim.x() - this.deferredX, sim.y() - this.deferredY, sim.z() - this.deferredZ);
@@ -1553,7 +2057,7 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
      * being processed already ended its tick, so at least one, else {@code n̂ = rtt / 50}.
      */
     private int correctionAhead() {
-        return Math.max(1, (int) Math.round(this.transactions.rttBaseNanos() / 50_000_000.0));
+        return Math.max(1, (int) Math.round(this.slackRttNanos() / 50_000_000.0));
     }
 
     // The forecast in delta: relative, or absolute when the client would land inside a block or the same correction
@@ -1716,15 +2220,25 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
         }
     }
 
+    // An acked entry; a failure in the port leaves the view updated as far as it got and re-seeds the simulation
+    private void applyGuarded(final Packet<?> packet, final int kind, final int tick, final boolean exact, final long sentMillis) {
+        try {
+            this.apply(packet, kind, tick, exact, sentMillis);
+        } catch (final RuntimeException e) {
+            this.simulationError(e);
+        }
+    }
+
     // A teleport accept, in the drain: checked as a claim, never a seed (§15.3)
     private void checkAccept(final ServerboundAcceptTeleportationPacket accept, final AuthoritativeSettings settings) {
-        if (!Double.isFinite(accept.x()) || !Double.isFinite(accept.y()) || !Double.isFinite(accept.z())) {
+        if (!Double.isFinite(accept.x()) || !Double.isFinite(accept.y()) || !Double.isFinite(accept.z())
+            || !Float.isFinite(accept.yRot()) || !Float.isFinite(accept.xRot())) {
             this.violation("non-finite teleport accept");
             return;
         }
-        this.stream.setRotation(accept.yRot(), accept.xRot());
         if (Reconciler.ours(accept.id())) {
             if (this.reconciler.accepted(accept.id())) {
+                this.stream.setRotation(accept.yRot(), accept.xRot()); // the rotation only from an accept that matched (review E9)
                 this.stats.correctionsAccepted++;
                 final Simulation sim = this.simulation;
                 final double dx = sim.x() - accept.x();
@@ -1770,21 +2284,34 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
         if (this.mode == AuthMode.ENFORCE) {
             final int index = this.awaitingAccepts.indexOf(accept.id());
             if (index < 0) {
-                if (this.acceptedBeforeAuthority.rem(accept.id())) {
-                    return; // sent before authority started: vanilla's bookkeeping ran at its arrival
+                if (teleportBefore(this.player.connection.revivalLastTeleportId(), accept.id())) {
+                    // An id vanilla never issued: a forged accept (design §15.8: an instant protocol violation)
+                    this.protocolViolation("accept for a server teleport never sent");
+                    return;
                 }
-                if (this.teleportsPending > 0) {
-                    // A teleport sent ahead of its ping (a full bundle) is accepted before its pong: matched when it lands
-                    this.earlyAccepts.add(accept.id());
-                } else {
-                    this.violation("accept for a server teleport never sent or already accepted");
+                if (!this.teleportsLogged.contains(accept.id())
+                    && (!this.anyLoggedTeleport || teleportBefore(accept.id(), this.firstLoggedTeleport))) {
+                    // Sent before authority started, so no pong of ours: vanilla's bookkeeping happens here (its
+                    // destination, never the accept's coordinates); an older one vanilla no longer waits for is ignored
+                    if (this.player.connection.revivalCompleteServerTeleport(accept.id())) {
+                        this.stream.setRotation(accept.yRot(), accept.xRot());
+                    }
+                    return;
                 }
+                // Ahead of its teleport's pong (a bypass, an oversized bundle), or forged: matched when it lands
+                if (this.earlyAccepts.size() >= EARLY_ACCEPTS_MAX) {
+                    this.earlyAccepts.removeInt(0);
+                    this.earlySince.removeInt(0);
+                }
+                this.earlyAccepts.add(accept.id());
+                this.earlySince.add(this.runningTick);
                 return;
             }
             // Accepted: this one and any earlier ones (the client acks only the newest it applied)
             this.awaitingAccepts.removeElements(0, index + 1);
             this.awaitingSince.removeElements(0, index + 1);
         }
+        this.stream.setRotation(accept.yRot(), accept.xRot());
         final Simulation sim = this.simulation;
         if (sim.seeded() && (accept.x() != sim.x() || accept.y() != sim.y() || accept.z() != sim.z())) {
             this.stats.teleportAcceptMismatches++;
@@ -1794,6 +2321,7 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
     // Applying acked entries (the client's drain) ----------------------------------------------------------------
 
     private void apply(final Packet<?> packet, final int kind, final int tick, final boolean exact, final long sentMillis) {
+        gg.hcfrevival.revival.combat.NeueCombat.applied(this.player, packet, tick); // T_s: the stagger's recoil reached the client
         final Simulation sim = this.simulation;
         switch (kind) {
             case OutboundClassifier.SELF_MOTION -> {
@@ -1813,10 +2341,16 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
                         this.stream.setRotation(sim.yRot(), sim.xRot());
                         this.reseedFromServer = !sim.seeded(); // the teleport is the server-owned state to start from
                     }
+                    this.teleportsLogged.rem(position.id());
                     if (this.mode == AuthMode.ENFORCE) {
                         // Complete at its pong (§15.3): the server player writes the truth again; the accept is only a claim
                         this.player.connection.revivalCompleteServerTeleport(position.id());
-                        if (!this.earlyAccepts.rem(position.id())) {
+                        final int early = this.earlyAccepts.indexOf(position.id());
+                        if (early >= 0) {
+                            this.earlyAccepts.removeInt(early);
+                            this.earlySince.removeInt(early);
+                        } else if (exact) {
+                            // Forced or upper-bound (a bypass): its accept may have come already, or may never be timed
                             this.awaitingAccepts.add(position.id());
                             this.awaitingSince.add(tick);
                         }
@@ -1824,6 +2358,7 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
                     this.teleportsPending = Math.max(0, this.teleportsPending - 1);
                     if (this.teleportsPending == 0) {
                         this.earlyAccepts.clear();
+                        this.earlySince.clear();
                     }
                     this.reconciler.reset();
                 }
@@ -1892,7 +2427,7 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
                 final ClientboundSetPassengersPacket passengers = (ClientboundSetPassengersPacket) packet;
                 this.view.passengers(passengers.getVehicle(), passengers.getPassengers(), this.player.getId());
             }
-            case OutboundClassifier.INVENTORY -> this.applyInventory(packet);
+            case OutboundClassifier.INVENTORY -> this.applyInventory(packet, tick);
             case OutboundClassifier.HELD_SLOT -> this.view.items.select(((ClientboundSetHeldSlotPacket) packet).slot());
             case OutboundClassifier.HEALTH -> this.view.health((ClientboundSetHealthPacket) packet);
             case OutboundClassifier.TICKING -> {
@@ -1913,9 +2448,10 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
             case OutboundClassifier.TEAM -> this.view.team((ClientboundSetPlayerTeamPacket) packet);
             case OutboundClassifier.CAMERA -> this.view.camera(((ClientboundSetCameraPacket) packet).getEntity(this.player.level()) != this.player);
             case OutboundClassifier.ROD_PULL -> {
-                if (((ClientboundEntityEventPacket) packet).getEntity(this.player.level()) instanceof final FishingHook hook && hook.getHookedIn() == this.player) {
-                    this.stats.externalMovers++; // the client pulls itself toward the rod owner this tick: not modelled, exempt (§15.6)
-                    this.movers.rodPull(tick);
+                if (((ClientboundEntityEventPacket) packet).getEntity(this.player.level()) instanceof final FishingHook hook && hook.getHookedIn() == this.player
+                    && hook.getOwner() != null && sim.seeded()) {
+                    this.stats.externalMovers++;
+                    this.pullTowards(hook.getOwner());
                 }
             }
             case OutboundClassifier.PISTON -> {
@@ -1933,7 +2469,39 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
         }
     }
 
-    private void applyInventory(final Packet<?> packet) {
+    // FishingHook.handleEntityEvent(31) -> pullEntity on the client, in the drain: velocity += (owner - hook) * 0.1, the
+    // hook riding the local player at getY(0.8) and the owner where this client shows it (review E2: no exemption)
+    private void pullTowards(final net.minecraft.world.entity.Entity owner) {
+        final Simulation sim = this.simulation;
+        double ox = owner.getX();
+        double oy = owner.getY();
+        double oz = owner.getZ();
+        final gg.hcfrevival.revival.auth.combat.RemoteMirror shown = CombatWiring.book(this).mirror(owner.getId());
+        if (shown != null && shown.present()) {
+            ox = shown.x();
+            oy = shown.y();
+            oz = shown.z();
+        }
+        final double hookY = sim.y() + sim.box().getYsize() * 0.8;
+        try {
+            sim.addVelocity((ox - sim.x()) * 0.1, (oy - hookY) * 0.1, (oz - sim.z()) * 0.1);
+        } catch (final RuntimeException e) {
+            this.simulationError(e);
+        }
+    }
+
+    private int inventoryReseeded = Integer.MIN_VALUE;
+
+    private void applyInventory(final Packet<?> packet, final int tick) {
+        if (packet instanceof final ClientboundContainerSetSlotPacket slot && slot.getContainerId() != 0
+            || packet instanceof final ClientboundContainerSetContentPacket content && content.containerId() != 0) {
+            // Another container: its player-inventory slots are re-read from the server once per window (review PT-12)
+            if (this.inventoryReseeded != tick) {
+                this.inventoryReseeded = tick;
+                this.view.items.seed(this.player.getInventory());
+            }
+            return;
+        }
         // §15.6: the client's stacks as encoded when the entry was logged; converted now only if no snapshot was taken
         final Object taken = this.transactions.takeSnapshot(packet);
         final net.minecraft.world.item.ItemStack[] snapshot = taken instanceof final net.minecraft.world.item.ItemStack[] stacks ? stacks : ClientItems.snapshot(packet);
@@ -2013,6 +2581,7 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
 
     private void respawn(final byte keep) {
         this.visibility.clear();
+        this.newestStamps.clear();
         this.seedStill = true;
         this.hasLastClaim = false;
         this.hasPrevClaim = false;
@@ -2036,10 +2605,17 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
     private void resync() {
         this.view.seed(this.player);
         this.simulation.attributes(this.player.getAttributes().getSyncableAttributesPacket());
-        this.world.setLevel(this.player.level(), false);
-        this.world.clearUnsent();
+        if (this.world.level() != this.player.level()) {
+            this.world.setLevel(this.player.level(), false);
+        }
+        this.world.clearUnsent(); // the sent states and the chunk list are what the client has; a resync doesn't change them
         this.reseedFromServer = true;
         this.reconciler.reset();
+        this.speedSyncsPending = 0; // a lost log dropped the syncs in flight; the next sprint change sends a fresh one
+        this.speedSyncSprint = false;
+        // Teleports a lost log dropped never complete at a pong; their accepts complete them as before authority
+        this.clearTeleportBookkeeping();
+        this.repairMirrors(true, this.settings()); // the book was emptied: every tracked player spawns again, logged
         Authority.mirrors().onReset(this);
     }
 
@@ -2081,6 +2657,17 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
     }
 
     // Replay ---------------------------------------------------------------------------------------------------------
+
+    // Packets that change held state and nothing about the tick's movement or actions
+    private static boolean changesStateOnly(final Packet<?> packet) {
+        return packet instanceof net.minecraft.network.protocol.game.ServerboundSetCarriedItemPacket
+            || packet instanceof ServerboundPlayerInputPacket
+            || packet instanceof final ServerboundPlayerCommandPacket command && command.getAction() != ServerboundPlayerCommandPacket.Action.START_FALL_FLYING
+            || packet instanceof net.minecraft.network.protocol.game.ServerboundContainerClosePacket
+            || packet instanceof net.minecraft.network.protocol.game.ServerboundClientCommandPacket
+            || packet instanceof ServerboundPlayerAbilitiesPacket
+            || packet instanceof net.minecraft.network.protocol.game.ServerboundPlayerLoadedPacket;
+    }
 
     private void replayUnless(final boolean refused, final Packet<?> packet) {
         if (!refused) {
@@ -2126,16 +2713,78 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
         this.violation(what);
         if (this.mode == AuthMode.ENFORCE && !this.kicked) {
             this.kicked = true;
+            LOGGER.warn("{} disconnected under authority: {}", this.player.getScoreboardName(), what);
             this.player.connection.disconnect(Component.literal("Invalid transaction replies"));
         }
     }
 
+    // A client tick that never ends while replies pile up (review E7, PT-15): overflow kicks in enforce; observe, which
+    // never kicks, gives the player up for the session, which replays and frees what the window held
+    private void windowOverflow() {
+        if (this.mode == AuthMode.ENFORCE) {
+            this.protocolViolation("a client tick past " + ClientStream.MAX_DRAIN_ITEMS + " replies or " + ClientStream.MAX_ACKED
+                + " released packets (no TickEnd)");
+            return;
+        }
+        this.violation("a client tick that never ended (observe: authority off for the session)");
+        this.ineligible = "its client tick never ended under observe";
+        this.eligibilityChecked = true;
+        this.deactivate();
+    }
+
+    /**
+     * An ordering-only violation with no advantage (design §15.8): a modded client's frame-time packet can make one, and
+     * in HCF a kick is a combat-logger death, so it is counted and kicks only past {@code protocol-kick-rate} in 60 s.
+     */
+    private void softViolation(final String what) {
+        this.violation(what);
+        final int rate = this.settings().protocolKickRate();
+        if (rate <= 0) {
+            this.protocolViolation(what);
+            return;
+        }
+        final long now = System.nanoTime();
+        if (this.softTimes.length != rate) {
+            this.softTimes = new long[Math.min(rate, 4096)];
+            this.softCount = 0;
+            this.softNext = 0;
+        }
+        final long[] times = this.softTimes;
+        this.softCount = Math.min(this.softCount + 1, times.length);
+        times[this.softNext] = now;
+        this.softNext = (this.softNext + 1) % times.length;
+        // Full ring: its oldest entry is the next slot; all of them within 60 s is the sustained rate
+        if (this.softCount == times.length && now - times[this.softNext % times.length] <= 60_000_000_000L) {
+            this.protocolViolation(what + " (" + times.length + " ordering violations in 60 s)");
+        }
+    }
+
+    private long[] softTimes = new long[0];
+    private int softCount;
+    private int softNext;
+    // Violations by reason (inspect), and when each reason was last logged (one line a minute per reason, review E10)
+    private final it.unimi.dsi.fastutil.objects.Object2IntOpenHashMap<String> violationReasons = new it.unimi.dsi.fastutil.objects.Object2IntOpenHashMap<>();
+    private final it.unimi.dsi.fastutil.objects.Object2LongOpenHashMap<String> violationLogged = new it.unimi.dsi.fastutil.objects.Object2LongOpenHashMap<>();
+
+    /** Protocol and stream violations so far, by reason. */
+    public it.unimi.dsi.fastutil.objects.Object2IntMap<String> violationReasons() {
+        return this.violationReasons;
+    }
+
     private void violation(final String what) {
         this.stats.violations++;
+        final int count = this.violationReasons.addTo(what, 1) + 1;
+        final long now = System.nanoTime();
+        final long logged = this.violationLogged.getLong(what);
+        if (count > 1 && now - logged < 60_000_000_000L) {
+            return; // a client can trigger these at packet rate: one line per reason per minute
+        }
+        this.violationLogged.put(what, now);
+        this.stats.violationLines++;
         if (this.mode == AuthMode.ENFORCE) {
-            LOGGER.warn("{} broke the client protocol under authority: {}", this.player.getScoreboardName(), what);
+            LOGGER.warn("{} broke the client protocol under authority: {} ({} so far)", this.player.getScoreboardName(), what, count);
         } else {
-            LOGGER.debug("{} broke the client protocol (observe): {}", this.player.getScoreboardName(), what);
+            LOGGER.debug("{} broke the client protocol (observe): {} ({} so far)", this.player.getScoreboardName(), what, count);
         }
     }
 

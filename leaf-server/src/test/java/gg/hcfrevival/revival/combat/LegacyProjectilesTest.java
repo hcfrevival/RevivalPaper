@@ -30,15 +30,15 @@ class LegacyProjectilesTest {
 
     @Test
     void castFollowsTheLookAt15() {
-        final Vec3 forward = LegacyProjectiles.castMotion(0.0F, 0.0F, 1.5, 0.0, 0.0, 0.0);
+        final Vec3 forward = LegacyProjectiles.castMotion(0.0F, 0.0F, 1.5, 0.0075, 0.0, 0.0, 0.0);
         assertEquals(0.0, forward.x, 1.0E-4);
         assertEquals(0.0, forward.y, 1.0E-4);
         assertEquals(1.5, forward.z, 1.0E-4);
-        final Vec3 up = LegacyProjectiles.castMotion(0.0F, -90.0F, 1.5, 0.0, 0.0, 0.0);
+        final Vec3 up = LegacyProjectiles.castMotion(0.0F, -90.0F, 1.5, 0.0075, 0.0, 0.0, 0.0);
         assertEquals(1.5, up.y, 1.0E-4);
-        final Vec3 east = LegacyProjectiles.castMotion(-90.0F, 0.0F, 1.5, 0.0, 0.0, 0.0);
+        final Vec3 east = LegacyProjectiles.castMotion(-90.0F, 0.0F, 1.5, 0.0075, 0.0, 0.0, 0.0);
         assertEquals(1.5, east.x, 1.0E-4);
-        assertEquals(1.5 * (1.0 + 0.0075), LegacyProjectiles.castMotion(0.0F, 0.0F, 1.5, 0.0, 0.0, 1.0).z, 1.0E-4);
+        assertEquals(1.5 * (1.0 + 0.0075), LegacyProjectiles.castMotion(0.0F, 0.0F, 1.5, 0.0075, 0.0, 0.0, 1.0).z, 1.0E-4);
     }
 
     @Test

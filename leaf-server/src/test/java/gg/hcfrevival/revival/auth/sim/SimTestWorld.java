@@ -2,10 +2,12 @@ package gg.hcfrevival.revival.auth.sim;
 
 import it.unimi.dsi.fastutil.longs.Long2IntOpenHashMap;
 import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
+import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
 import java.util.ArrayList;
 import java.util.List;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.SectionPos;
+import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.material.FluidState;
@@ -13,13 +15,15 @@ import net.minecraft.world.phys.AABB;
 
 /**
  * An in-memory {@link SimWorld} for tests (the offline rig's RigWorld without the vanilla oracle): a sparse block map,
- * every chunk loaded, a far border, optional solid entity boxes.
+ * every chunk loaded unless {@link #unload}ed (then void air, like the client's EmptyLevelChunk), a far border, optional
+ * solid entity boxes.
  */
 final class SimTestWorld implements SimWorld {
 
     private final Long2ObjectOpenHashMap<BlockState> blocks = new Long2ObjectOpenHashMap<>();
     private final Long2IntOpenHashMap sectionFluids = new Long2IntOpenHashMap();
     final List<AABB> entityBoxes = new ArrayList<>();
+    private final LongOpenHashSet unloaded = new LongOpenHashSet();
     double borderMinX = -2.9999984E7;
     double borderMinZ = -2.9999984E7;
     double borderMaxX = 2.9999984E7;
@@ -46,8 +50,22 @@ final class SimTestWorld implements SimWorld {
         return this;
     }
 
+    /** The client does not have this chunk (yet). */
+    SimTestWorld unload(final int chunkX, final int chunkZ) {
+        this.unloaded.add(ChunkPos.pack(chunkX, chunkZ));
+        return this;
+    }
+
+    SimTestWorld load(final int chunkX, final int chunkZ) {
+        this.unloaded.remove(ChunkPos.pack(chunkX, chunkZ));
+        return this;
+    }
+
     @Override
     public BlockState blockState(final int x, final int y, final int z) {
+        if (!this.isChunkLoaded(x >> 4, z >> 4)) {
+            return Blocks.VOID_AIR.defaultBlockState();
+        }
         final BlockState s = this.blocks.get(BlockPos.asLong(x, y, z));
         return s == null ? Blocks.AIR.defaultBlockState() : s;
     }
@@ -59,7 +77,7 @@ final class SimTestWorld implements SimWorld {
 
     @Override
     public boolean isChunkLoaded(final int chunkX, final int chunkZ) {
-        return true;
+        return !this.unloaded.contains(ChunkPos.pack(chunkX, chunkZ));
     }
 
     @Override

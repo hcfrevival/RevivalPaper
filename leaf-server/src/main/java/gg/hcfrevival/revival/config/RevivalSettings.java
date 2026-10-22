@@ -17,6 +17,7 @@ import org.jspecify.annotations.Nullable;
  * @param knockbackAutosave whether {@code /revival kb} edits are written to revival.yml at once
  * @param swordBlocking the global {@code sword-blocking} section
  * @param authoritative the global {@code authoritative} section (server-authoritative movement and hits)
+ * @param combatRules every combat rule set by name: the presets ({@code classic}, {@code neue}), overridden or joined by {@code combat-rules}
  */
 public record RevivalSettings(
     int configVersion,
@@ -25,7 +26,8 @@ public record RevivalSettings(
     Map<String, KnockbackProfile> knockbackProfiles,
     boolean knockbackAutosave,
     SwordBlockingSettings swordBlocking,
-    AuthoritativeSettings authoritative
+    AuthoritativeSettings authoritative,
+    Map<String, CombatRules> combatRules
 ) {
 
     public static final RevivalSettings DEFAULTS = RevivalConfig.read(new ConfigReader(new org.bukkit.configuration.file.YamlConfiguration()));
@@ -39,6 +41,10 @@ public record RevivalSettings(
         return this.knockbackProfiles.get(name);
     }
 
+    public @Nullable CombatRules combatRules(final String name) {
+        return this.combatRules.get(name);
+    }
+
     /** A copy where the named profile is added, replaced, or removed (null), and every world using it follows. */
     public RevivalSettings withProfile(final String name, final @Nullable KnockbackProfile profile) {
         final Map<String, KnockbackProfile> profiles = new LinkedHashMap<>(this.knockbackProfiles);
@@ -49,7 +55,7 @@ public record RevivalSettings(
         }
         final Map<String, LegacyCombatSettings> worlds = new HashMap<>();
         this.worldLegacyCombat.forEach((world, settings) -> worlds.put(world, follow(settings, name, profile)));
-        return new RevivalSettings(this.configVersion, follow(this.legacyCombat, name, profile), Map.copyOf(worlds), java.util.Collections.unmodifiableMap(profiles), this.knockbackAutosave, this.swordBlocking, this.authoritative);
+        return new RevivalSettings(this.configVersion, follow(this.legacyCombat, name, profile), Map.copyOf(worlds), java.util.Collections.unmodifiableMap(profiles), this.knockbackAutosave, this.swordBlocking, this.authoritative, this.combatRules);
     }
 
     /** A copy where a world, or {@code default}, uses the named profile, which must exist. */
@@ -59,11 +65,11 @@ public record RevivalSettings(
             throw new IllegalArgumentException("no knockback profile named " + name);
         }
         if (ConfigReader.DEFAULT_WORLD.equals(world)) {
-            return new RevivalSettings(this.configVersion, this.legacyCombat.withKnockback(name, profile), this.worldLegacyCombat, this.knockbackProfiles, this.knockbackAutosave, this.swordBlocking, this.authoritative);
+            return new RevivalSettings(this.configVersion, this.legacyCombat.withKnockback(name, profile), this.worldLegacyCombat, this.knockbackProfiles, this.knockbackAutosave, this.swordBlocking, this.authoritative, this.combatRules);
         }
         final Map<String, LegacyCombatSettings> worlds = new HashMap<>(this.worldLegacyCombat);
         worlds.put(world, this.legacyCombat(world).withKnockback(name, profile));
-        return new RevivalSettings(this.configVersion, this.legacyCombat, Map.copyOf(worlds), this.knockbackProfiles, this.knockbackAutosave, this.swordBlocking, this.authoritative);
+        return new RevivalSettings(this.configVersion, this.legacyCombat, Map.copyOf(worlds), this.knockbackProfiles, this.knockbackAutosave, this.swordBlocking, this.authoritative, this.combatRules);
     }
 
     private static LegacyCombatSettings follow(final LegacyCombatSettings settings, final String name, final @Nullable KnockbackProfile profile) {

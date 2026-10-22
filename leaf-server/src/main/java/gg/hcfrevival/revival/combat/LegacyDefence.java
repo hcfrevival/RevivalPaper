@@ -46,9 +46,16 @@ public final class LegacyDefence {
         return epf(points, settings.randomizeProtection(), victim.getRandom());
     }
 
-    /** {@code lastHurt} for the damage window: 1.7.10 compared raw damage, before blocking took its share. */
+    /**
+     * {@code lastHurt} for the damage window: 1.7.10 compared raw damage, before blocking took its share. Called on both
+     * landing branches (fresh and overflow), so a legacy hit landing here also uses up the attacker's Neue riposte.
+     */
     public static float lastHurt(final DamageSource source, final float damage, final EntityDamageEvent event) {
-        return LegacyAttack.settings(source) != null ? damage - (float) event.getDamage(EntityDamageEvent.DamageModifier.BLOCKING) : damage;
+        if (LegacyAttack.settings(source) == null) {
+            return damage;
+        }
+        NeueCombat.landed(source);
+        return damage - (float) event.getDamage(EntityDamageEvent.DamageModifier.BLOCKING);
     }
 
     /** 1.7.10 EntityLivingBase.applyArmorCalculations: 4% per armor point, no toughness. */

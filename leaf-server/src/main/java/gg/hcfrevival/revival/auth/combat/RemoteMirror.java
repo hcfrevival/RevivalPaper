@@ -485,7 +485,11 @@ public final class RemoteMirror {
         final boolean same = this.targetYRot == newYRot && this.targetXRot == newXRot
             && same(this.targetX, this.endX) && same(this.targetY, this.endY) && same(this.targetZ, this.endZ);
         if (active && same) {
-            return; // identical to the active target: ignored, nothing queued
+            // Identical to the active target: the client ignores it, nothing is queued. But it says the server still had
+            // the target there at this stamp, so the target is that fresh (review stale-stamp-stationary-targets): a still
+            // player's keep-alive keeps the rewind age of its box from growing past the cap
+            this.refreshTargetStamp(this.eventStamp);
+            return;
         }
         this.startInterpolating(newYRot, newXRot);
         // setLastPositionAndRotation(); entity.onInterpolationStart is a no-op for players
@@ -536,6 +540,22 @@ public final class RemoteMirror {
         this.targetYRot = yRot;
         this.targetXRot = xRot;
         this.targetStamp = stamp;
+    }
+
+    /**
+     * The target the queue ends at is confirmed as of {@code stamp}: the last queued step (which ends at it) and the target
+     * take the newer stamp; earlier steps, and the display while it is still on its way, keep theirs. Once the display
+     * reaches the target it carries the confirmation.
+     */
+    private void refreshTargetStamp(final long stamp) {
+        if (stamp <= this.targetStamp) {
+            return;
+        }
+        this.targetStamp = stamp;
+        if (this.queueSize > 0) {
+            final int last = (this.queueHead + this.queueSize - 1) & (this.queueX.length - 1);
+            this.queueStamp[last] = stamp;
+        }
     }
 
     /** {@code InterpolationData.addStep} (:115-118). */

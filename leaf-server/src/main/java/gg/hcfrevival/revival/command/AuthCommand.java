@@ -136,6 +136,7 @@ final class AuthCommand {
         final List<String> lines = new ArrayList<>();
         lines.add(player.getScoreboardName() + ": " + auth.mode().configName() + (auth.ineligible() != null ? " (not eligible: " + auth.ineligible() + ")" : "")
             + (auth.frozen() ? ", FROZEN (pings unanswered)" : "") + (auth.view().selfCollisionNever() ? "" : ", players can push it (collision rule is not NEVER)"));
+        lines.add(auth.profile().describe());
         lines.add(String.format(Locale.ROOT, "windows %d, simulated %d, compared %d: exact %d (%.2f%%), within threshold %d, over %d; max %.3e, mean %.3e",
             stats.windows(), stats.simulated(), stats.compared(), stats.exact(), stats.exactShare() * 100.0, stats.withinThreshold(), stats.overThreshold(),
             stats.maxDivergence(), stats.meanDivergence()));
@@ -149,15 +150,28 @@ final class AuthCommand {
         lines.add(String.format(Locale.ROOT, "flags off %d, positions missing %d, reminders missed %d, timer refused %d (queued now %d), violations %d (stream %d, pongs %d)",
             stats.flagMismatches(), stats.missingPositionViolations(), stats.missedReminders(), auth.clock().refused(), auth.stream().queued(),
             stats.violations(), auth.stream().violations(), tx.violationCount()));
+        if (!auth.violationReasons().isEmpty()) {
+            final StringBuilder reasons = new StringBuilder("violations by reason:");
+            for (final it.unimi.dsi.fastutil.objects.Object2IntMap.Entry<String> entry : auth.violationReasons().object2IntEntrySet()) {
+                reasons.append(' ').append(entry.getKey()).append(" x").append(entry.getIntValue()).append(';');
+            }
+            lines.add(reasons.toString());
+        }
+        if (auth.simulation() instanceof final gg.hcfrevival.revival.auth.PortSimulation port) {
+            lines.add(String.format(Locale.ROOT, "sprint packets off the simulated sprint %d, flight packets off the simulated flight %d; pushes adopted %d, mover claims refused %d; pongs behind keep-alive %d s (keep-alive %d ms)",
+                port.sprintMismatches(), port.flightMismatches(), stats.pushesAdopted(), stats.moverClaimsRefused(), stats.pongsBehindKeepAlive(),
+                player.connection.latency()));
+        }
         lines.add(String.format(Locale.ROOT, "transactions: sent %d, acked %d, outstanding %d (%d entries), forced %d, skipped %d, duplicates %d, foreign %d; rtt base %.1f ms, last %.1f ms (%d ticks)",
             tx.sentCount(), tx.ackedCount(), tx.outstandingPings(), tx.outstandingEntries(), tx.forcedCount(), tx.skippedCount(), tx.duplicateCount(), tx.foreignCount(),
             tx.rttBaseNanos() / 1.0E6, tx.lastRttNanos() / 1.0E6, tx.lastRttTicks()));
         lines.add(String.format(Locale.ROOT, "corrections %d (accepted %d, reconciler violations %d; avoided by hotbar branch %d, attack-strength branch %d; rebases refused %d), server teleports %d (accepts off %d), reverts %d, external movers %d, mounts refused %d",
             stats.corrections(), stats.correctionsAccepted(), auth.reconciler().violations(), stats.hotbarBranches(), stats.attackStrengthBranches(), stats.rebasesRefused(),
             stats.serverTeleports(), stats.teleportAcceptMismatches(), stats.reverts(), stats.externalMovers(), stats.mountsRefused()));
-        lines.add(String.format(Locale.ROOT, "attacks %d: accepted %d, rejected %d, over cap %d; double clicks %.1f%%, yaw gcd %.4f (%d turns, %d misses)",
-            stats.attacksQueued(), stats.attacksAccepted(), stats.attacksRejected(), stats.attacksOverCap(), input.doubleClickRatio() * 100.0,
-            input.yawGcd(), input.turns(), input.gcdMisses()));
+        lines.add(String.format(Locale.ROOT, "attacks %d: accepted %d, rejected %d, over cap %d, over cps %d; one-click streak %d (longest %d); double clicks %.1f%%, yaw gcd %.4f / %.4f (%d turns, %d misses, %d smoothed skipped)",
+            stats.attacksQueued(), stats.attacksAccepted(), stats.attacksRejected(), stats.attacksOverCap(), stats.attacksOverCps(),
+            auth.cadence().streak(), auth.cadence().longest(), input.doubleClickRatio() * 100.0,
+            input.yawGcd(), input.secondGcd(), input.turns(), input.gcdMisses(), input.smoothedTurns()));
         final gg.hcfrevival.revival.auth.input.InputRules rules = auth.inputRules();
         final StringBuilder grammar = new StringBuilder("input grammar: " + rules.total() + " broken, " + stats.grammarDropped() + " dropped");
         for (int rule = 1; rule < gg.hcfrevival.revival.auth.input.InputRules.RULES; rule++) {

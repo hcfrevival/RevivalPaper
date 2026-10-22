@@ -140,6 +140,26 @@ class TransactionsTest {
     }
 
     @Test
+    void pongsForPingsAResetDroppedAreNoViolation() {
+        // Review reactivation-stale-pongs-kick: authority off and on again within an RTT
+        this.send(this.selfMotion(0.1));
+        this.send(this.selfMotion(0.2));
+        final int first = pingId(contents(this.connection.sent.get(0)).get(0));
+        final int second = pingId(contents(this.connection.sent.get(1)).get(0));
+        this.transactions.reset();
+        final Transactions.Acked out = new Transactions.Acked();
+        assertEquals(Transactions.DUPLICATE, this.transactions.ack(first, 0, out), "answered after the reset: nothing left to apply");
+        assertEquals(Transactions.DUPLICATE, this.transactions.ack(second, 0, out));
+        assertEquals(0, this.transactions.violationCount());
+        assertEquals(0, out.size());
+        // A pong for a ping sent after the reset ends the tolerance: an old id now is unknown again
+        this.send(this.selfMotion(0.3));
+        final int third = pingId(contents(this.connection.sent.get(2)).get(0));
+        assertEquals(Transactions.ACKED, this.transactions.ack(third, 0, out));
+        assertEquals(Transactions.UNKNOWN, this.transactions.ack(first, 0, out));
+    }
+
+    @Test
     void foreignIdsPassThrough() {
         final Transactions.Acked out = new Transactions.Acked();
         assertEquals(Transactions.FOREIGN, this.transactions.ack(5, 0, out));

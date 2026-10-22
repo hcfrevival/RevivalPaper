@@ -35,7 +35,7 @@ import org.jspecify.annotations.Nullable;
  * denied is not honored by the truth, §15.2 {@code honor-denied-predictions: false}); judging what a vanilla client would
  * have predicted on its own is not implemented yet. Main thread only.
  */
-public final class WorldView implements gg.hcfrevival.revival.auth.sim.SimWorld, gg.hcfrevival.revival.auth.combat.PickWorld,
+public final class WorldView implements gg.hcfrevival.revival.auth.sim.SimWorld, gg.hcfrevival.revival.auth.combat.PickWorld, gg.hcfrevival.revival.combat.ProjectileBlocks,
     gg.hcfrevival.revival.auth.visibility.OcclusionWorld {
 
     /** Called when a prediction ends with a different block than the client predicted (it may have to snap back). */
@@ -69,12 +69,17 @@ public final class WorldView implements gg.hcfrevival.revival.auth.sim.SimWorld,
     private final Long2ObjectOpenHashMap<Prediction> predictions = new Long2ObjectOpenHashMap<>();
     private final LongOpenHashSet chunks = new LongOpenHashSet();
     private boolean chunksKnown;
+    private boolean provisional;
     private int lastTeleportSequence;
     private int lastSequence;
+    /** The most a prediction sequence may jump ahead in one action: far more actions than a client makes between two. */
+    static final int MAX_SEQUENCE_JUMP = 1 << 16;
     private final BlockPos.MutableBlockPos cursor = new BlockPos.MutableBlockPos();
 
     private long pins;
     private long reverts;
+    // Overlay entries (sent, pinned) whose state holds a fluid: 0 almost always, so the fluid probe skips the overlay
+    private int overlayFluids;
     private long sequenceViolations;
     private long expired;
 
@@ -87,7 +92,13 @@ public final class WorldView implements gg.hcfrevival.revival.auth.sim.SimWorld,
             this.sent.clear();
             this.pinned.clear();
             this.predictions.clear();
+            this.overlayFluids = 0;
             this.chunks.clear();
+            // The prediction counter lives in the ClientLevel: a new one (another dimension) starts again at 1, and
+            // mid-session (chunksKnown at activation) it is unknown, so any sequence is accepted from here
+            this.lastSequence = 0;
+            this.lastTeleportSequence = 0;
+            this.provisional = false;
         }
         this.level = level;
         this.chunksKnown = chunksKnown;
@@ -110,7 +121,7 @@ public final class WorldView implements gg.hcfrevival.revival.auth.sim.SimWorld,
             return net.minecraft.world.level.block.Blocks.VOID_AIR.defaultBlockState();
         }
         if (!this.hasChunk(x >> 4, z >> 4)) {
-            return net.minecraft.world.level.block.Blocks.AIR.defaultBlockState();
+            return net.minecraft.world.level.block.Blocks.VOID_AIR.defaultBlockState(); // EmptyLevelChunk: void air, no fluid
         }
         final long key = BlockPos.asLong(x, y, z);
         if (!this.predictions.isEmpty()) {
@@ -145,12 +156,18 @@ public final class WorldView implements gg.hcfrevival.revival.auth.sim.SimWorld,
     }
 
     /**
-     * Whether the client holds the chunk ({@code Level.hasChunkAt} on the client: the {@code -0.1} gravity branch and
-     * {@code hasFluidAndLoaded}). Before the chunk list is known, whatever the server has loaded.
+     * Whether the client holds the chunk ({@code ClientChunkCache.getChunk(x, z, FULL, false) != null}: block colliders
+     * and {@code hasFluidAndLoaded}; {@code Level.hasChunk} itself is always true on a 26.3 client, so gravity doesn't
+     * ask). Before the chunk list is known, whatever the server has loaded.
      */
     public boolean hasChunk(final int chunkX, final int chunkZ) {
         if (this.chunksKnown) {
-            return this.chunks.contains(ChunkPos.pack(chunkX, chunkZ));
+            if (this.chunks.contains(ChunkPos.pack(chunkX, chunkZ))) {
+                return true;
+            }
+            if (!this.provisional) {
+                return false;
+            }
         }
         final ServerLevel level = this.level;
         return level != null && level.getChunkSource().getChunkAtIfLoadedImmediately(chunkX, chunkZ) != null;
@@ -158,6 +175,37 @@ public final class WorldView implements gg.hcfrevival.revival.auth.sim.SimWorld,
 
     public boolean hasChunkAt(final int blockX, final int blockZ) {
         return this.hasChunk(blockX >> 4, blockZ >> 4);
+    }
+
+    /**
+     * The first ack after authority started came back: everything sent before it (every chunk Paper had sent or queued
+     * for this connection at activation) is applied, so from now on only the chunk record counts.
+     */
+    public void endProvisional() {
+        this.provisional = false;
+    }
+
+    /**
+     * Whether a box's footprint touches a chunk the server has loaded that the client's chunk record lacks: our
+     * bookkeeping, almost certainly, for a player claiming to stand there (the client holds its own chunk before it
+     * reports itself loaded).
+     */
+    public boolean unknownChunkUnder(final net.minecraft.world.phys.AABB box) {
+        if (!this.chunksKnown || this.level == null) {
+            return false;
+        }
+        final int minX = net.minecraft.util.Mth.floor(box.minX) >> 4;
+        final int maxX = net.minecraft.util.Mth.floor(box.maxX) >> 4;
+        final int minZ = net.minecraft.util.Mth.floor(box.minZ) >> 4;
+        final int maxZ = net.minecraft.util.Mth.floor(box.maxZ) >> 4;
+        for (int cx = minX; cx <= maxX; cx++) {
+            for (int cz = minZ; cz <= maxZ; cz++) {
+                if (!this.hasChunk(cx, cz) && this.level.getChunkSource().getChunkAtIfLoadedImmediately(cx, cz) != null) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     /** The world border as the client holds it; v1: the live border (lerping borders are not mirrored yet). */
@@ -199,7 +247,51 @@ public final class WorldView implements gg.hcfrevival.revival.auth.sim.SimWorld,
     }
 
     private boolean overlayHasFluid(final int chunkX, final int sectionY, final int chunkZ) {
+        if (this.overlayFluids == 0) {
+            return false; // review PT-01: no fluid anywhere in the overlay, no scan
+        }
         return hasFluidIn(this.sent, chunkX, sectionY, chunkZ) || hasFluidIn(this.pinned, chunkX, sectionY, chunkZ);
+    }
+
+    // The overlay maps change only through these, which keep overlayFluids (review PT-01, E6)
+    private void putSent(final long key, final BlockState state) {
+        this.fluidDelta(this.sent.put(key, state), state);
+    }
+
+    private void removeSent(final long key) {
+        this.fluidDelta(this.sent.remove(key), null);
+    }
+
+    private void putPinned(final long key, final BlockState state) {
+        this.fluidDelta(this.pinned.put(key, state), state);
+    }
+
+    private void removePinned(final long key) {
+        this.fluidDelta(this.pinned.remove(key), null);
+    }
+
+    private void fluidDelta(final @Nullable BlockState removed, final @Nullable BlockState added) {
+        if (removed != null && !removed.getFluidState().isEmpty()) {
+            this.overlayFluids--;
+        }
+        if (added != null && !added.getFluidState().isEmpty()) {
+            this.overlayFluids++;
+        }
+    }
+
+    /**
+     * The client now has {@code state} at {@code key}: kept in {@code sent} only while it differs from the server's
+     * world (review E6, PT-01, PT-04). Equal to live, reads fall through to the live world, and a later server change
+     * pins the client's state again because the position is in no overlay map.
+     */
+    private void clientHas(final long key, final BlockState state) {
+        this.removePinned(key);
+        final ServerLevel live = this.level;
+        if (live != null && live.getBlockState(this.cursor.set(BlockPos.getX(key), BlockPos.getY(key), BlockPos.getZ(key))) == state) {
+            this.removeSent(key);
+        } else {
+            this.putSent(key, state);
+        }
     }
 
     private static boolean hasFluidIn(final Long2ObjectOpenHashMap<BlockState> map, final int chunkX, final int sectionY, final int chunkZ) {
@@ -269,7 +361,7 @@ public final class WorldView implements gg.hcfrevival.revival.auth.sim.SimWorld,
         if (this.sent.containsKey(key) || this.pinned.containsKey(key) || this.predictions.containsKey(key)) {
             return;
         }
-        this.pinned.put(key, oldState);
+        this.putPinned(key, oldState);
         this.pins++;
     }
 
@@ -283,14 +375,28 @@ public final class WorldView implements gg.hcfrevival.revival.auth.sim.SimWorld,
             prediction.server = state; // ClientLevel.setServerVerifiedBlockState: stored, the predicted block stays
             return;
         }
-        this.sent.put(key, state);
-        this.pinned.remove(key);
+        this.clientHas(key, state);
     }
 
     /** Acked chunk data: the client replaced every block in the chunk. */
     public void onChunk(final int chunkX, final int chunkZ) {
         this.chunks.add(ChunkPos.pack(chunkX, chunkZ));
         this.clearChunk(chunkX, chunkZ);
+    }
+
+    /**
+     * Authority starts in a session already running: the chunks the server has sent this client (Moonrise's per-player
+     * sent set), so the chunk list is known from the first tick instead of read from what the server has loaded.
+     */
+    public void seedChunks(final it.unimi.dsi.fastutil.longs.LongSet sentChunkKeys) {
+        this.provisional = true; // until the first ack after activation, a loaded chunk the set lacks may be in flight
+        this.chunks.clear();
+        for (final it.unimi.dsi.fastutil.longs.LongIterator it = sentChunkKeys.iterator(); it.hasNext(); ) {
+            final long key = it.nextLong();
+            this.chunks.add(ChunkPos.pack(ca.spottedleaf.moonrise.common.util.CoordinateUtils.getChunkX(key),
+                ca.spottedleaf.moonrise.common.util.CoordinateUtils.getChunkZ(key)));
+        }
+        this.chunksKnown = true;
     }
 
     /** An acked {@code ForgetLevelChunk}. */
@@ -310,7 +416,8 @@ public final class WorldView implements gg.hcfrevival.revival.auth.sim.SimWorld,
      */
     public boolean predict(final BlockPos pos, final int sequence, final int window, final double playerX, final double playerY, final double playerZ,
                            final boolean admitted) {
-        if (sequence < this.lastSequence) {
+        if (sequence < this.lastSequence || this.lastSequence != 0 && sequence - this.lastSequence > MAX_SEQUENCE_JUMP) {
+            // Backwards, or so far ahead it would make every later honest sequence look backwards (review E10)
             this.sequenceViolations++;
             return false;
         }
@@ -365,8 +472,7 @@ public final class WorldView implements gg.hcfrevival.revival.auth.sim.SimWorld,
                 this.expired++;
             }
             final long key = entry.getLongKey();
-            this.sent.put(key, prediction.server);
-            this.pinned.remove(key);
+            this.clientHas(key, prediction.server);
             if (prediction.server != prediction.predicted) {
                 this.reverts++;
                 listener.onRevert(BlockPos.of(key), prediction.server, prediction.playerX, prediction.playerY, prediction.playerZ);
@@ -384,17 +490,18 @@ public final class WorldView implements gg.hcfrevival.revival.auth.sim.SimWorld,
         return this.lastTeleportSequence;
     }
 
-    /** Forgets every overlay entry (resync from the server's world). */
     /** §11: a full opaque cube as this client was sent it hides what is behind it. */
     @Override
     public boolean occludes(final int x, final int y, final int z) {
         return this.level != null && this.blockState(x, y, z).isSolidRender();
     }
 
+    /** Forgets every overlay entry (resync from the server's world). */
     public void clear() {
         this.sent.clear();
         this.pinned.clear();
         this.predictions.clear();
+        this.overlayFluids = 0;
     }
 
     /**
@@ -402,16 +509,31 @@ public final class WorldView implements gg.hcfrevival.revival.auth.sim.SimWorld,
      * was sent (plugin fake blocks included) and which a resync does not change (cheat suite #32).
      */
     public void clearUnsent() {
+        for (final BlockState state : this.pinned.values()) {
+            this.fluidDelta(state, null);
+        }
         this.pinned.clear();
         this.predictions.clear();
     }
 
     private void clearChunk(final int chunkX, final int chunkZ) {
-        if (!this.sent.isEmpty()) {
-            this.sent.keySet().removeIf(key -> (BlockPos.getX(key) >> 4) == chunkX && (BlockPos.getZ(key) >> 4) == chunkZ);
+        this.clearChunkIn(this.sent, chunkX, chunkZ);
+        this.clearChunkIn(this.pinned, chunkX, chunkZ);
+    }
+
+    // No capturing lambda (review PT-04); the maps hold only what differs from live, so they are small
+    private void clearChunkIn(final Long2ObjectOpenHashMap<BlockState> map, final int chunkX, final int chunkZ) {
+        if (map.isEmpty()) {
+            return;
         }
-        if (!this.pinned.isEmpty()) {
-            this.pinned.keySet().removeIf(key -> (BlockPos.getX(key) >> 4) == chunkX && (BlockPos.getZ(key) >> 4) == chunkZ);
+        final ObjectIterator<Long2ObjectMap.Entry<BlockState>> iterator = map.long2ObjectEntrySet().fastIterator();
+        while (iterator.hasNext()) {
+            final Long2ObjectMap.Entry<BlockState> entry = iterator.next();
+            final long key = entry.getLongKey();
+            if ((BlockPos.getX(key) >> 4) == chunkX && (BlockPos.getZ(key) >> 4) == chunkZ) {
+                this.fluidDelta(entry.getValue(), null);
+                iterator.remove();
+            }
         }
     }
 

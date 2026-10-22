@@ -12,7 +12,8 @@ import org.jspecify.annotations.Nullable;
  * Hit registration for legacy weapons (patch 1006). Paper's attack handling stays as it is: reach, invalid-target
  * checks, packet order and every event. On top of it, while a player holds a legacy weapon a transient
  * {@code ATTACK_SPEED} modifier maxes out their attack speed, so the client shows no cooldown bar and predicts crits
- * and sprint slowdown like a 1.7 client, and an optional cap limits legacy attacks per tick.
+ * and sprint slowdown like a 1.7 client, and an optional cap limits legacy attacks per tick. It also holds the player's
+ * {@link NeueState}, so Neue combat needs no field of its own on {@code ServerPlayer}.
  * <p>
  * Owned by the player's tick thread.
  */
@@ -23,21 +24,36 @@ public final class LegacyHitRegistration {
 
     private int attackTick = -1;
     private int attacks;
+    private final NeueState neue = new NeueState();
 
-    /** Each tick: keep the no-cooldown modifier in step with the held item, the world and revival.yml. */
+    /** The player's Neue combat state (held click, parry clock, stagger, riposte); see {@link NeueCombat}. */
+    public NeueState neue() {
+        return this.neue;
+    }
+
+    /** Each tick: keep the no-cooldown modifier in step with the held item, the world and revival.yml; Neue's per-tick upkeep. */
     public void tick(final ServerPlayer player) {
         refresh(player, LegacyAttack.settings(player, player.getWeaponItem()));
+        NeueCombat.tick(player);
     }
 
     /**
      * Before an attack. Refreshes the modifier first, so a weapon swapped in since the last tick gets its own
-     * cooldown, then applies the per-tick cap. Returns false when the attack should be dropped.
+     * cooldown, then applies Neue's stagger lockout and click cap ({@link NeueCombat}) and the per-tick cap. Returns
+     * false when the attack should be dropped.
      */
     public boolean beforeAttack(final ServerPlayer player) {
         player.revivalBaseKnockTarget = null; // a base knock from an earlier hit must not hide this hit's extra knock
         final LegacyCombatSettings settings = LegacyAttack.settings(player, player.getWeaponItem());
         refresh(player, settings);
-        return settings == null || this.allow(player.tickCount, settings.maxAttacksPerTick());
+        if (!NeueCombat.beforeAttack(player, settings)) {
+            return false;
+        }
+        if (settings != null && !this.allow(player.tickCount, settings.maxAttacksPerTick())) {
+            NeueCombat.refused(player);
+            return false;
+        }
+        return true;
     }
 
     /** Counts an attack in this tick; false once there have been {@code cap} already. A cap of 0 is off. */

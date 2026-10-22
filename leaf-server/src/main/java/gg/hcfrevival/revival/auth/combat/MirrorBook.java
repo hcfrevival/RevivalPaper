@@ -39,6 +39,12 @@ import org.jspecify.annotations.Nullable;
  */
 public final class MirrorBook {
 
+    /**
+     * A target absent from the viewer's client this many ticks is forgotten. Not tied to {@code historyTicks}, so the box
+     * history can shrink to what the rewind cap reads (review PT-16) without changing when entries go.
+     */
+    static final int ABSENT_TICKS = 64;
+
     private static final byte PRESENT = 1;
     private static final byte PICKABLE = 2;
     private static final byte EXACT = 4;
@@ -142,10 +148,12 @@ public final class MirrorBook {
     private final Int2ObjectOpenHashMap<Entry> entries = new Int2ObjectOpenHashMap<>();
     private final ObjectArrayList<Entry> order = new ObjectArrayList<>();
 
-    // Pending events, a FIFO ring in write order
+    // Pending events, a FIFO ring in write order. A move is kept as its packet plus a stamp, not as a MirrorEvent: one
+    // arrives per target per viewer per step, and the packet is already shared by every viewer (review PT-16)
     private int[] pendingTargets = new int[64];
     private int[] pendingArrivals = new int[64];
-    private MirrorEvent[] pendingEvents = new MirrorEvent[64];
+    private Object[] pendingEvents = new Object[64];
+    private long[] pendingStamps = new long[64];
     private int pendingHead;
     private int pendingSize;
 
@@ -190,6 +198,24 @@ public final class MirrorBook {
             }
             return;
         }
+        this.enqueue(targetId, event, 0L, arrivalTick);
+    }
+
+    /** {@link #onEvent} for a {@code MoveEntity}: the same, without building a {@link MirrorEvent.Move}. */
+    private void onMove(final int targetId, final ClientboundMoveEntityPacket move, final long stamp, final int arrivalTick) {
+        if (this.started && arrivalTick <= this.lastTick) {
+            this.lateEvents++;
+            this.applyMove(targetId, move, stamp);
+            final Entry entry = this.entries.get(targetId);
+            if (entry != null) {
+                entry.mirror.markInexact();
+            }
+            return;
+        }
+        this.enqueue(targetId, move, stamp, arrivalTick);
+    }
+
+    private void enqueue(final int targetId, final Object event, final long stamp, final int arrivalTick) {
         if (this.pendingSize == this.pendingTargets.length) {
             this.growPending();
         }
@@ -197,6 +223,7 @@ public final class MirrorBook {
         this.pendingTargets[slot] = targetId;
         this.pendingArrivals[slot] = arrivalTick;
         this.pendingEvents[slot] = event;
+        this.pendingStamps[slot] = stamp;
         this.pendingSize++;
     }
 
@@ -252,7 +279,14 @@ public final class MirrorBook {
             }
             case final ClientboundMoveEntityPacket move -> {
                 final int id = MirrorEvent.entityId(move);
-                return this.entries.containsKey(id) && this.queue(id, MirrorEvent.of(move, stamp), arrivalTick);
+                if (!this.entries.containsKey(id)) {
+                    return false;
+                }
+                this.onMove(id, move, stamp, arrivalTick);
+                if (this.unbracketed) {
+                    this.onEvent(id, MirrorEvent.INEXACT, arrivalTick);
+                }
+                return true;
             }
             case final ClientboundEntityPositionSyncPacket sync -> {
                 return this.entries.containsKey(sync.id()) && this.queue(sync.id(), MirrorEvent.of(sync, stamp), arrivalTick);
@@ -338,11 +372,15 @@ public final class MirrorBook {
         while (this.pendingSize > 0 && this.pendingArrivals[this.pendingHead] <= tick) {
             final int slot = this.pendingHead;
             final int targetId = this.pendingTargets[slot];
-            final MirrorEvent event = this.pendingEvents[slot];
+            final Object event = this.pendingEvents[slot];
             this.pendingEvents[slot] = null;
             this.pendingHead = (slot + 1) & (this.pendingTargets.length - 1);
             this.pendingSize--;
-            this.applyNow(targetId, event);
+            if (event instanceof final ClientboundMoveEntityPacket move) {
+                this.applyMove(targetId, move, this.pendingStamps[slot]);
+            } else {
+                this.applyNow(targetId, (MirrorEvent) event);
+            }
         }
         // Minecraft.tick: pick(1.0F) before level.tickEntities()
         final float speed = this.relativeTickSpeed;
@@ -352,13 +390,20 @@ public final class MirrorBook {
             entry.mirror.tick(speed);
             if (entry.mirror.present()) {
                 entry.absentTicks = 0;
-            } else if (++entry.absentTicks > this.historyTicks) {
+            } else if (++entry.absentTicks > ABSENT_TICKS) {
                 this.entries.remove(entry.id);
                 this.order.set(i, this.order.get(this.order.size() - 1));
                 this.order.remove(this.order.size() - 1);
             }
         }
         this.lastTick = tick;
+    }
+
+    private void applyMove(final int targetId, final ClientboundMoveEntityPacket move, final long stamp) {
+        final Entry entry = this.entries.get(targetId);
+        if (entry != null) {
+            entry.mirror.move(move.hasPosition(), move.hasRotation(), move.getPositionDelta(), move.getYRot(), move.getXRot(), stamp);
+        }
     }
 
     private void applyNow(final int targetId, final MirrorEvent event) {
@@ -423,16 +468,19 @@ public final class MirrorBook {
         final int length = this.pendingTargets.length;
         final int[] targets = new int[length * 2];
         final int[] arrivals = new int[length * 2];
-        final MirrorEvent[] events = new MirrorEvent[length * 2];
+        final Object[] events = new Object[length * 2];
+        final long[] stamps = new long[length * 2];
         for (int i = 0; i < this.pendingSize; i++) {
             final int slot = (this.pendingHead + i) & (length - 1);
             targets[i] = this.pendingTargets[slot];
             arrivals[i] = this.pendingArrivals[slot];
             events[i] = this.pendingEvents[slot];
+            stamps[i] = this.pendingStamps[slot];
         }
         this.pendingTargets = targets;
         this.pendingArrivals = arrivals;
         this.pendingEvents = events;
+        this.pendingStamps = stamps;
         this.pendingHead = 0;
     }
 

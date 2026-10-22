@@ -9,6 +9,7 @@ import net.minecraft.world.entity.PositionMoveRotation;
 import net.minecraft.world.entity.Relative;
 import net.minecraft.world.entity.player.Input;
 import net.minecraft.world.level.GameType;
+import org.jspecify.annotations.Nullable;
 
 /**
  * What the netcode needs from the movement simulation of one player: the exact vanilla 26.3 client port in
@@ -101,6 +102,10 @@ public interface Simulation {
     /** {@code RELEASE_USE_ITEM} in this tick's keybinds: use ends before this tick's movement. */
     void releaseUsingItem();
 
+    /** A teleport made a mining client stop ({@code stopDestroyBlock} in its drain): its attack strength starts over. */
+    default void resetAttackStrength() {
+    }
+
     // The tick -------------------------------------------------------------------------------------------------------
 
     /**
@@ -146,7 +151,8 @@ public interface Simulation {
      * likely one); not supported: false and nothing seeded.
      */
     default boolean seedFromMove(final double fromX, final double fromY, final double fromZ, final double toX, final double toY, final double toZ,
-                                 final float yRot, final float xRot, final boolean onGround, final ClientView view, final WorldView world) {
+                                 final @Nullable Input keys, final float yRot, final float xRot, final boolean onGround, final ClientView view,
+                                 final WorldView world) {
         return false;
     }
 

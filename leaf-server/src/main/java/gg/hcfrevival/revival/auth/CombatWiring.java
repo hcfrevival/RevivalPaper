@@ -5,6 +5,8 @@ import gg.hcfrevival.revival.auth.combat.AttackerSnapshot;
 import gg.hcfrevival.revival.auth.combat.HitCheck;
 import gg.hcfrevival.revival.auth.combat.HitValidator;
 import gg.hcfrevival.revival.auth.combat.MirrorBook;
+import gg.hcfrevival.revival.combat.ProjectileBlocks;
+import gg.hcfrevival.revival.combat.ProjectileViews;
 import gg.hcfrevival.revival.config.AuthoritativeSettings;
 import java.util.List;
 import net.minecraft.core.component.DataComponents;
@@ -12,6 +14,7 @@ import net.minecraft.network.protocol.Packet;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.ai.attributes.Attributes;
+import org.jspecify.annotations.Nullable;
 
 /**
  * Connects the combat package to the netcode: each viewer's {@link MirrorBook} (kept in {@link AuthPlayer#combatState})
@@ -22,7 +25,7 @@ import net.minecraft.world.entity.ai.attributes.Attributes;
  * Non-player targets never veto a hit in v1 (§15.7): they get {@link AttackJudge#UNKNOWN} and the vanilla/Paper checks.
  * The rewind cap is {@code min(max-rewind-ms, rttBase + ack jitter + K × 50 ms)}.
  */
-public final class CombatWiring implements ViewerMirrors, AttackJudge {
+public final class CombatWiring implements ViewerMirrors, AttackJudge, ProjectileViews {
 
     public static final CombatWiring INSTANCE = new CombatWiring();
 
@@ -44,6 +47,10 @@ public final class CombatWiring implements ViewerMirrors, AttackJudge {
     @Override
     public void onApplied(final AuthPlayer viewer, final Packet<?> packet, final int arrivalTick, final boolean exact, final long sentMillis) {
         book(viewer).onPacket(packet, arrivalTick, sentMillis, exact);
+        final int target = positionTarget(packet);
+        if (target != Integer.MIN_VALUE) {
+            viewer.noteStamp(target, sentMillis); // the newest position of that player this client has acked
+        }
     }
 
     @Override
@@ -79,6 +86,83 @@ public final class CombatWiring implements ViewerMirrors, AttackJudge {
             attacker.view().items.mainHand().has(DataComponents.ATTACK_RANGE), attacker.view().passenger());
     }
 
+    private final MirrorBook.Sample capSample = new MirrorBook.Sample();
+
+    /**
+     * The attacker's own rewind cap (pvp-issues HR-2): {@code rttBase + display + jitter + slack}, at most
+     * {@code max-rewind-ms}. {@code display} is measured from the attacker's own mirror of the target: how far the box its
+     * client shows at this tick (interpolating, K2) lags the newest position of the target it has acked. A rewind is then
+     * honest when {@code now - newest acked position <= rttBase + jitter + slack}: what the client could have seen is
+     * bounded by what it acked, so a client that holds pongs to keep an old view only makes its own view older.
+     */
+    long rewindCap(final AuthPlayer attacker, final int targetId, final int tick, final AuthoritativeSettings settings) {
+        final long rttBase = attacker.transactions().rttBaseNanos() / 1_000_000L;
+        final long rttHigh = attacker.transactions().rttHighNanos() / 1_000_000L;
+        final long newest = attacker.newestStamp(targetId);
+        final long shown = newest != Long.MIN_VALUE && book(attacker).sample(targetId, tick, this.capSample) ? this.capSample.stamp : Long.MIN_VALUE;
+        final long display = displayDelay(newest, shown);
+        final long cap = cap(rttBase, rttHigh, display, settings.rewindJitterFactor(), settings.rewindSlackMs());
+        attacker.recordRewindCap(cap, display);
+        return Math.min(settings.maxRewindMs(), cap);
+    }
+
+    /**
+     * The one rewind cap every lag-compensated rule shares (melee judge, Neue's held-click landing, projectile hits): the
+     * attacker's own {@link #rewindCap}, at most {@code max-rewind-ms}. Main thread (the shooter's or attacker's tick).
+     */
+    public static long sharedRewindCap(final AuthPlayer attacker, final int targetId, final int tick) {
+        return INSTANCE.rewindCap(attacker, targetId, tick, Revival.settings().authoritative());
+    }
+
+    // ProjectileViews (docs/revival/projectile-hooks.md N1) --------------------------------------------------------------
+
+    @Override
+    public boolean compensates(final ServerPlayer shooter) {
+        final AuthPlayer auth = shooter.revivalAuth;
+        return auth != null && auth.mode() == AuthMode.ENFORCE && auth.simulation().seeded();
+    }
+
+    @Override
+    public boolean viewBox(final ServerPlayer shooter, final int targetId, final double[] out) {
+        final AuthPlayer auth = shooter.revivalAuth;
+        if (!this.compensates(shooter)) {
+            return false;
+        }
+        final MirrorBook book = book(auth);
+        return gg.hcfrevival.revival.combat.ProjectileRewind.viewBox(book, targetId, System.currentTimeMillis(),
+            sharedRewindCap(auth, targetId, book.lastTick()), out);
+    }
+
+    @Override
+    public @Nullable ProjectileBlocks clientBlocks(final ServerPlayer player) {
+        final AuthPlayer auth = player.revivalAuth;
+        return auth != null && auth.mode() == AuthMode.ENFORCE ? auth.world() : null; // the view the simulation reads
+    }
+
+    /** How far the box a client shows lags the newest position it has acked (its interpolation), never negative. */
+    static long displayDelay(final long newestAcked, final long shownStamp) {
+        if (newestAcked == Long.MIN_VALUE || shownStamp == Long.MIN_VALUE || shownStamp <= 0L) {
+            return 0L;
+        }
+        return Math.max(0L, newestAcked - shownStamp);
+    }
+
+    /** {@code rttBase + display + factor × (rttHigh − rttBase) + slack}, all in milliseconds, before the ceiling. */
+    static long cap(final long rttBase, final long rttHigh, final long display, final double jitterFactor, final long slack) {
+        return rttBase + display + Math.round(Math.max(0L, rttHigh - rttBase) * jitterFactor) + slack;
+    }
+
+    // The player a position-carrying tracker packet is about, or MIN_VALUE
+    static int positionTarget(final Packet<?> packet) {
+        return switch (packet) {
+            case final net.minecraft.network.protocol.game.ClientboundMoveEntityPacket move -> move.hasPosition() ? move.revivalEntityId() : Integer.MIN_VALUE;
+            case final net.minecraft.network.protocol.game.ClientboundEntityPositionSyncPacket sync -> sync.id();
+            case final net.minecraft.network.protocol.game.ClientboundTeleportEntityPacket teleport -> teleport.id();
+            case final net.minecraft.network.protocol.game.ClientboundAddEntityPacket add -> add.getId();
+            default -> Integer.MIN_VALUE;
+        };
+    }
+
     @Override
     public int judge(final AuthPlayer attacker, final Entity target, final int tick) {
         if (!(target instanceof ServerPlayer)) {
@@ -92,8 +176,7 @@ public final class CombatWiring implements ViewerMirrors, AttackJudge {
         }
         final AuthoritativeSettings settings = Revival.settings().authoritative();
         final AttackerSnapshot snapshot = snapshot(attacker);
-        final long rttMillis = attacker.transactions().rttBaseNanos() / 1_000_000L;
-        final long cap = Math.min(settings.maxRewindMs(), rttMillis + settings.ackJitterTicks() * 50L + settings.pathStepTicks() * 50L);
+        final long cap = rewindCap(attacker, target.getId(), tick, settings);
         final HitCheck check = this.validator.validate(snapshot, target.getId(), book(attacker), tick, List.of(), attacker.world(),
             System.currentTimeMillis(), cap);
         attacker.recordHit(check.verdict() == HitCheck.Verdict.VALID ? "VALID" : check.verdict().name() + " " + check.reason().name(),

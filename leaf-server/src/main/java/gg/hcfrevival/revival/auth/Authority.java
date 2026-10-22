@@ -34,6 +34,11 @@ public final class Authority {
     private static volatile @Nullable AuthMode override;
     private static volatile @Nullable String loggedRefusal;
     private static volatile AttackJudge judge = CombatWiring.INSTANCE;
+
+    static {
+        // Projectile hits and pearl walls judged on the shooter's client (projectile-hooks.md N1)
+        gg.hcfrevival.revival.combat.ProjectileViews.install(CombatWiring.INSTANCE);
+    }
     private static volatile ViewerMirrors mirrors = CombatWiring.INSTANCE;
     private static volatile PathSink paths = PathWiring.INSTANCE;
     private static volatile Function<AuthPlayer, Simulation> simulations = player -> new PortSimulation(player.player());
@@ -167,16 +172,20 @@ public final class Authority {
      * chunk keep the old state in their world view until a packet for the position is acked (§15.2).
      */
     public static void onBlockChanged(final net.minecraft.world.level.Level level, final BlockPos pos, final BlockState oldState, final BlockState newState) {
-        if (ACTIVE.isEmpty() || oldState == newState || !(level instanceof ServerLevel) || !MinecraftServer.getServer().isSameThread()) {
+        if (ACTIVE.isEmpty() || oldState == newState || !(level instanceof final ServerLevel serverLevel) || !MinecraftServer.getServer().isSameThread()) {
             return;
         }
-        for (int i = ACTIVE.size() - 1; i >= 0; i--) {
-            final AuthPlayer auth = ACTIVE.get(i);
-            if (auth.player().hasDisconnected()) {
-                ACTIVE.remove(i);
-                continue;
-            }
-            if (auth.world().level() != level) {
+        // Review PT-05: only the players the chunk was sent to, not every player under authority in every world. A player
+        // whose forget is on its way is no longer listed but still holds the chunk for an RTT: it is leaving that chunk
+        final net.minecraft.server.level.ChunkHolder holder = serverLevel.getChunkSource().chunkMap.getVisibleChunkIfPresent(
+            net.minecraft.world.level.ChunkPos.pack(pos.getX() >> 4, pos.getZ() >> 4));
+        if (holder == null) {
+            return;
+        }
+        final java.util.List<ServerPlayer> holders = holder.moonrise$getPlayers(false);
+        for (int i = 0, size = holders.size(); i < size; i++) {
+            final AuthPlayer auth = holders.get(i).revivalAuth;
+            if (!auth.netActive() || auth.world().level() != level) {
                 continue;
             }
             if (auth.world().chunksKnown()) {
@@ -299,6 +308,40 @@ public final class Authority {
         if (entity instanceof final ServerPlayer player) {
             player.revivalAuth.onServerWrite(gg.hcfrevival.revival.auth.view.SelfEcho.USE);
         }
+    }
+
+    private static long ineligibleJoins;
+    private static int visibilityTick = Integer.MIN_VALUE;
+    private static int visibilityChecks;
+
+    // Review PT-08: one budget of visibility checks per server tick for the whole server (main thread)
+    static boolean takeVisibilityCheck(final int tick, final int max) {
+        if (tick != visibilityTick) {
+            visibilityTick = tick;
+            visibilityChecks = 0;
+        }
+        if (visibilityChecks >= max) {
+            return false;
+        }
+        visibilityChecks++;
+        return true;
+    }
+    private static boolean ineligibleWarned;
+
+    // A player who can't be under authority joined (§15.3, review E4): counted, and one warning while enforce is on
+    static void countIneligible() {
+        ineligibleJoins++;
+        if (!ineligibleWarned && Revival.settings().authoritative().mode() == AuthMode.ENFORCE
+            && Revival.settings().authoritative().ineligible().equals("allow")) {
+            ineligibleWarned = true;
+            LOGGER.warn("[auth] players on another client version (ViaVersion) or Bedrock (Geyser) play outside authoritative movement, "
+                + "under vanilla rules; set authoritative.ineligible: deny to refuse them while enforce is on");
+        }
+    }
+
+    /** Players who joined but could not be under authority (another protocol, Bedrock), since startup. */
+    public static long ineligibleJoins() {
+        return ineligibleJoins;
     }
 
     static void activated(final AuthPlayer player) {

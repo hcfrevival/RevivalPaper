@@ -9,9 +9,10 @@ public final class AnomalyWatch {
     public static final int DOUBLE_CLICKS = 0;
     public static final int AIM_GCD = 1;
     public static final int INPUT_GRAMMAR = 2;
-    public static final int KINDS = 3;
+    public static final int CLICK_STREAK = 3;
+    public static final int KINDS = 4;
 
-    private static final String[] NAMES = {"double-clicks", "aim-gcd", "input-grammar"};
+    private static final String[] NAMES = {"double-clicks", "aim-gcd", "input-grammar", "click-streak"};
 
     private final boolean[] raised = new boolean[KINDS];
 

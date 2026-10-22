@@ -15,6 +15,9 @@ import gg.hcfrevival.revival.auth.AuthMode;
  *                       creep (§15.5)
  * @param rebaseDriftWindowTicks with a rebase epsilon: client ticks per drift window
  * @param correctionThreshold divergence up to this goes into the correction budget instead of correcting at once
+ * @param attackEyeOffsetCap while the client is off the truth (a correction decided, rate-limited or in flight), its
+ *                           attacks are cast from its claim when that is within this many blocks of the truth on every
+ *                           axis, else from the truth (review E3: a claim chose its own correction's size)
  * @param correctionBudget summed small divergences past this send a correction
  * @param correctionBudgetDecay the budget is multiplied by this every client tick, so isolated float noise never adds up
  * @param maxCorrectionsPerSecond corrections sent to one player per second at most
@@ -22,14 +25,38 @@ import gg.hcfrevival.revival.auth.AuthMode;
  *                              the client is stuck off the truth, where a relative one can't reach it
  * @param correctionPersistTicks a claim off the truth by less than the threshold this many ticks in a row is corrected
  *                               anyway, so every client converges
- * @param maxRewindMs lag compensation never rewinds further than this (anti-backtrack, ping spoof)
+ * @param maxRewindMs lag compensation never rewinds further than this (anti-backtrack, ping spoof): the ceiling of the
+ *                    per-attacker cap, {@code rttBase + the attacker's own display delay + jitter + rewind-slack-ms}
+ * @param rewindJitterFactor the jitter allowance in that cap: this times the attacker's ack-RTT spread (p90 − p10)
+ * @param rewindSlackMs the tick waits in that cap: a step waits for its flush, the client tick that shows it and the
+ *                      attack's window for the server tick (up to 3 ticks)
  * @param timerDriftMs slack on the tick clock: the client's clock may run this far behind the acked ping clock
+ * @param timerAckSettleMs a pong binds the tick clock for the ticks of its own frame only once it arrived this long
+ *                         before their {@code TickEnd}: a client back from a stall answers its queued pings and then runs
+ *                         its catch-up ticks, which the stall is owed
  * @param maxBankedTicks the most client ticks a player can run in a burst after a stall (the client's own cap is 10)
  * @param timerQueueCapMs a client tick over the time budget waits this long for budget before it is refused
+ * @param rttCeilingMs the most round trip any slack granted to the client is sized from: the ack deadline, the
+ *                     visibility growth and the correction lead use {@code min(rttBase, this)}, so a client that delays
+ *                     its pongs to inflate its RTT can't stretch them (review E5); the rewind cap has its own ceiling
  * @param ackJitterTicks a logged packet still unacked {@code ceil(rttBase / 50) + this} client ticks after it was sent
  *                       is applied to the truth anyway (§15.1)
- * @param maxUnackedMs a player whose oldest ping is unanswered this long is frozen; three times this, kicked in enforce
+ * @param maxUnackedMs a player whose oldest ping is unanswered this long (or whose client tick stays open this long) is
+ *                     frozen: it stays where the truth is until its replies come back; vanilla's keep-alive timeout
+ *                     decides when the connection is gone (no kick of ours: in HCF a kick is a combat-logger death)
  * @param vehicles {@code deny} (mounting is refused in enforce) or {@code vanilla} (riding is exempt and client-trusted)
+ * @param ineligible players who can't be under authority (another protocol through ViaVersion, Bedrock through Geyser):
+ *                   {@code allow} (they play under vanilla rules, logged once each) or {@code deny} (refused while
+ *                   the mode is enforce: authority then protects every fight, review E4)
+ * @param apolloRules {@code follow} (client profiles read the Apollo combat options the server pushed to each Lunar
+ *                    player) or {@code ignore}; informational until a rule reads the profile (design §15.8)
+ * @param protocolKickRate ordering-only protocol violations (a pong or accept after the tick's keybinds, a second input
+ *                         or sprint command in a tick, a teleport never accepted, a backwards prediction sequence) a
+ *                         player may make in 60 s before a kick (design §15.8: in HCF a kick is a combat-logger death);
+ *                         0 kicks at the first. Forged or unknown replies, overflow and a second move claim kick at once
+ * @param seedMaxMove the most a claimed move or a seeded velocity may be on one axis, in blocks per tick: a seed from
+ *                    two claims further apart than this uses the server's known movement (vanilla's moved-too-quickly
+ *                    bound is 10 blocks)
  * @param honorDeniedPredictions whether the truth keeps blocks the client predicted but the server denied (false stops
  *                               block glitching)
  * @param maxAttacksPerClientTick attack packets past this many in one client tick are dropped
@@ -51,6 +78,8 @@ import gg.hcfrevival.revival.auth.AuthMode;
  * @param visibilityHideAfterChecks anti-ESP: hidden checks in a row before a player is hidden (one seen check shows it)
  * @param visibilityMaxSpeed anti-ESP: blocks per tick either player may move before the client could show the target;
  *                           both boxes grow by it over the viewer's round trip and the check interval
+ * @param visibilityMaxChecksPerTick the most visibility checks (up to 81 rays each) the whole server runs in one tick; past
+ *                                   it a pair keeps its last decision until a later tick (review PT-08)
  * @param visibilityEffectReach anti-ESP: sounds and particles this close to a hidden player's box are its own and are not
  *                              sent either (steps, hits, eating, crits)
  * @param anomalyAlerts fire {@code AuthInputAnomalyEvent} when click or aim statistics pass their thresholds
@@ -58,13 +87,23 @@ import gg.hcfrevival.revival.auth.AuthMode;
  * @param anomalyMinAttackTicks double-click alert: attack ticks needed before it is judged
  * @param anomalyAimGcdMissRatio aim alert: share of turns that share no mouse step with the others
  * @param anomalyMinTurns aim alert: turns needed before it is judged
+ * @param anomalyClickStreakTicks click-streak alert (neue-combat §12.2 detector A): this many eligible client ticks in a
+ *                                row with exactly one click (a 20 CPS lock or a one-per-tick macro)
+ * @param pongLagMs a second whose ack RTT runs this much over the keep-alive RTT is counted (pongs held back, review E5)
  * @param anomalyGrammarViolations input-grammar alert: actions a vanilla client can't send, since the player joined
  * @param traceDirectory where {@code /revival auth trace} writes RVTR files, relative to the server folder
- * @param externalMoverBlockWindowTicks a piston or shulker box event exempts nearby ticks for this many client ticks
- *                                      (a piston moves for 2-3 ticks, a shulker box lid for 10)
+ * @param externalMoverBlockWindowTicks after a piston or shulker box event, nearby ticks may be pushed for this many
+ *                                      client ticks (a piston moves for 2-3 ticks, a shulker box lid for 10)
  * @param externalMoverBlockRange how far from the piston or shulker box (a piston can push 12 blocks)
+ * @param externalMoverBand in a tick a piston or shulker box may push, a claim this close to the truth on every axis is
+ *                          adopted (a push moves a player at most about 0.51 a tick); the velocity stays the truth's
+ * @param externalMoverDriftCap the most adopted push per axis within a {@code rebase-drift-window-ticks} window (a piston
+ *                              push is 1.01 blocks)
  * @param externalMoverEntityRange solid entities (boats, shulkers, happy ghasts) this close to the player's box exempt the
- *                                 tick; 0 turns the check off
+ *                                 tick (the port has no collider for them); 0 turns the check off. Contact only: a
+ *                                 wider range lets a player standing near one move as vanilla allows
+ * @param externalMoverMaxMove in an exempt mover tick, vanilla takes a claim only this close to where the server holds
+ *                             the player on every axis
  * @param externalMoverGeyserDepth how far below a player in water a potent sulfur geyser is looked for; 0 turns it off
  * @param debugHud playtest HUD: every player under authority sees an action-bar line with mode, RTT, exact ticks,
  *                 corrections, timer bank and the last attack's verdict
@@ -77,18 +116,27 @@ public record AuthoritativeSettings(
     double rebaseDriftCap,
     int rebaseDriftWindowTicks,
     double correctionThreshold,
+    double attackEyeOffsetCap,
     double correctionBudget,
     double correctionBudgetDecay,
     int maxCorrectionsPerSecond,
     int correctionRepeatLimit,
     int correctionPersistTicks,
     int maxRewindMs,
+    double rewindJitterFactor,
+    int rewindSlackMs,
     int timerDriftMs,
+    int timerAckSettleMs,
     int maxBankedTicks,
     int timerQueueCapMs,
+    int rttCeilingMs,
     int ackJitterTicks,
     int maxUnackedMs,
     String vehicles,
+    String ineligible,
+    String apolloRules,
+    int protocolKickRate,
+    double seedMaxMove,
     boolean honorDeniedPredictions,
     int maxAttacksPerClientTick,
     boolean heartbeatPing,
@@ -106,17 +154,23 @@ public record AuthoritativeSettings(
     int visibilityCheckIntervalTicks,
     int visibilityHideAfterChecks,
     double visibilityMaxSpeed,
+    int visibilityMaxChecksPerTick,
     double visibilityEffectReach,
     boolean anomalyAlerts,
     double anomalyDoubleClickRatio,
     int anomalyMinAttackTicks,
     double anomalyAimGcdMissRatio,
     int anomalyMinTurns,
+    int anomalyClickStreakTicks,
+    int pongLagMs,
     int anomalyGrammarViolations,
     String traceDirectory,
     int externalMoverBlockWindowTicks,
     double externalMoverBlockRange,
+    double externalMoverBand,
+    double externalMoverDriftCap,
     double externalMoverEntityRange,
+    double externalMoverMaxMove,
     int externalMoverGeyserDepth,
     boolean debugHud,
     int debugHudIntervalTicks,
@@ -124,6 +178,24 @@ public record AuthoritativeSettings(
 ) {
 
     static final String PATH = "authoritative.";
+
+    private static String apolloRules(final ConfigReader reader) {
+        final String value = reader.getString(PATH + "client-profiles.apollo-rules", "follow").trim().toLowerCase(java.util.Locale.ROOT);
+        if (!value.equals("follow") && !value.equals("ignore")) {
+            reader.problem(PATH + "client-profiles.apollo-rules", value, "follow or ignore", "follow");
+            return "follow";
+        }
+        return value;
+    }
+
+    private static String ineligible(final ConfigReader reader) {
+        final String value = reader.getString(PATH + "ineligible", "allow").trim().toLowerCase(java.util.Locale.ROOT);
+        if (!value.equals("allow") && !value.equals("deny")) {
+            reader.problem(PATH + "ineligible", value, "allow or deny", "allow");
+            return "allow";
+        }
+        return value;
+    }
 
     private static String vehicles(final ConfigReader reader) {
         final String value = reader.getString(PATH + "vehicles", "deny").trim().toLowerCase(java.util.Locale.ROOT);
@@ -147,18 +219,27 @@ public record AuthoritativeSettings(
             Math.max(0.0, reader.getDouble(PATH + "rebase-drift-cap", 1.0E-9)),
             Math.max(1, reader.getInt(PATH + "rebase-drift-window-ticks", 20)),
             Math.max(0.0, reader.getDouble(PATH + "correction-threshold", 1.0E-3)),
+            Math.max(0.0, reader.getDouble(PATH + "attack-eye-offset-cap", 0.5)),
             Math.max(0.0, reader.getDouble(PATH + "correction-budget", 0.01)),
             Math.clamp(reader.getDouble(PATH + "correction-budget-decay", 0.95), 0.0, 1.0),
             Math.max(1, reader.getInt(PATH + "max-corrections-per-second", 5)),
             Math.max(1, reader.getInt(PATH + "correction-repeat-limit", 2)),
             Math.max(1, reader.getInt(PATH + "correction-persist-ticks", 20)),
-            Math.max(0, reader.getInt(PATH + "max-rewind-ms", 300)),
+            Math.max(0, reader.getInt(PATH + "max-rewind-ms", 400)),
+            Math.max(0.0, reader.getDouble(PATH + "rewind-jitter-factor", 1.0)),
+            Math.max(0, reader.getInt(PATH + "rewind-slack-ms", 150)),
             Math.max(0, reader.getInt(PATH + "timer-drift-ms", 120)),
+            Math.max(0, reader.getInt(PATH + "timer-ack-settle-ms", 100)),
             Math.max(1, reader.getInt(PATH + "max-banked-ticks", 10)),
             Math.max(0, reader.getInt(PATH + "timer-queue-cap-ms", 1000)),
+            Math.max(50, reader.getInt(PATH + "rtt-ceiling-ms", 300)),
             Math.max(0, reader.getInt(PATH + "ack-jitter-ticks", 4)),
             Math.max(100, reader.getInt(PATH + "max-unacked-ms", 1500)),
             vehicles(reader),
+            ineligible(reader),
+            apolloRules(reader),
+            Math.max(0, reader.getInt(PATH + "client-profiles.protocol-kick-rate", 20)),
+            Math.max(0.1, reader.getDouble(PATH + "seed-max-move", 10.0)),
             reader.getBoolean(PATH + "honor-denied-predictions", false),
             Math.max(1, reader.getInt(PATH + "max-attacks-per-client-tick", 1)),
             reader.getBoolean(PATH + "heartbeat-ping", true),
@@ -176,17 +257,23 @@ public record AuthoritativeSettings(
             Math.max(1, reader.getInt(PATH + "visibility.check-interval-ticks", 2)),
             Math.max(1, reader.getInt(PATH + "visibility.hide-after-checks", 2)),
             Math.max(0.0, reader.getDouble(PATH + "visibility.max-speed", 1.0)),
+            Math.max(1, reader.getInt(PATH + "visibility.max-checks-per-tick", 512)),
             Math.max(0.0, reader.getDouble(PATH + "visibility.effect-reach", 1.5)),
             reader.getBoolean(PATH + "stats.anomaly-alerts", true),
             Math.clamp(reader.getDouble(PATH + "stats.double-click-ratio", 0.3), 0.0, 1.0),
             Math.max(1, reader.getInt(PATH + "stats.double-click-min-attack-ticks", 40)),
             Math.clamp(reader.getDouble(PATH + "stats.aim-gcd-miss-ratio", 0.5), 0.0, 1.0),
             Math.max(1, reader.getInt(PATH + "stats.aim-min-turns", 200)),
+            Math.max(1, reader.getInt(PATH + "stats.click-streak-ticks", 100)),
+            Math.max(0, reader.getInt(PATH + "stats.pong-lag-ms", 150)),
             Math.max(1, reader.getInt(PATH + "stats.grammar-violations", 3)),
             reader.getString(PATH + "trace.directory", "traces"),
             Math.max(0, reader.getInt(PATH + "external-movers.block-window-ticks", 12)),
             Math.max(0.0, reader.getDouble(PATH + "external-movers.block-range", 14.0)),
-            Math.max(0.0, reader.getDouble(PATH + "external-movers.entity-range", 1.0)),
+            Math.max(0.0, reader.getDouble(PATH + "external-movers.band", 0.6)),
+            Math.max(0.0, reader.getDouble(PATH + "external-movers.drift-cap", 1.6)),
+            Math.max(0.0, reader.getDouble(PATH + "external-movers.entity-range", 0.1)),
+            Math.max(0.0, reader.getDouble(PATH + "external-movers.max-move", 1.0)),
             Math.max(0, reader.getInt(PATH + "external-movers.geyser-depth", 24)),
             reader.getBoolean(PATH + "debug.hud", false),
             Math.max(1, reader.getInt(PATH + "debug.hud-interval-ticks", 5)),

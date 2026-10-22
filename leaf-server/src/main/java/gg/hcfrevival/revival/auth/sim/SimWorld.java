@@ -14,10 +14,14 @@ import net.minecraft.world.level.material.FluidState;
  * <p>
  * Contract for implementers, all of it the client's view:
  * <ul>
- *   <li>{@link #blockState} and {@link #fluidState} return air / empty for unloaded chunks and outside
- *       {@link #minY()}..{@code minY + height - 1} (ClientLevel answers with its empty chunk and {@code VOID_AIR});</li>
- *   <li>{@link #isChunkLoaded} is {@code ClientChunkCache.getChunk(x, z, FULL, false) != null}: unloaded chunks add no
- *       block colliders ({@code BlockCollisions}), and decide {@code travelInAir}'s {@code -0.1} branch;</li>
+ *   <li>{@link #blockState} and {@link #fluidState} return air / empty for chunks the client does not have and outside
+ *       {@link #minY()}..{@code minY + height - 1}: ClientLevel reads a missing chunk through
+ *       {@code ClientChunkCache.getChunk(x, z, FULL, true)}, its {@code EmptyLevelChunk} ({@code VOID_AIR}, no fluid,
+ *       ClientChunkCache.java:68-77, EmptyLevelChunk.java:26-39), and movement reads void air like air;</li>
+ *   <li>{@link #isChunkLoaded} is {@code ClientChunkCache.getChunk(x, z, FULL, false) != null}: such chunks add no
+ *       block colliders ({@code BlockCollisions}) and no fluid ({@code EntityFluidInteraction.hasFluidAndLoaded}). Nothing
+ *       else on the client's movement path asks: {@code Level.hasChunk} is always true on a {@code ClientLevel}
+ *       (ClientLevel.java:519-522), so {@code travelInAir} keeps normal gravity over a missing chunk;</li>
  *   <li>{@link #sectionHasFluid} is {@code LevelChunkSection.hasFluid()} of a loaded chunk's section, false outside the
  *       section range ({@code EntityFluidInteraction.hasFluidAndLoaded});</li>
  *   <li>the border bounds are {@code WorldBorder.getMinX()} etc. at partial tick 0, as the client has lerped them;</li>

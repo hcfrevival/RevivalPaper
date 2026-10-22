@@ -24,7 +24,7 @@ import org.jspecify.annotations.Nullable;
  */
 public final class RevivalConfig {
 
-    public static final int CURRENT_VERSION = 1;
+    public static final int CURRENT_VERSION = 2;
 
     static final List<String> HEADER = List.of(
         "This is the main configuration file for RevivalPaper.",
@@ -42,6 +42,17 @@ public final class RevivalConfig {
         "and sprint-arm-requires-ground. Preset numbers come from the",
         "server-config archives curated by Mental (github.com/owengregson/Mental, MIT, (c) 2024 Owen Gregson);",
         "their authenticity can't be verified.",
+        "",
+        "Combat rule sets: classic (plain 1.7) and neue (Combo's: a 12 CPS click cap, a click buffer, DI, the tipper",
+        "and the parry) are built in. Pick one per world with legacy-combat.rules. Under combat-rules, a set named after a",
+        "preset overrides only the keys it sets; any other name starts from classic. Keys: max-cps, click-burst,",
+        "click-buffer-seconds, click-buffer-line-of-sight, influence-degrees, influence-projectiles, tipper-from,",
+        "tipper-knock, sour-under, sour-knock, parry, parry-window-seconds, parry-block-hit-seconds, parry-rearm-seconds,",
+        "parry-rest-seconds, parry-projectiles, parry-jitter-ticks, riposte-seconds, stagger-seconds,",
+        "stagger-recoil-horizontal, stagger-recoil-vertical, stagger-move-multiplier, stagger-sword-cooldown,",
+        "stagger-lowers-block, and feedback.<tipper|sour|parry|parry-spark|stagger>-<sound|volume|pitch|particle|",
+        "particle-count> ('' turns a sound or particle off). Seconds are rounded to whole ticks (0.05 s). Keep",
+        "legacy-combat.max-attacks-per-tick at 0 in worlds with a click buffer. Docs: neue-combat.md.",
         "",
         "Apply changes with /revival reload. If the file has a mistake, the reload is refused and the",
         "previous settings stay live; the console says what is wrong.",
@@ -173,27 +184,30 @@ public final class RevivalConfig {
         if (version > CURRENT_VERSION) {
             LOGGER.warn("revival.yml has config-version {}, but this build only knows up to {}; newer keys are ignored", version, CURRENT_VERSION);
         } else if (version < CURRENT_VERSION) {
-            // Migrations from older versions go here, oldest first
+            // Migrations from older versions go here, oldest first. 2 added combat-rules and legacy-combat.rules (Neue):
+            // new keys that default to classic, so nothing moves
             reader.set("config-version", CURRENT_VERSION);
         }
         if (!yaml.isConfigurationSection(ConfigReader.WORLD_SETTINGS + "." + ConfigReader.DEFAULT_WORLD)) {
             yaml.createSection(ConfigReader.WORLD_SETTINGS + "." + ConfigReader.DEFAULT_WORLD);
         }
         final Map<String, KnockbackProfile> profiles = KnockbackProfile.readAll(reader);
+        final Map<String, CombatRules> rules = CombatRules.readAll(reader);
         final Map<String, LegacyCombatSettings> worlds = new HashMap<>();
         for (final String world : yaml.getConfigurationSection(ConfigReader.WORLD_SETTINGS).getKeys(false)) {
             if (!ConfigReader.DEFAULT_WORLD.equals(world)) {
-                worlds.put(world, LegacyCombatSettings.read(reader, world, profiles));
+                worlds.put(world, LegacyCombatSettings.read(reader, world, profiles, rules));
             }
         }
         return new RevivalSettings(
             Math.max(version, CURRENT_VERSION),
-            LegacyCombatSettings.read(reader, ConfigReader.DEFAULT_WORLD, profiles),
+            LegacyCombatSettings.read(reader, ConfigReader.DEFAULT_WORLD, profiles, rules),
             Map.copyOf(worlds),
             profiles,
             reader.getBoolean("knockback-autosave", false),
             SwordBlockingSettings.read(reader),
-            AuthoritativeSettings.read(reader)
+            AuthoritativeSettings.read(reader),
+            rules
         );
     }
 

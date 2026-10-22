@@ -18,11 +18,13 @@ final class Eligibility {
 
     /** Why ViaVersion says this player's client is another version, or null. */
     static @Nullable String viaVersionMismatch(final UUID player) {
-        if (Bukkit.getPluginManager().getPlugin("ViaVersion") == null) {
+        final org.bukkit.plugin.Plugin plugin = Bukkit.getPluginManager().getPlugin("ViaVersion");
+        if (plugin == null) {
             return null;
         }
         try {
-            final Class<?> via = Class.forName("com.viaversion.viaversion.api.Via");
+            // Through the plugin's own class loader: the server's can't see plugin classes
+            final Class<?> via = Class.forName("com.viaversion.viaversion.api.Via", true, plugin.getClass().getClassLoader());
             final Object api = via.getMethod("getAPI").invoke(null);
             final Method version = api.getClass().getMethod("getPlayerVersion", UUID.class);
             final int protocol = (int) version.invoke(api, player);
@@ -37,11 +39,12 @@ final class Eligibility {
 
     /** Whether Floodgate says this is a Bedrock player. */
     static boolean isBedrock(final UUID player) {
-        if (Bukkit.getPluginManager().getPlugin("floodgate") == null) {
+        final org.bukkit.plugin.Plugin plugin = Bukkit.getPluginManager().getPlugin("floodgate");
+        if (plugin == null) {
             return false;
         }
         try {
-            final Class<?> floodgate = Class.forName("org.geysermc.floodgate.api.FloodgateApi");
+            final Class<?> floodgate = Class.forName("org.geysermc.floodgate.api.FloodgateApi", true, plugin.getClass().getClassLoader());
             final Object api = floodgate.getMethod("getInstance").invoke(null);
             return (boolean) floodgate.getMethod("isFloodgatePlayer", UUID.class).invoke(api, player);
         } catch (final ReflectiveOperationException | ClassCastException | LinkageError e) {

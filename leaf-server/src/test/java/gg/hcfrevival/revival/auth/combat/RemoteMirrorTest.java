@@ -84,6 +84,37 @@ class RemoteMirrorTest {
         assertEquals(remaining, mirror.remainingTicks());
     }
 
+    /**
+     * Review stale-stamp-stationary-targets: a keep-alive identical to the active target is ignored by the client, but it
+     * says the server still had the target there, so the box's stamp moves on and a still player's rewind age stays
+     * small. The display only takes the newer stamp once it shows the target.
+     */
+    @Test
+    void anIdenticalKeepAliveRefreshesTheTargetsStamp() {
+        final RemoteMirror mirror = spawned();
+        stepX(mirror, 4096, 2, 100L); // to x = 1.0, stamped 100
+        mirror.tick(1.0F); // half-way: x = 0.5
+        assertEquals(0.5, mirror.x());
+        assertEquals(100L, mirror.displayStamp());
+        stepX(mirror, 0, 2, 400L); // the server still has the player at 1.0 at time 400
+        assertEquals(1, mirror.queuedSteps()); // nothing queued: the display is unchanged
+        mirror.tick(1.0F);
+        assertEquals(1.0, mirror.x());
+        assertEquals(400L, mirror.displayStamp()); // the box shown is the target, confirmed at 400
+    }
+
+    @Test
+    void aStillPlayerFedIdenticalMovesKeepsAFreshStamp() {
+        // Off-mode targets with a keep-alive every tick: the stamp follows the keep-alives, never more than a step behind
+        final RemoteMirror mirror = spawned();
+        for (long t = 1; t <= 40; t++) {
+            stepX(mirror, 0, 2, t * 50L);
+            mirror.tick(1.0F);
+            assertEquals(0.0, mirror.x());
+            assertTrue(t * 50L - mirror.displayStamp() <= 50L, "tick " + t + ": stamp " + mirror.displayStamp());
+        }
+    }
+
     @Test
     void rotationOnlyPacketHoldsThePositionForOneStepOfNTicks() {
         final RemoteMirror mirror = spawned();

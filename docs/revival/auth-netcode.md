@@ -17,9 +17,10 @@ it decides **when** the client saw what, and feeds the simulation and the mirror
 | `auth.Simulation` | What the netcode needs from the movement port |
 | `auth.PortSimulation` | `Simulation` over `auth.sim.MovementSim`/`SimPlayer`; keeps `SimPlayer`'s client-view fields in step with `ClientView` |
 | `auth.EchoSimulation` | Stub that follows claims (every tick exempt `no-simulation`) |
-| `auth.CombatWiring` | `ViewerMirrors` + `AttackJudge` over `auth.combat.MirrorBook`/`HitValidator` |
+| `auth.CombatWiring` | `ViewerMirrors` + `AttackJudge` over `auth.combat.MirrorBook`/`HitValidator`; `ProjectileViews` for projectile hits and pearl walls; `sharedRewindCap`, the one rewind cap of the judge, Neue's landing and projectiles |
 | `auth.AttackJudge`, `auth.ViewerMirrors`, `auth.PathSink` | Plug-in interfaces (`Authority.set*`) |
-| `auth.Eligibility` | Real 26.3 connection only (ViaVersion protocol, Floodgate) |
+| `auth.Eligibility` | Real 26.3 connection only (ViaVersion protocol, Floodgate, reached through their plugin class loaders) |
+| `auth.view.ClientProfile` | Which client a player runs (§15.8): brand, `lunar:apollo` channel, the Apollo combat options the server pushed (by reflection), Lunar version and mods; shown by `inspect`, read by no rule yet |
 | `auth.AuthStats` | Per-player counters for `/revival auth inspect` |
 | `auth.net.ClientStream` | Windows `W_T`, the input grammar, sticky client state (input, rotation, `xLast`, position reminder) |
 | `auth.net.Transactions` | Ping ids, outbound log, per-tick bundles, FIFO acks, deadlines, RTT base |
@@ -33,13 +34,14 @@ it decides **when** the client saw what, and feeds the simulation and the mirror
 | `auth.view.SelfEcho` | Enforce-mode rewrite of self entity data and attributes (§3.3) |
 | `auth.reconcile.Reconciler` | Exact / budget / correct decision, correction ids (and the last 32 sent), in-flight Δ, rate limit |
 | `auth.reconcile.RebaseGuard` | With `rebase-epsilon` on: signed drift cap per axis per window of ticks |
-| `auth.input.InputEnvelope`, `InputStats` | Attack cap; click and yaw-GCD statistics |
+| `auth.input.InputEnvelope`, `InputStats` | Attack cap; click and yaw-GCD statistics (two sensitivities, smoothed-camera turns skipped) |
+| `auth.input.ClickBucket`, `CadenceWatch` | Neue's click cap (neue-combat §4.3) and the click-streak detector (§12.2 A) |
 | `auth.input.InputRules` | The in-tick input grammar of a vanilla client (attack/use while using, attack after use, attack after a container close, container click while walking, anything after the move claim) |
 | `auth.input.AnomalyWatch` | `AuthInputAnomalyEvent` once per threshold crossing |
 | `auth.net.BypassAuditor` | Netty handlers around the encoder: physics packets written around the choke point (as `Packet` objects or pre-encoded) |
 | `auth.view.PredictionRules` | Which block changes a vanilla client predicts (a held block item, the block on its crosshair) |
 | `auth.PathWiring` | Replication: `PathFeed` per player, K2 steps to viewers in `exact-radius`, handovers, re-pairs (R6 and inexact mirrors) |
-| `auth.ExternalMovers` | Pistons and shulker boxes (block events), boats/shulkers/happy ghasts, geysers, rod pulls: the port's `EXTERNAL_MOVER` exemption |
+| `auth.ExternalMovers` | Pistons and shulker boxes (block events): claims adopted within a band; boats/shulkers/happy ghasts in contact and geysers: the port's `EXTERNAL_MOVER` exemption, vanilla's claim bounded; rod pulls are modelled velocity |
 | `auth.DebugHud` | `debug.hud` action-bar line and `debug.log` console lines |
 | `auth.trace.TraceRecorder` | RVTR v1 writer (report 07 §4) |
 | `config.AuthoritativeSettings` | `revival.yml` `authoritative:` |
@@ -87,6 +89,10 @@ it decides **when** the client saw what, and feeds the simulation and the mirror
      tick can explain the claim first (bounded branching). They forecast truth and belief to the apply tick; an accept
      with a residual is forecast again from where the client says it is; a correction that keeps coming back, or would
      land the client inside a block, goes out absolute (position and velocity).
+   - Any exception from the port or the combat code (a tick, a drain entry, a correction, an attack's judge) falls back
+     for that tick to the client's claim through vanilla's handler and re-seeds; it never kicks the player.
+   - At activation the client's chunk list is seeded from Moonrise's per-player sent set, so a session that was already
+     running doesn't read the server's loaded chunks for the client's.
    - Server teleports complete at their pong window (the `ServerPlayer` writes the truth again at once); the accept is
      only a claim. Players are hit only on a `VALID` verdict; the attacker's eye is the truth's, or its own claim
      bounded by the in-flight correction while one is out.
@@ -124,7 +130,7 @@ it decides **when** the client saw what, and feeds the simulation and the mirror
 | 1011 | `SGPLI.internalTeleport` | `onTeleportSent` (server teleports are transactions) |
 | 1011 | `LevelChunk.setBlockState` | `Authority.onBlockChanged` (pin the pre-change state) |
 | 1011 | `ClientboundMoveEntityPacket`, `ClientboundEntityEventPacket` | `revivalEntityId()` accessors |
-| 1012 | `SGPLI.revivalApplyTruth` | the truth through `handlePlayerPositionChange` |
+| 1012 | `SGPLI.revivalApplyTruth` | the truth through `handlePlayerPositionChange`, with Paper's moved-too-quickly, moved-wrongly and clipped-into-block checks skipped for it (the simulation is the check) |
 | 1012 | `LivingEntity.aiStep` travel | skipped while `revivalAuth.skipsTravel()` |
 | 1011 | `SGPLI.handleContainerClose` (the client's one-argument overload) | main thread, then `intercept` (server-initiated closes stay immediate) |
 | 1012 | `SGPLI.revivalCompleteServerTeleport` | vanilla's accept bookkeeping at a server teleport's pong, without the accept's coordinates |
@@ -134,6 +140,8 @@ it decides **when** the client saw what, and feeds the simulation and the mirror
 | 1013 | `SGPLI.handleAttack` | `intercept` (attacks judged in the window) |
 | 1014 | `ServerEntity.sendChanges` / `addPairing` / `removePairing`, movement output | `Authority.drainPaths`, `onPaired`, `onUnpaired`, `sendMovement` (K2 paths, R7 suppression) |
 | 1015 | `ChunkMap.TrackedEntity.updatePlayer` / `updatePlayerMulti`, after the vanish check | `Authority.visibleTo` (design §11) |
+| 1016 | `LivingEntity.revivalHurtServer` (after the removed/dead check; the window rule), `SGPLI.handlePunch`, `Player.attack` (no-damage sound) | `NeueCombat.parried`, `windowRejected`, `swung`, `quiet` (neue-hooks.md P, W, S, Q) |
+| 1017 | `Projectile.shootFromRotation` / `hitTargetOrDeflectSelf`, `ThrowableProjectile.tick`, `FishingHook.checkCollision`, `AbstractArrow.findHitEntities`, `ThrownEnderpearl.onHit`, `ThrownSplashPotion.onHitAsPotion` | `LegacyThrow`, `ProjectileHits`, `PearlLanding`, `LegacySplash` (projectile-hooks.md H1-H9) |
 
 All listed in `scripts/revival/markers.txt`.
 
@@ -173,16 +181,22 @@ All under `authoritative.` (defaults in brackets):
 | `correction-threshold` [1e-3], `correction-budget` [0.01], `correction-budget-decay` [0.95] | small divergences go into a decaying budget |
 | `correction-persist-ticks` [20] | a claim off by less than the threshold this many ticks in a row is corrected anyway |
 | `correction-repeat-limit` [2] | the same correction (or accepts that keep needing one) this many times goes out absolute |
-| `max-corrections-per-second` [5], `max-rewind-ms` [300] | |
-| `timer-drift-ms` [120], `max-banked-ticks` [10], `timer-queue-cap-ms` [1000] | the tick clock |
-| `ack-jitter-ticks` [4], `max-unacked-ms` [1500] | ack deadline; freeze, and kick at 3x (also a client tick held open that long) |
+| `max-corrections-per-second` [5] | |
+| `max-rewind-ms` [400], `rewind-jitter-factor` [1.0], `rewind-slack-ms` [150] | the per-attacker rewind cap (HR-2): rttBase + display + jitter + slack, at most `max-rewind-ms` |
+| `attack-eye-offset-cap` [0.5] | off the truth, attacks are cast from the claim only within this per axis (review E3) |
+| `timer-drift-ms` [120], `timer-ack-settle-ms` [100], `max-banked-ticks` [10], `timer-queue-cap-ms` [1000] | the tick clock; pongs bind the timer for later frames, or after the settle (review timer-backlog) |
+| `rtt-ceiling-ms` [300] | slack (deadlines, visibility growth, correction lead) is sized from `min(rttBase, this)` (review E5) |
+| `ack-jitter-ticks` [4], `max-unacked-ms` [1500] | ack deadline; past `max-unacked-ms` the player is frozen (NW-2: never kicked for a stall) |
+| `client-profiles.protocol-kick-rate` [20], `client-profiles.apollo-rules` [`follow`] | §15.8: ordering-only violations kick only past this many in 60 s; Apollo options read into the profile |
+| `ineligible` [`allow`] | `deny` refuses ViaVersion/Geyser players while the mode is enforce (review E4) |
+| `seed-max-move` [10] | a seed's claimed move and velocity, per axis (review E1) |
 | `vehicles` [`deny`] | `deny` refuses mounting under enforce; `vanilla` rides exempt (client-trusted) |
 | `honor-denied-predictions` [false], `max-attacks-per-client-tick` [1], `heartbeat-ping` [true], `bypass-audit` [true] | |
 | `replication.path-step-ticks` [2], `keep-alive` [true], `exact-radius` [24], `pre-roll` [true], `respawn-distance` [48], `path-buffer` [64], `repair-interval-ticks` [20] | K2 paths; a viewer whose mirror of a target went inexact gets it re-spawned at most this often |
 | `mirror-history-ticks` [64] | lag compensation history per viewer |
-| `external-movers.block-window-ticks` [12], `block-range` [14], `entity-range` [1.0], `geyser-depth` [24] | ticks exempt near pistons/shulker boxes, solid entities, geysers |
-| `visibility.enabled` [false], `always-visible-distance` [8], `check-interval-ticks` [2], `hide-after-checks` [2], `max-speed` [1.0], `effect-reach` [1.5] | anti-ESP |
-| `stats.anomaly-alerts` [true], `double-click-ratio` [0.3], `double-click-min-attack-ticks` [40], `aim-gcd-miss-ratio` [0.5], `aim-min-turns` [200], `grammar-violations` [3] | `AuthInputAnomalyEvent` thresholds |
+| `external-movers.block-window-ticks` [12], `block-range` [14], `band` [0.6], `drift-cap` [1.6], `entity-range` [0.1], `max-move` [1.0], `geyser-depth` [24] | pushes adopted within the band (drift-capped); solid entities in contact and geysers exempt, vanilla's claim within `max-move` |
+| `visibility.enabled` [false], `always-visible-distance` [8], `check-interval-ticks` [2], `hide-after-checks` [2], `max-speed` [1.0], `max-checks-per-tick` [512], `effect-reach` [1.5] | anti-ESP; the check budget is server-wide |
+| `stats.anomaly-alerts` [true], `double-click-ratio` [0.3], `double-click-min-attack-ticks` [40], `aim-gcd-miss-ratio` [0.5], `aim-min-turns` [200], `click-streak-ticks` [100], `grammar-violations` [3], `pong-lag-ms` [150] | `AuthInputAnomalyEvent` thresholds; seconds of pongs behind the keep-alive (counted) |
 | `trace.directory` [`traces`], `debug.hud` [false], `debug.hud-interval-ticks` [5], `debug.log` [false] | |
 
 Knockback profiles take `motion-model: authoritative` (knock a player under authority from its simulated motion; others
@@ -232,12 +246,20 @@ async tracker on (the second run) authority refuses.
 
 - Prediction admission follows a vanilla client's held item and crosshair; dig progress per tick is left to Paper's
   own break checks. Every sequence-carrying packet is acked when its window runs, even when Paper then drops it.
-- World border lerp and entity colliders (boats, shulkers) are not modelled: ticks near them, pistons, shulker boxes,
-  geysers and rod pulls are exempt (the claim through vanilla's checks, a re-seed after) rather than banded.
+- World border lerp and entity colliders (boats, shulkers, happy ghasts) are not modelled: a tick touching one, or over
+  a potent sulfur geyser, is exempt (vanilla takes the claim within `external-movers.max-move`, a re-seed after);
+  colliders are requested from the port (auth-sim-requests §2). Pistons and shulker boxes are banded, rod pulls modelled.
+- Kick policy (§15.8): only forged or unknown replies, skipped pings, overflow (a 512-packet tick, 4096 drain replies or
+  65536 released entries) and a second move claim kick at once; ordering-only violations are counted (named in
+  `inspect`) and kick past `protocol-kick-rate` in 60 s; a stall freezes. The keep-alive RTT isn't used against the
+  ack RTT for any action: seconds with pongs more than 150 ms behind the keep-alive are only counted (review E5).
+- A tick whose truth stands over a chunk our record lacks while the server has it loaded, with the client claiming
+  ground, is exempt `chunk-unknown` (load-test regression, 2026-10-22); chunks Moonrise had sent at activation are held,
+  and until the first ack after activation any loaded chunk counts as held.
 - The bypass audit logs a bypassed packet at the next ping (upper bound): a client applies it earlier, so the truth
   can be a tick late on it and corrects; GrimAC's movement, velocity and setback handling must be off for players under
   authority (warned once when its packets show up).
 - `ContainerSetSlot`/`SetContent` for a container other than the inventory menu resync the client items from the
-  server inventory at the ack (approximation).
+  server inventory at the ack, once per window, with no snapshot (approximation; review PT-12).
 - Visibility samples 9 points per box (81 rays when hidden); it costs most when many players hide from each other.
 - Trace: no world snapshot (zero hash, ±48 box), chunk packets not recorded.

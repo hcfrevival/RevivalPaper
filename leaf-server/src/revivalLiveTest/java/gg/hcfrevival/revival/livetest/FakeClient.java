@@ -118,6 +118,8 @@ final class FakeClient {
     private boolean lastHorizontalCollision;
     private int positionReminder;
     private boolean loaded;
+    /** Chunks this client holds: what it was sent, minus what it was told to forget. */
+    final it.unimi.dsi.fastutil.longs.LongOpenHashSet chunks = new it.unimi.dsi.fastutil.longs.LongOpenHashSet();
     int ticks;
 
     FakeClient(final MinecraftServer server, final ServerLevel level, final String name) {
@@ -141,6 +143,9 @@ final class FakeClient {
         }
         this.received.add(new Received(MinecraftServer.currentTick, packet, inBundle));
         switch (packet) {
+            case final net.minecraft.network.protocol.game.ClientboundLevelChunkWithLightPacket chunk -> this.chunks.add(net.minecraft.world.level.ChunkPos.pack(chunk.x(), chunk.z()));
+            case final net.minecraft.network.protocol.game.ClientboundForgetLevelChunkPacket forget -> this.chunks.remove(net.minecraft.world.level.ChunkPos.pack(forget.pos().x(), forget.pos().z()));
+            case final net.minecraft.network.protocol.game.ClientboundRespawnPacket ignored -> this.chunks.clear();
             case final ClientboundPingPacket ping -> this.replies.add(new ServerboundPongPacket(ping.getId()));
             // Netty-thread replies on a real client; queued here so they never re-enter the server's send
             case final ClientboundKeepAlivePacket keepAlive -> this.replies.add(new ServerboundKeepAlivePacket(keepAlive.getId()));
@@ -193,8 +198,10 @@ final class FakeClient {
         while ((reply = this.replies.poll()) != null) {
             batch.add(reply);
         }
-        if (!this.loaded) {
-            // ClientPacketListener.tick → notifyPlayerLoaded, at the start of the first tick with a level
+        if (!this.loaded && this.chunks.contains(net.minecraft.world.level.ChunkPos.pack(net.minecraft.util.Mth.floor(this.clientState.position().x) >> 4,
+            net.minecraft.util.Mth.floor(this.clientState.position().z) >> 4))) {
+            // ClientPacketListener.tick → notifyPlayerLoaded, once the loading screen has the chunk the player is in
+            // (LevelLoadStatusManager); until then the client holds still on the loading screen
             batch.add(new net.minecraft.network.protocol.game.ServerboundPlayerLoadedPacket());
             this.loaded = true;
         }
@@ -247,6 +254,11 @@ final class FakeClient {
         } else {
             this.server.packetProcessor().scheduleIfPossible(listener, (Packet<ServerGamePacketListener>) packet);
         }
+    }
+
+    /** Whether the client has reported {@code PlayerLoaded}: before that LocalPlayer.tick returns at once (no physics). */
+    boolean loaded() {
+        return this.loaded;
     }
 
     /** A new local player (respawn): it reports {@code PlayerLoaded} again on its first tick. */

@@ -36,6 +36,8 @@ import org.jspecify.annotations.Nullable;
  * @param maxAttacksPerTick legacy attacks a player may land per tick; 0 is unlimited, as in 1.7.10
  * @param projectiles which projectiles hit and knock like 1.7.10
  * @param damageWindows separate damage windows for melee, projectile, mob and other damage
+ * @param rulesName the {@code rules} (combat rule set) this world uses
+ * @param rules that rule set: {@link CombatRules#CLASSIC} is plain 1.7, {@code neue} is Combo's (docs/revival/neue-combat.md)
  */
 public record LegacyCombatSettings(
     Set<Identifier> weaponItems,
@@ -54,7 +56,9 @@ public record LegacyCombatSettings(
     boolean hideCooldownIndicator,
     int maxAttacksPerTick,
     LegacyProjectileSettings projectiles,
-    DamageWindowSettings damageWindows
+    DamageWindowSettings damageWindows,
+    String rulesName,
+    CombatRules rules
 ) {
 
     static final String PATH = "legacy-combat.";
@@ -80,7 +84,7 @@ public record LegacyCombatSettings(
     LegacyCombatSettings withKnockback(final String name, final KnockbackProfile profile) {
         return new LegacyCombatSettings(this.weaponItems, this.weaponTags, this.weaponDamage, this.strengthPerLevel, this.weaknessPerLevel,
             this.sharpnessPerLevel, this.criticalMultiplier, this.sweepAttack, name, profile, this.legacyArmor, this.legacyEnchantProtection,
-            this.randomizeProtection, this.hideCooldownIndicator, this.maxAttacksPerTick, this.projectiles, this.damageWindows);
+            this.randomizeProtection, this.hideCooldownIndicator, this.maxAttacksPerTick, this.projectiles, this.damageWindows, this.rulesName, this.rules);
     }
 
     /** Whether any weapon is a legacy weapon in this world; {@code weapons: []} turns legacy combat off. */
@@ -88,7 +92,7 @@ public record LegacyCombatSettings(
         return !this.weaponItems.isEmpty() || !this.weaponTags.isEmpty();
     }
 
-    static LegacyCombatSettings read(final ConfigReader reader, final String world, final Map<String, KnockbackProfile> profiles) {
+    static LegacyCombatSettings read(final ConfigReader reader, final String world, final Map<String, KnockbackProfile> profiles, final Map<String, CombatRules> combatRules) {
         final Set<Identifier> items = new HashSet<>();
         final List<TagKey<Item>> tags = new ArrayList<>();
         final String weaponsPath = ConfigReader.worldPath(world, PATH + "weapons");
@@ -121,6 +125,14 @@ public record LegacyCombatSettings(
             profile = KnockbackProfile.LEGACY_1_7;
         }
 
+        String rulesName = reader.getWorldString(world, PATH + "rules", CombatRules.DEFAULT);
+        CombatRules rules = combatRules.get(rulesName);
+        if (rules == null) {
+            reader.problem(ConfigReader.worldPath(world, PATH + "rules"), rulesName, "classic, neue or a rule set under " + CombatRules.SECTION, CombatRules.DEFAULT);
+            rulesName = CombatRules.DEFAULT;
+            rules = CombatRules.CLASSIC;
+        }
+
         return new LegacyCombatSettings(
             Set.copyOf(items),
             List.copyOf(tags),
@@ -138,7 +150,9 @@ public record LegacyCombatSettings(
             reader.getWorldBoolean(world, PATH + "hide-cooldown-indicator", true),
             reader.getWorldInt(world, PATH + "max-attacks-per-tick", 0),
             LegacyProjectileSettings.read(reader, world),
-            DamageWindowSettings.read(reader, world)
+            DamageWindowSettings.read(reader, world),
+            rulesName,
+            rules
         );
     }
 

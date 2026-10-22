@@ -48,6 +48,11 @@ public final class ClientStream {
     public static final byte ROTATION_REPLY = 4;
     /** Entries force-applied at their deadline: {@code [a, b)} of {@link Window#acked}. */
     public static final byte FORCED = 5;
+    /**
+     * The {@code PlayerAction(ABORT_DESTROY_BLOCK)} a mining client sends right after a teleport accept
+     * ({@code handleMovePlayer} calls {@code stopDestroyBlock}): a drain reply, not a keybind.
+     */
+    public static final byte DRAIN_ABORT = 6;
 
     // Packet categories, in the order a vanilla tick sends them
     public static final int GUI = 0;
@@ -65,6 +70,13 @@ public final class ClientStream {
 
     /** More items than any vanilla client can put in one tick: a violation, and the window is cut. */
     public static final int MAX_ITEMS = 512;
+    /**
+     * Drain items (pongs, accepts) and the entries they released that one window may hold (review E7, PT-15): a client
+     * answering pings but never ending its tick keeps one window open, holding every physics packet sent to it. A 1.5 s
+     * stall in a crowded fight releases a few thousand; past these the window has overflowed.
+     */
+    public static final int MAX_DRAIN_ITEMS = 4096;
+    public static final int MAX_ACKED = 65536;
 
     /** One client tick's worth of the stream. */
     public static final class Window {
@@ -83,6 +95,8 @@ public final class ClientStream {
         int inputs;
         int sprints;
         int moves;
+        int pongs;
+        long timerAckNanos;
 
         /** The window's number: {@code T} of {@code TickEnd(T)}. */
         public int tick() {
@@ -117,6 +131,14 @@ public final class ClientStream {
             return this.violations;
         }
 
+        /**
+         * The ack clock the tick timer may hold this window to ({@link TickClock}): the newest ping the client had
+         * answered before this window's frame, or long enough before its {@code TickEnd}; 0 if none.
+         */
+        public long timerAckNanos() {
+            return this.timerAckNanos;
+        }
+
         void add(final byte kind, final @Nullable Object ref, final int a, final int b) {
             if (this.items == 0) {
                 this.openedNanos = System.nanoTime(); // drain replies open a window as much as packets do
@@ -146,6 +168,8 @@ public final class ClientStream {
             this.inputs = 0;
             this.sprints = 0;
             this.moves = 0;
+            this.pongs = 0;
+            this.timerAckNanos = 0L;
         }
     }
 
@@ -155,8 +179,23 @@ public final class ClientStream {
     private int closed;
     private long violations;
 
-    // Adjacency flags: the next main-thread packet is special
-    private boolean rotationReplyNext;
+    // The tick timer's ack clock (review timer-backlog-permanent). A client back from a stall answers every ping it
+    // queued, then runs its catch-up ticks in the same frame with no pongs between them: those ticks are owed for the
+    // stall, so a drain's pongs only bind the windows of later frames. Pongs that arrived long before a window's TickEnd
+    // (a client answering while it sends no ticks) bind it at once.
+    static final int PONG_RING = 64;
+    private final long[] pongArrivals = new long[PONG_RING];
+    private final long[] pongAckClocks = new long[PONG_RING];
+    private int pongRingNext;
+    private long ackBeforeFrame;
+    private long ackAfterLastDrain;
+    private long lastTimerAck;
+    private long ackSettleNanos = 100_000_000L;
+
+    // Adjacency: the next main-thread packets are special. Each PlayerRotation a pong released is answered by a Rot, in
+    // the same drain, after any accept (and its abort) of the same bundle
+    private int rotationReplies;
+    private boolean acceptJustRecorded;
     private int correctionAcceptNext;
 
     // Sticky client state, advanced as windows run
@@ -210,10 +249,15 @@ public final class ClientStream {
     public static final int RECORDED = 0;
     /** Out of the vanilla order: counted, kept. */
     public static final int OUT_OF_ORDER = 1;
-    /** A second move claim, input or sprint command in one window: a protocol violation. */
+    /** A second move claim in one window: a protocol violation (vanilla 26.3 kicks it too). */
     public static final int SECOND_CLAIM = 2;
     /** Past {@link #MAX_ITEMS} in one window (a client that never ends its tick): dropped, a protocol violation. */
     public static final int OVERFLOW = 3;
+    /**
+     * A second {@code PlayerInput} or sprint command in one window: counted (design §15.8, a frame-time key press on a
+     * modded client), the last one before the move claim counts.
+     */
+    public static final int EXTRA_INPUT = 4;
 
     /** {@link #record}, saying how a packet broke the grammar ({@link #RECORDED} when it didn't). */
     public int recordChecked(final Packet<?> packet) {
@@ -223,13 +267,27 @@ public final class ClientStream {
             this.violations++;
             return OVERFLOW;
         }
-        final boolean reply = this.rotationReplyNext && packet instanceof ServerboundMovePlayerPacket.Rot;
-        this.clearAdjacency();
-        if (reply) {
+        if (this.rotationReplies > 0 && !window.tickGroupStarted && packet instanceof ServerboundMovePlayerPacket.Rot) {
+            this.rotationReplies--;
+            this.acceptJustRecorded = false;
+            this.correctionAcceptNext = 0;
             window.add(ROTATION_REPLY, packet, 0, 0);
             return RECORDED;
         }
-        final int category = category(packet);
+        if (this.acceptJustRecorded && !window.tickGroupStarted && packet instanceof final ServerboundPlayerActionPacket action
+            && action.getAction() == ServerboundPlayerActionPacket.Action.ABORT_DESTROY_BLOCK) {
+            this.acceptJustRecorded = false;
+            this.correctionAcceptNext = 0;
+            window.add(DRAIN_ABORT, packet, 0, 0);
+            return RECORDED;
+        }
+        this.clearAdjacency();
+        int category = category(packet);
+        if (category == GUI && packet instanceof ServerboundContainerClosePacket && window.tickGroupStarted && window.lastCategory <= AISTEP) {
+            // The portal close: LocalPlayer.aiStep closes a container screen while the player stands in a portal, after
+            // the keybinds and before the input (report 02 §2.5, client-compat N8): vanilla, not a GUI packet out of place
+            category = AISTEP;
+        }
         boolean legal = category >= window.lastCategory || category == KEYBIND && window.lastCategory == KEYBIND;
         if (category != GUI) {
             window.tickGroupStarted = true;
@@ -237,14 +295,15 @@ public final class ClientStream {
             legal = !window.tickGroupStarted;
         }
         boolean second = false;
+        boolean extra = false;
         switch (category) {
-            case INPUT -> second = ++window.inputs > 1;
-            case SPRINT -> second = ++window.sprints > 1;
+            case INPUT -> extra = ++window.inputs > 1;
+            case SPRINT -> extra = ++window.sprints > 1;
             case MOVE -> second = ++window.moves > 1;
             default -> {
             }
         }
-        legal &= !second;
+        legal &= !second && !extra;
         if (packet instanceof final ServerboundUseItemPacket ignored && this.releasedEarlier(window)) {
             legal = false; // use after release in one window: a vanilla client discards every click of the release tick
         }
@@ -253,9 +312,14 @@ public final class ClientStream {
         if (!legal) {
             window.violations++;
             this.violations++;
-            return second ? SECOND_CLAIM : OUT_OF_ORDER;
+            return second ? SECOND_CLAIM : extra ? EXTRA_INPUT : OUT_OF_ORDER;
         }
         return RECORDED;
+    }
+
+    /** Whether the window being filled holds more drain items or released entries than any client tick can (E7). */
+    public boolean overflowing() {
+        return this.current.items >= MAX_DRAIN_ITEMS || this.current.acked.size() >= MAX_ACKED;
     }
 
     /** How long the window still open has held packets without its {@code TickEnd}, or 0. */
@@ -277,14 +341,14 @@ public final class ClientStream {
      * A pong released entries {@code [from, to)} of {@link #currentAcked()}. Returns false when it came after the
      * window's tick group started (a violation: pongs belong to the drain).
      *
-     * @param rotation the released entries hold a {@code PlayerRotation}: the next packet may be its reply
+     * @param rotations how many {@code PlayerRotation} packets the released entries hold: the drain may answer each
      * @param correction the id of a correction among them, or 0: the next packet must be its accept
      */
-    public boolean recordAck(final int from, final int to, final boolean rotation, final int correction) {
+    public boolean recordAck(final int from, final int to, final int rotations, final int correction) {
         final Window window = this.current;
         this.clearAdjacency();
         window.add(ACK, null, from, to);
-        this.rotationReplyNext = rotation;
+        this.rotationReplies = rotations;
         this.correctionAcceptNext = correction;
         if (window.tickGroupStarted) {
             window.violations++;
@@ -292,6 +356,39 @@ public final class ClientStream {
             return false;
         }
         return true;
+    }
+
+    /**
+     * A pong arrived at {@code arrivalNanos}; the client's ack clock is now {@code ackClockNanos} (the send time of the
+     * newest ping it answered).
+     */
+    public void notePong(final long arrivalNanos, final long ackClockNanos) {
+        final int slot = this.pongRingNext;
+        this.pongArrivals[slot] = arrivalNanos;
+        this.pongAckClocks[slot] = ackClockNanos;
+        this.pongRingNext = (slot + 1) % PONG_RING;
+        this.current.pongs++;
+        this.ackAfterLastDrain = Math.max(this.ackAfterLastDrain, ackClockNanos);
+    }
+
+    /** How long before a window's {@code TickEnd} a pong must have arrived to bind that window's timer at once. */
+    public void setAckSettle(final long settleNanos) {
+        this.ackSettleNanos = settleNanos;
+    }
+
+    // The ack clock after the newest pong that arrived at or before atNanos, or 0 (ack clocks never go down, so it is
+    // the newest such pong's; older pongs fell out of the ring only if 64 came since, all newer than any of them)
+    private long ackClockAt(final long atNanos) {
+        long best = 0L;
+        long bestArrival = Long.MIN_VALUE;
+        for (int i = 0; i < PONG_RING; i++) {
+            final long arrival = this.pongArrivals[i];
+            if (arrival != 0L && arrival <= atNanos && arrival > bestArrival) {
+                bestArrival = arrival;
+                best = this.pongAckClocks[i];
+            }
+        }
+        return best;
     }
 
     /** Entries force-applied at their deadline, applied in this window's drain. */
@@ -306,7 +403,8 @@ public final class ClientStream {
     public boolean recordAccept(final ServerboundAcceptTeleportationPacket packet) {
         final Window window = this.current;
         final int expected = this.correctionAcceptNext;
-        this.clearAdjacency();
+        this.correctionAcceptNext = 0; // the bundle's rotation replies may still follow
+        this.acceptJustRecorded = true;
         window.add(ACCEPT, packet, 0, 0);
         boolean legal = !window.tickGroupStarted;
         if (expected != 0) {
@@ -325,7 +423,8 @@ public final class ClientStream {
     }
 
     private void clearAdjacency() {
-        this.rotationReplyNext = false;
+        this.rotationReplies = 0;
+        this.acceptJustRecorded = false;
         this.correctionAcceptNext = 0;
     }
 
@@ -341,6 +440,14 @@ public final class ClientStream {
         window.add(PACKET, tickEnd, TICK_END, 0);
         window.tick = ++this.closed;
         window.closedNanos = nowNanos;
+        if (window.pongs > 0) {
+            // A new frame's drain: the previous drains bind now, and so do pongs long before this TickEnd
+            window.timerAckNanos = Math.max(this.ackBeforeFrame, this.ackClockAt(nowNanos - this.ackSettleNanos));
+            this.ackBeforeFrame = this.ackAfterLastDrain;
+            this.lastTimerAck = window.timerAckNanos;
+        } else {
+            window.timerAckNanos = this.lastTimerAck; // a catch-up tick of the same frame, or a tick with no ping in its drain
+        }
         this.queue.addLast(window);
         final Window next = this.pool.pollFirst();
         this.current = next != null ? next : new Window();

@@ -167,17 +167,35 @@ public final class BypassAuditor {
         }
     }
 
-    // Finds the packet among the next expected ones; the ones before it were logged but never written
+    // Finds the packet among the next expected ones; the ones before it were logged but never written. By identity, else
+    // by content (most packets are records): a plugin that swaps a packet object for an equal copy is no bypass, and a
+    // swapped one with other content is (the client got what was written, not what was logged)
     private boolean claim(final Packet<?> packet) {
         int index = 0;
+        int equalAt = -1;
         boolean found = false;
         for (final Iterator<Packet<?>> it = this.expected.iterator(); it.hasNext() && index < SCAN; index++) {
-            if (it.next() == packet) {
+            final Packet<?> next = it.next();
+            if (next == packet) {
                 found = true;
                 break;
             }
+            if (equalAt < 0 && next.getClass() == packet.getClass() && next.equals(packet)) {
+                equalAt = index;
+            }
+        }
+        if (!found && equalAt >= 0) {
+            index = equalAt;
+            found = true;
         }
         if (!found) {
+            // Review E13: logged packets that were replaced on the way never match; past SCAN of them the queue would
+            // hide every later match and grow for the session. Keep half a scan of them, oldest dropped first, so the
+            // next logged packets still fall inside the scan
+            int excess = this.expected.size() - SCAN / 2;
+            while (excess-- > 0) {
+                this.expected.poll();
+            }
             return false;
         }
         for (int i = 0; i <= index; i++) {

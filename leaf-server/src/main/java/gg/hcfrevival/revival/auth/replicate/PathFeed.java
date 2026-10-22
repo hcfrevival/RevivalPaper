@@ -80,6 +80,13 @@ public final class PathFeed {
     private final boolean[] onGrounds;
     private final long[] stamps;
     private long appended;
+    // The last two step packets built (review PT-16): a packet is immutable, so every viewer whose codec base gives the same
+    // delta gets the same object, as the vanilla tracker fans one packet out to all its viewers. Two, because a still
+    // player's keep-alive alternates +1 and -1 codec units
+    private final ClientboundMoveEntityPacket.PosRot[] cached = new ClientboundMoveEntityPacket.PosRot[2];
+    private int cacheNext;
+    private long cacheBuilt;
+    private long cacheShared;
 
     /**
      * @param entityId the player's entity id
@@ -116,6 +123,42 @@ public final class PathFeed {
     /** Steps appended so far. */
     public long appended() {
         return this.appended;
+    }
+
+    /** Step packets built so far; every other move sent was a shared one ({@link #sharedMoves}). */
+    public long builtMoves() {
+        return this.cacheBuilt;
+    }
+
+    /** Moves sent as a packet another viewer (or step) already had built. */
+    public long sharedMoves() {
+        return this.cacheShared;
+    }
+
+    // The PosRot for one step, shared when an identical one was just built: no delta, list, step or packet per viewer
+    private ClientboundMoveEntityPacket.PosRot move(final long xa, final long ya, final long za, final byte yRot, final byte xRot,
+                                                    final boolean onGround, final int ticks) {
+        for (final ClientboundMoveEntityPacket.PosRot packet : this.cached) {
+            if (packet != null && packet.getYRot() == Mth.unpackDegrees(yRot) && packet.getXRot() == Mth.unpackDegrees(xRot)
+                && packet.isOnGround() == onGround && sameDelta(packet.getPositionDelta(), xa, ya, za, ticks)) {
+                this.cacheShared++;
+                return packet;
+            }
+        }
+        final VecDelta delta = new VecDelta.Stepped(List.of(new VecDelta.Stepped.DeltaStep((short) xa, (short) ya, (short) za, ticks)));
+        final ClientboundMoveEntityPacket.PosRot packet = new ClientboundMoveEntityPacket.PosRot(this.entityId, delta, yRot, xRot, onGround);
+        this.cached[this.cacheNext] = packet;
+        this.cacheNext ^= 1;
+        this.cacheBuilt++;
+        return packet;
+    }
+
+    private static boolean sameDelta(final VecDelta delta, final long xa, final long ya, final long za, final int ticks) {
+        if (!(delta instanceof final VecDelta.Stepped stepped) || stepped.steps().size() != 1) {
+            return false;
+        }
+        final VecDelta.Stepped.DeltaStep step = stepped.steps().getFirst();
+        return step.xa() == xa && step.ya() == ya && step.za() == za && step.ticks() == ticks;
     }
 
     public int entityId() {
@@ -283,8 +326,7 @@ public final class PathFeed {
 
         private void sendMove(final Sink sink, final long xa, final long ya, final long za, final byte yRot, final byte xRot, final boolean onGround,
                               final int ticks, final long stamp) {
-            final VecDelta delta = new VecDelta.Stepped(List.of(new VecDelta.Stepped.DeltaStep((short) xa, (short) ya, (short) za, ticks)));
-            sink.send(new ClientboundMoveEntityPacket.PosRot(PathFeed.this.entityId, delta, yRot, xRot, onGround), stamp);
+            sink.send(PathFeed.this.move(xa, ya, za, yRot, xRot, onGround, ticks), stamp);
             // handleMoveEntity: positionCodec.setBase(path.end); the target becomes (end, unpacked rotation)
             this.baseX = decode(this.baseX, xa);
             this.baseY = decode(this.baseY, ya);

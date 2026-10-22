@@ -186,6 +186,11 @@ final class AuthCheatScenarios {
         }
         this.step(1, "cheat suite: setup", this::setup);
 
+        // Joins (load-test regression 2026-10-22: truths fell through the floor of a crowd joining together)
+        this.crowdJoin(5, 0.0, "5 players join 2 ticks apart on a floor, then walk");
+        this.crowdJoin(1, 160.0, "a player joins into chunks still being sent, then walks");
+        this.crowdJoin(3, 320.0, "3 bots that report loaded before their chunk arrives join, then walk (the load-test regression)", true);
+
         // Movement
         this.fly();
         this.hover();
@@ -203,6 +208,8 @@ final class AuthCheatScenarios {
         // Knockback and transactions
         this.ignoreKnock();
         this.withholdPongs();
+        this.stall(90, true);
+        this.stall(240, false);
         this.delayedPongs(3, true);
         this.delayedPongs(9, false);
         this.batchedKnocks();
@@ -215,6 +222,7 @@ final class AuthCheatScenarios {
             x.preDrain.add(new ServerboundPongPacket(-1234));
         }, false);
         this.pongAfterKeybind();
+        this.twoInputs();
 
         // Timer
         this.timer(22);
@@ -253,6 +261,10 @@ final class AuthCheatScenarios {
         this.combatBacktrack();
         this.combatForcedPoison();
         this.combatLatePongPoison();
+        this.combatLatency(1);
+        this.combatLatency(3);
+        this.combatLatency(5);
+        this.combatFakeLag();
         this.combatAutoblock();
         this.combatContainerClose();
         this.inventoryMove();
@@ -680,9 +692,106 @@ final class AuthCheatScenarios {
         });
         this.judge(65, id, () -> {
             final Snap d = this.delta(this.c);
-            final String reason = this.kicks.getOrDefault(this.c.player.getUUID(), "");
-            this.expect(this.c.kicked && reason.contains("transaction"), "kicked after " + d.nanos() / 1_000_000L + " ms: '" + reason + "'");
+            // pvp-issues NW-2: a stall freezes, never kicks (in HCF a kick is a combat-logger death); vanilla's keep-alive
+            // decides when a connection is gone. Frozen, the cheater gains nothing: it doesn't move and its knocks landed
+            this.expect(!this.c.kicked && this.c.auth.frozen(), "still frozen after " + d.nanos() / 1_000_000L + " ms, not kicked ("
+                + this.kicks.getOrDefault(this.c.player.getUUID(), "") + ")");
+            this.expect(this.track.truthMaxZ - start[2] >= 0.5, "the knock stayed on the truth (z +" + f(this.track.truthMaxZ - start[2]) + ")");
         });
+        this.finish(id);
+    }
+
+    // Honest joins: every claim exact, no correction, from the first tick on (the chunk the player stands in is held from
+    // its join on, whatever order its chunks came in)
+    private void crowdJoin(final int players, final double offset, final String what) {
+        this.crowdJoin(players, offset, what, false);
+    }
+
+    private void crowdJoin(final int players, final double offset, final String what, final boolean loadEarly) {
+        final String id = "honest: " + what;
+        final List<Cheater> crowd = new ArrayList<>();
+        this.step(1, id + ": arena", () -> {
+            this.open(id);
+            this.label = "HONEST";
+            this.clearArena();
+            if (offset > 0.0) {
+                // The server has the floor loaded; what the joiners hold depends on what has been sent to them
+                final int cx = net.minecraft.util.Mth.floor(this.ox + offset) >> 4;
+                final int cz = net.minecraft.util.Mth.floor(this.oz) >> 4;
+                for (int dx = -1; dx <= players / 8 + 1; dx++) {
+                    for (int dz = -1; dz <= 1; dz++) {
+                        this.level.getChunk(cx + dx, cz + dz);
+                    }
+                }
+            }
+        });
+        for (int i = 0; i < players; i++) {
+            final int n = i;
+            this.step(2, id + ": join " + n, () -> {
+                final Cheater x = new Cheater(this.next("Crowd"), this.ox + 0.5 + offset + 2.0 * n, this.gy, this.oz + 3.5, 0.0F);
+                x.loadEarly = loadEarly;
+                crowd.add(x);
+            });
+        }
+        this.step(WARM + 10, id + ": walk", () -> {
+            for (final Cheater x : crowd) {
+                this.ready(x);
+                x.keys = FORWARD;
+            }
+        });
+        this.step(20, id + ": stop", () -> {
+            for (final Cheater x : crowd) {
+                x.keys = NONE;
+            }
+        });
+        this.step(20, id + ": judge", () -> {
+            for (final Cheater x : crowd) {
+                final AuthStats stats = x.auth.stats();
+                this.honestExpect(!x.kicked, x.name + " not kicked");
+                this.honestExpect(stats.corrections() == 0, x.name + " corrections " + stats.corrections());
+                this.honestExpect(stats.compared() > 20 && stats.exact() == stats.compared(), x.name + " exact " + stats.exact() + "/" + stats.compared());
+                this.honestExpect(x.model.z() - (this.oz + 3.5) > 2.0, x.name + " walked (z +" + f(x.model.z() - (this.oz + 3.5)) + ")");
+                this.honestExpect(Math.abs(x.auth.simulation().y() - this.gy) < 1.0E-6, x.name + " stands on the floor (y " + f(x.auth.simulation().y()) + ")");
+            }
+        });
+        this.step(1, id + ": verdict", () -> {
+            this.record();
+            for (final Cheater x : crowd) {
+                x.leave();
+            }
+        });
+    }
+
+    // pvp-issues NW-2: an honest network stall freezes the player and it recovers
+    private void stall(final int ticks, final boolean walking) {
+        final String id = "stall: " + (ticks / 20.0) + " s with nothing in or out" + (walking ? ", walking" : ", standing");
+        this.begin(id, () -> {
+        });
+        final boolean[] frozen = {false};
+        this.arm(id, () -> {
+            this.label = "HONEST";
+            this.c.keys = walking ? FORWARD : NONE;
+            this.c.stall = true;
+            this.c.blink = true;
+            final Runnable sample = this.probe;
+            this.probe = () -> {
+                sample.run();
+                frozen[0] |= this.c.auth.frozen();
+            };
+        });
+        this.step(ticks, id + ": the network comes back", () -> {
+            this.c.keys = NONE;
+            this.c.releaseHeld();
+            this.c.flush();
+        });
+        this.judge(60, id, () -> {
+            final Snap d = this.delta(this.c);
+            this.honestExpect(!this.c.kicked, "not kicked (" + this.kicks.getOrDefault(this.c.player.getUUID(), "") + ")");
+            this.honestExpect(frozen[0], "frozen during the stall");
+            this.honestExpect(!this.c.auth.frozen(), "running again");
+            this.honestExpect(d.corrections() <= 1, "recovered with " + d.corrections() + " correction(s)");
+        });
+        this.honestAfter(id, NONE, 0);
         this.finish(id);
     }
 
@@ -801,9 +910,35 @@ final class AuthCheatScenarios {
         this.judge(12, id, () -> {
             final Snap d = this.delta(this.c);
             this.expect(d.streamViolations() >= 1, "grammar violation counted: " + d.streamViolations());
-            // §15.1: pongs belong to the drain; a late one would choose when a packet lands, so it is a protocol violation
+            // §15.8: an ordering-only violation is counted, not kicked (a Lunar frame-time packet can make one). The pong keeps
+            // its arrival place, so the knock it releases lands in that tick all the same: no choice of when it lands
             final String reason = this.kicks.getOrDefault(this.c.player.getUUID(), "");
-            this.expect(this.c.kicked && reason.contains("transaction"), "kicked: '" + reason + "'");
+            this.expect(!this.c.kicked, "counted, not kicked " + reason);
+            this.expect(this.c.auth.simulation().z() - start[2] >= 0.3, "the knock reached the truth (z +" + f(this.c.auth.simulation().z() - start[2]) + ")");
+            this.expect(d.forced() == 0, "applied at its pong, not forced (" + d.forced() + ")");
+        });
+        this.honestAfter(id, NONE, 0);
+        this.finish(id);
+    }
+
+    // §15.8: a second PlayerInput in one tick (a modded client's frame-time key press) is counted; the last one counts
+    private void twoInputs() {
+        final String id = "grammar: two PlayerInput packets in one tick";
+        this.begin(id, () -> {
+        });
+        this.arm(id, () -> {
+            this.c.keys = FORWARD;
+            this.c.before = x -> {
+                x.before = null;
+                x.actions.add(new ServerboundPlayerInputPacket(JUMP));
+            };
+        });
+        this.judge(12, id, () -> {
+            final Snap d = this.delta(this.c);
+            final String reason = this.kicks.getOrDefault(this.c.player.getUUID(), "");
+            this.expect(!this.c.kicked, "counted, not kicked " + reason);
+            this.expect(d.streamViolations() >= 1, "grammar violation counted: " + d.streamViolations());
+            this.expect(d.corrections() == 0, "the last input before the move is the tick's: no jump, no correction (" + d.corrections() + ")");
         });
         this.honestAfter(id, NONE, 0);
         this.finish(id);
@@ -1008,12 +1143,14 @@ final class AuthCheatScenarios {
         this.judge(20, id, () -> {
             final Simulation s = this.c.auth.simulation();
             final double gap = this.c.player.position().distanceTo(new Vec3(s.x(), s.y(), s.z()));
-            // §15.3: the teleport completes at its pong (the ServerPlayer follows the truth from there), and an accept that
-            // never follows is a protocol violation after the ack deadline
+            // §15.3: the teleport completes at its pong (the ServerPlayer follows the truth from there); an accept that never
+            // follows gains nothing, so it is counted after the ack deadline, not kicked (§15.8)
             this.expect(s.z() >= target[2], "the truth took the teleport and walked on (z +" + f(s.z() - target[2]) + " past it)");
             this.expect(gap <= 1.0E-6, "the ServerPlayer follows the truth (it is " + f(gap) + " away, at z +" + f(this.c.player.getZ() - target[2]) + ")");
             final String reason = this.kicks.getOrDefault(this.c.player.getUUID(), "");
-            this.expect(this.c.kicked && reason.contains("transaction"), "kicked after the ack deadline: '" + reason + "'");
+            this.expect(!this.c.kicked, "counted, not kicked " + reason);
+            this.expect(this.c.auth.violationReasons().getInt("a server teleport was never accepted") >= 1,
+                "counted after the ack deadline: " + this.c.auth.violationReasons());
         });
         this.honestAfter(id, NONE, 0);
         this.finish(id);
@@ -1368,6 +1505,43 @@ final class AuthCheatScenarios {
         this.step(1, id + ": done", this::leaveAll);
     }
 
+    // pvp-issues HR-2: honest hits at a long round trip land; a stale view with prompt pongs doesn't
+    private void combatLatency(final int ticks) {
+        final String id = "combat: an honest hit at " + ticks * 50 + " ms of latency";
+        this.combatJoin(id);
+        this.step(1, id + ": latency", () -> this.c.latencyTicks = ticks);
+        this.step(40, id + ": the round trip settles", () -> this.tests.getLogger().info("REVIVAL_CHEAT_NOTE " + id + ": rtt base "
+            + this.c.auth.transactions().rttBaseNanos() / 1_000_000L + " ms"));
+        this.attackCase(id + " (control)", 0.0, 2.8, null, 1, 1, () -> this.tests.getLogger().info("REVIVAL_CHEAT_NOTE " + id + ": rewind "
+            + this.c.auth.lastHitRewindMillis() + " ms, cap " + this.c.auth.lastRewindCap() + " ms (display " + this.c.auth.lastDisplayDelay() + " ms), verdict "
+            + this.c.auth.lastHitVerdict()));
+        this.step(1, id + ": done", this::leaveAll);
+    }
+
+    private void combatFakeLag() {
+        final String id = "combat: fake lag (pongs on time, the victim's movement shown 10 ticks late)";
+        this.combatJoin(id);
+        this.step(1, id + ": strafe", () -> {
+            this.open(id);
+            this.c.staleEntityTicks = 10;
+            this.v.keys = new Input(false, false, true, false, false, false, false); // strafing out of the attacker's line
+        });
+        this.step(10, id + ": attack where the stale view still shows it", () -> {
+            this.base = this.snap(this.c);
+            this.attacksBase = this.attacksOf(this.c);
+            this.c.yaw = 0.0F;
+            this.c.pitch = 0.0F;
+            this.attack(this.c, 1);
+        });
+        this.judge(3, id, () -> {
+            final Snap d = this.delta(this.c);
+            final int landed = this.attacksOf(this.c) - this.attacksBase;
+            this.expect(landed == 0, "refused: landed " + landed + " (judged valid " + d.attacksAccepted() + ", invalid " + d.attacksRejected() + ", verdict "
+                + this.c.auth.lastHitVerdict() + ")");
+        });
+        this.finish(id);
+    }
+
     private void combatTeleportPending() {
         final String id = "combat: while a server teleport is pending";
         this.combatJoin(id);
@@ -1465,13 +1639,16 @@ final class AuthCheatScenarios {
                 this.attack(x, 1);
             };
         });
-        // §15.1: a pong after the tick's keybinds is a protocol violation, so the poisoned mirror never gets used
+        // §15.8: a pong after the tick's keybinds is counted, not kicked; it keeps its arrival place, so the attack before it
+        // is judged on the mirror before the pong's entries (no backtrack), and the cheats after it still get nothing
         this.judge(4, id, () -> {
             final String reason = this.kicks.getOrDefault(this.c.player.getUUID(), "");
-            this.expect(this.c.kicked && reason.contains("transaction"), "kicked: '" + reason + "'");
-            this.expect(this.attacksOf(this.c) - this.attacksBase == 0, "the attack in that window did not land");
+            this.expect(!this.c.kicked, "counted, not kicked " + reason);
+            this.expect(this.c.auth.violationReasons().getInt("a pong after the tick's keybinds") >= 1, "counted: " + this.c.auth.violationReasons());
+            this.note("the attack before the pong landed " + (this.attacksOf(this.c) - this.attacksBase) + " (judged at its place)");
         });
-        this.finish(id);
+        this.step(1, id + ": verdict", this::record);
+        this.poisoned(id);
     }
 
     private void combatAutoblock() {
@@ -1661,7 +1838,11 @@ final class AuthCheatScenarios {
             this.note("diagnostics: hand " + this.c.player.getMainHandItem() + ", windows " + this.c.auth.stats().windows() + ", refused " + this.c.auth.clock().refused()
                 + ", queued " + this.c.auth.stream().queued() + ", grammar " + this.c.auth.inputRules().total() + ", predictions refused "
                 + this.c.auth.stats().predictionsRefused() + ", loaded " + this.c.player.connection.hasClientLoaded() + ", in range "
-                + this.c.player.isWithinBlockInteractionRange(new BlockPos(this.ox, this.gy - 1, this.oz + 2), 1.0) + ", pos " + this.c.player.position());
+                + this.c.player.isWithinBlockInteractionRange(new BlockPos(this.ox, this.gy - 1, this.oz + 2), 1.0) + ", pos " + this.c.player.position()
+                + ", unobstructed " + this.level.isUnobstructed(Blocks.STONE.defaultBlockState(), new BlockPos(this.ox, this.gy, this.oz + 2),
+                net.minecraft.world.phys.shapes.CollisionContext.of(this.c.player)) + ", entities there "
+                + this.level.getEntities((net.minecraft.world.entity.Entity) null, new net.minecraft.world.phys.AABB(new BlockPos(this.ox, this.gy, this.oz + 2)))
+                + ", awaiting teleport " + awaiting(this.c.player));
             this.c.holdPongs = true;
             final int[] left = {3};
             this.c.before = x -> {
@@ -1690,6 +1871,16 @@ final class AuthCheatScenarios {
         });
         this.honestAfter(id, NONE, 0);
         this.finish(id);
+    }
+
+    private static Object awaiting(final net.minecraft.server.level.ServerPlayer player) {
+        try {
+            final java.lang.reflect.Field field = net.minecraft.server.network.ServerGamePacketListenerImpl.class.getDeclaredField("awaitingPositionFromClient");
+            field.setAccessible(true);
+            return String.valueOf(field.get(player.connection));
+        } catch (final ReflectiveOperationException e) {
+            return e.toString();
+        }
     }
 
     private ServerboundUseItemOnPacket place(final int dx, final int sequence) {
@@ -2261,6 +2452,12 @@ final class AuthCheatScenarios {
 
         // Lag and reply policies
         int pongDelay;
+        /** Every clientbound packet reaches this client this many ticks late (a long route, not a cheat). */
+        int latencyTicks;
+        /** Other players' movement reaches this client's view this many ticks late, its pongs on time (fake lag). */
+        int staleEntityTicks;
+        /** A network stall: nothing comes in until it ends (then everything at once); with {@code blink}, nothing goes out. */
+        boolean stall;
         boolean holdPongs;
         boolean outOfOrder;
         boolean futurePong;
@@ -2309,6 +2506,8 @@ final class AuthCheatScenarios {
         private boolean lastCollision;
         private int reminder;
         private boolean loaded;
+        /** Reports itself loaded at once, chunk or not, and stands on the server's floor (the load-test bot). */
+        boolean loadEarly;
 
         int ticks;
         boolean kicked;
@@ -2407,7 +2606,9 @@ final class AuthCheatScenarios {
                 this.drained.clear();
             }
             final int drainEnd = out.size();
-            if (!this.loaded) {
+            if (!this.loaded && (this.loadEarly || this.fake.chunks.contains(net.minecraft.world.level.ChunkPos.pack(net.minecraft.util.Mth.floor(this.model.x()) >> 4,
+                net.minecraft.util.Mth.floor(this.model.z()) >> 4)))) {
+                // A vanilla client reports PlayerLoaded once its loading screen has the chunk it stands in
                 out.add(new ServerboundPlayerLoadedPacket());
                 this.loaded = true;
             }
@@ -2423,7 +2624,10 @@ final class AuthCheatScenarios {
             }
 
             final Input moving = this.modelKeys != null ? this.modelKeys : this.keys;
-            this.model.tick(moving, this.previousModelKeys, this.yaw, this.pitch, ClientStream.SPRINT_NONE, -1, false, this.view, this.world);
+            if (this.loaded) {
+                // LocalPlayer.tick does nothing until the client has loaded
+                this.model.tick(moving, this.previousModelKeys, this.yaw, this.pitch, ClientStream.SPRINT_NONE, -1, false, this.view, this.world);
+            }
             this.previousModelKeys = moving;
             this.view.tick();
             if (this.cheat != null) {
@@ -2578,24 +2782,39 @@ final class AuthCheatScenarios {
                 }
                 return;
             }
-            int release = this.ticks;
+            if (this.staleEntityTicks > 0 && (packet instanceof net.minecraft.network.protocol.game.ClientboundMoveEntityPacket
+                || packet instanceof net.minecraft.network.protocol.game.ClientboundEntityPositionSyncPacket
+                || packet instanceof net.minecraft.network.protocol.game.ClientboundTeleportEntityPacket)) {
+                this.staleInbox.addLast(new Object[] {packet, this.ticks + this.staleEntityTicks});
+                return;
+            }
+            int release = this.ticks + this.latencyTicks;
             if (packet instanceof ClientboundPingPacket) {
-                release = this.holdPongs ? Integer.MAX_VALUE : this.ticks + this.pongDelay;
+                release = this.holdPongs ? Integer.MAX_VALUE : this.ticks + this.latencyTicks + this.pongDelay;
+            }
+            if (this.stall) {
+                release = Integer.MAX_VALUE;
             }
             release = Math.max(release, this.lastRelease);
             this.lastRelease = release;
             this.inbox.addLast(new Object[] {packet, release});
         }
 
+        private final ArrayDeque<Object[]> staleInbox = new ArrayDeque<>();
+
         private void release() {
             while (!this.inbox.isEmpty() && (int) this.inbox.peekFirst()[1] <= this.ticks) {
                 this.handle((Packet<?>) this.inbox.pollFirst()[0]);
+            }
+            while (!this.staleInbox.isEmpty() && (int) this.staleInbox.peekFirst()[1] <= this.ticks) {
+                this.handle((Packet<?>) this.staleInbox.pollFirst()[0]);
             }
         }
 
         /** Everything held is handled at the next drain, at once. */
         void releaseHeld() {
             this.holdPongs = false;
+            this.stall = false;
             for (final Object[] entry : this.inbox) {
                 if ((int) entry[1] > this.ticks) {
                     entry[1] = this.ticks;
@@ -2782,7 +3001,12 @@ final class AuthCheatScenarios {
             this.gone = true;
             AuthCheatScenarios.this.clients.remove(this);
             if (this.kicked || this.player.hasDisconnected()) {
+                // The fake connection doesn't run vanilla's disconnection, so a kicked cheater would stay in the world
+                // (and obstruct later scenarios' placements): remove it as the disconnection would
                 AuthCheatScenarios.this.server.getConnection().getConnections().remove(this.player.connection.connection);
+                if (!this.player.isRemoved()) {
+                    AuthCheatScenarios.this.server.getPlayerList().remove(this.player);
+                }
             } else {
                 this.fake.disconnect();
             }

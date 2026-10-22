@@ -3,6 +3,7 @@ package gg.hcfrevival.revival.combat;
 import gg.hcfrevival.revival.Revival;
 import gg.hcfrevival.revival.config.KnockbackProfile;
 import gg.hcfrevival.revival.config.LegacyProjectileSettings;
+import gg.hcfrevival.revival.config.ProjectileRules;
 import gg.hcfrevival.revival.config.RevivalSettings;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.server.level.ServerLevel;
@@ -20,6 +21,7 @@ import net.minecraft.world.entity.projectile.arrow.AbstractArrow;
 import net.minecraft.world.entity.projectile.arrow.ThrownTrident;
 import net.minecraft.world.entity.projectile.throwableitemprojectile.Snowball;
 import net.minecraft.world.entity.projectile.throwableitemprojectile.ThrownEgg;
+import net.minecraft.world.entity.projectile.throwableitemprojectile.ThrownEnderpearl;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.enchantment.EnchantmentHelper;
 import net.minecraft.world.phys.Vec3;
@@ -53,11 +55,12 @@ public final class LegacyProjectiles {
         return source.getDirectEntity() instanceof final Projectile projectile ? settings(victim, projectile) : null;
     }
 
-    private static boolean legacyType(final Projectile projectile, final LegacyProjectileSettings settings) {
+    static boolean legacyType(final Projectile projectile, final LegacyProjectileSettings settings) {
         return switch (projectile) {
             case final Snowball ignored -> settings.snowballs();
             case final ThrownEgg ignored -> settings.eggs();
             case final FishingHook ignored -> settings.rods();
+            case final ThrownEnderpearl ignored -> settings.rules().pearls().enabled(); // 1.7: a 0-damage thrown hit, like a snowball
             case final ThrownTrident ignored -> false;
             case final AbstractArrow arrow -> settings.arrows() && launchedBy(arrow, settings);
             default -> false;
@@ -100,6 +103,7 @@ public final class LegacyProjectiles {
             final Vec3 flight = arrow.getDeltaMovement();
             knocked = KnockbackEngine.punch(knocked, flight.x, flight.z, punch, settings.punchPerLevel(), settings.punchVertical(), profile);
         }
+        knocked = NeueCombat.influenceProjectile(knocked, victim, projectile, profile); // Neue's DI on melee-window projectiles; classic: unchanged
         if (victim instanceof final ServerPlayer player && profile.motionModel() == KnockbackProfile.MotionModel.VANILLA_1_7) {
             player.revivalMotionShadow.set(knocked);
         }
@@ -177,22 +181,41 @@ public final class LegacyProjectiles {
 
     /**
      * A legacy rod cast: 1.7.10's EntityFishHook launched along the player's look at {@code cast-speed} (1.5) with a
-     * little Gaussian spread, under {@code gravity} (0.04) per tick.
+     * little Gaussian spread, under {@code gravity} (0.04) per tick. With {@code throw: legacy-1.7} it starts where 1.7's
+     * did (feet + 1.62 - 0.1, 0.16 to the side; 26.x starts 0.3 ahead at the pose's eye); with {@code flight: legacy-1.7}
+     * it moves 1.7's path ({@link LegacyThrow}: launch {@code v0 + 0.92 g ŷ}, gravity {@code 0.92 g}).
      */
     public static void cast(final FishingHook hook, final Player player) {
         final LegacyProjectileSettings settings = Revival.settings().legacyCombat(player.level().getWorld().getName()).projectiles();
         if (!settings.enabled() || !settings.rods()) {
             return;
         }
-        hook.setDeltaMovement(castMotion(player.getYRot(), player.getXRot(), settings.rodCastSpeed(), hook.getRandom().nextGaussian(), hook.getRandom().nextGaussian(), hook.getRandom().nextGaussian()));
-        hook.revivalGravity = settings.rodGravity();
+        final ProjectileRules rules = settings.rules();
+        final float yaw = player.getYRot();
+        final float pitch = player.getXRot();
+        final Vec3 heading = castMotion(yaw, pitch, settings.rodCastSpeed(), rules.throwSpread(), hook.getRandom().nextGaussian(), hook.getRandom().nextGaussian(),
+            hook.getRandom().nextGaussian());
+        if (rules.legacyThrow()) {
+            // EntityFishHook: posY + 1.62D (a double here, unlike EntityThrowable's float eye height), then - 0.1F
+            hook.snapTo(LegacyThrow.originX(player.getX(), yaw, rules.throwSide()), player.getY() + rules.throwEyeHeight() - (double) (float) rules.throwDrop(),
+                LegacyThrow.originZ(player.getZ(), yaw, rules.throwSide()), hook.getYRot(), hook.getXRot());
+        }
+        if (rules.legacyFlight()) {
+            hook.setDeltaMovement(LegacyThrow.rodLaunch(heading, settings.rodGravity()));
+            hook.revivalGravity = LegacyThrow.rodGravity(settings.rodGravity());
+        } else {
+            hook.setDeltaMovement(heading);
+            hook.revivalGravity = settings.rodGravity();
+        }
+        hook.setYRot((float) (Mth.atan2(heading.x, heading.z) * 57.2957763671875));
+        hook.setXRot((float) (Mth.atan2(heading.y, heading.horizontalDistance()) * 57.2957763671875));
+        hook.yRotO = hook.getYRot();
+        hook.xRotO = hook.getXRot();
     }
 
-    /** EntityFishHook's constructor and setThrowableHeading(motion, 1.5F, 1.0F). */
-    static Vec3 castMotion(final float yaw, final float pitch, final double speed, final double spreadX, final double spreadY, final double spreadZ) {
-        final double yawRad = yaw / 180.0F * (float) Math.PI;
-        final double pitchRad = pitch / 180.0F * (float) Math.PI;
-        final Vec3 look = new Vec3(-Mth.sin((float) yawRad) * Mth.cos((float) pitchRad), -Mth.sin((float) pitchRad), Mth.cos((float) yawRad) * Mth.cos((float) pitchRad)).normalize();
-        return new Vec3(look.x + spreadX * 0.0075, look.y + spreadY * 0.0075, look.z + spreadZ * 0.0075).scale(speed);
+    /** EntityFishHook's constructor and {@code func_146035_c(motion, 1.5F, 1.0F)} (its setThrowableHeading), {@link LegacyThrow#heading}. */
+    static Vec3 castMotion(final float yaw, final float pitch, final double speed, final double spread, final double spreadX, final double spreadY,
+                           final double spreadZ) {
+        return LegacyThrow.heading(yaw, pitch, 0.0F, LegacyThrow.THROWABLE_LENGTH, speed, spread, spreadX, spreadY, spreadZ);
     }
 }

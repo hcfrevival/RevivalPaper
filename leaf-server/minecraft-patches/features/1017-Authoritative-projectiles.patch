@@ -1,0 +1,109 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: shaynelarocque <shaynelarocque@gmail.com>
+Date: Thu, 22 Oct 2026 00:41:14 -0400
+Subject: [PATCH] Authoritative projectiles
+
+
+diff --git a/net/minecraft/world/entity/projectile/FishingHook.java b/net/minecraft/world/entity/projectile/FishingHook.java
+index b0c7fbbbd7c5662e44cb87a92eb1af626cb58802..a8d46c801b87cc1a4d6c3993750c6cd82f6c46fa 100644
+--- a/net/minecraft/world/entity/projectile/FishingHook.java
++++ b/net/minecraft/world/entity/projectile/FishingHook.java
+@@ -288,7 +288,8 @@ public class FishingHook extends Projectile {
+     }
+ 
+     private void checkCollision() {
+-        HitResult hitResult = ProjectileUtil.getHitResultOnMoveVector(this, this::canHitEntity);
++        HitResult hitResult = gg.hcfrevival.revival.combat.ProjectileHits.onMove(this, this::canHitEntity); // Revival - Projectiles
++        if (hitResult == null) hitResult = ProjectileUtil.getHitResultOnMoveVector(this, this::canHitEntity); // Revival - Projectiles
+         this.preHitTargetOrDeflectSelf(hitResult);
+     }
+ 
+diff --git a/net/minecraft/world/entity/projectile/Projectile.java b/net/minecraft/world/entity/projectile/Projectile.java
+index 5c02264cac1ebc9fabc7d249a3e0034846910940..02335944497ad6acdea5e836a894223ce2ff58cc 100644
+--- a/net/minecraft/world/entity/projectile/Projectile.java
++++ b/net/minecraft/world/entity/projectile/Projectile.java
+@@ -233,6 +233,7 @@ public abstract class Projectile extends Entity implements TraceableEntity {
+     }
+ 
+     public void shootFromRotation(final Entity source, final float xRot, final float yRot, final float yOffset, final float pow, final float uncertainty) {
++        if (gg.hcfrevival.revival.combat.LegacyThrow.shoot(this, source, xRot, yRot, yOffset, pow, uncertainty)) return; // Revival - Projectiles
+         float xd = -Mth.sin(yRot * Mth.DEG_TO_RAD) * Mth.cos(xRot * Mth.DEG_TO_RAD);
+         float yd = -Mth.sin((xRot + yOffset) * Mth.DEG_TO_RAD);
+         float zd = Mth.cos(yRot * Mth.DEG_TO_RAD) * Mth.cos(xRot * Mth.DEG_TO_RAD);
+@@ -427,7 +428,7 @@ public abstract class Projectile extends Entity implements TraceableEntity {
+         } else if (hitResult instanceof BlockHitResult blockHitResult) {
+             if (!blockHitResult.isWorldBorderHit()) {
+                 BlockState collidedWith = this.level().getBlockState(blockHitResult.getBlockPos());
+-                if (collidedWith.isAir()) {
++                if (collidedWith.isAir() && !gg.hcfrevival.revival.combat.PearlLanding.clientWall(blockHitResult)) { // Revival - Projectiles: a pearl stopped by a fake wall
+                     return ProjectileDeflection.NONE;
+                 }
+             } else if (this.shouldBounceOnWorldBorder()) {
+diff --git a/net/minecraft/world/entity/projectile/ThrowableProjectile.java b/net/minecraft/world/entity/projectile/ThrowableProjectile.java
+index 13d12b79245141226fab51634337fda35f8b92e1..9f93e24f975348bec248575704b32d62c19ac71e 100644
+--- a/net/minecraft/world/entity/projectile/ThrowableProjectile.java
++++ b/net/minecraft/world/entity/projectile/ThrowableProjectile.java
+@@ -48,9 +48,10 @@ public abstract class ThrowableProjectile extends Projectile {
+         }
+         // Leaf end - Rewrite entity despawn time - Check earlier for projectiles
+         this.handleFirstTickBubbleColumn();
+-        this.applyGravity();
++        if (!gg.hcfrevival.revival.combat.LegacyThrow.gravity(this)) this.applyGravity(); // Revival - Projectiles
+         this.applyInertia();
+-        HitResult result = ProjectileUtil.getHitResultOnMoveVector(this, this::canHitEntity);
++        HitResult result = gg.hcfrevival.revival.combat.ProjectileHits.onMove(this, this::canHitEntity); // Revival - Projectiles
++        if (result == null) result = ProjectileUtil.getHitResultOnMoveVector(this, this::canHitEntity); // Revival - Projectiles
+         Vec3 newPosition;
+         if (result.getType() != HitResult.Type.MISS) {
+             newPosition = result.getLocation();
+diff --git a/net/minecraft/world/entity/projectile/arrow/AbstractArrow.java b/net/minecraft/world/entity/projectile/arrow/AbstractArrow.java
+index 65f0ce95a9d3ae0726e029af4dbd17c2f9547f63..063909c869d90b30a584d4364fe0e52ae5af8aee 100644
+--- a/net/minecraft/world/entity/projectile/arrow/AbstractArrow.java
++++ b/net/minecraft/world/entity/projectile/arrow/AbstractArrow.java
+@@ -630,6 +630,8 @@ public abstract class AbstractArrow extends Projectile {
+     }
+ 
+     protected Collection<EntityHitResult> findHitEntities(final Vec3 from, final Vec3 to) {
++        final java.util.List<EntityHitResult> revivalHits = gg.hcfrevival.revival.combat.ProjectileHits.arrowHits(this, from, to, this::canHitEntity); // Revival - Projectiles
++        if (revivalHits != null) return revivalHits; // Revival - Projectiles
+         return ProjectileUtil.getManyEntityHitResult(
+             this.level(), this, from, to, this.getBoundingBox().expandTowards(this.getDeltaMovement()).inflate(1.0), this::canHitEntity, false, false
+         );
+diff --git a/net/minecraft/world/entity/projectile/throwableitemprojectile/ThrownEnderpearl.java b/net/minecraft/world/entity/projectile/throwableitemprojectile/ThrownEnderpearl.java
+index df1f4771eaea6e0e41d585e5c35d555b00ae0c4a..1cf32d6611b721ab876d334e8c73ce3bf233d778 100644
+--- a/net/minecraft/world/entity/projectile/throwableitemprojectile/ThrownEnderpearl.java
++++ b/net/minecraft/world/entity/projectile/throwableitemprojectile/ThrownEnderpearl.java
+@@ -103,7 +103,8 @@ public class ThrownEnderpearl extends ThrowableItemProjectile {
+         if (this.level() instanceof ServerLevel level && !this.isRemoved()) {
+             Entity owner = this.getOwner();
+             if (owner != null && isAllowedToTeleportOwner(owner, level)) {
+-                Vec3 teleportPos = this.oldPosition();
++                Vec3 teleportPos = gg.hcfrevival.revival.combat.PearlLanding.destination(this, owner, this.oldPosition()); // Revival - Projectiles
++                if (teleportPos == null) { this.discard(org.bukkit.event.entity.EntityRemoveEvent.Cause.HIT); return; } // Revival - Projectiles: no safe landing (refunded)
+                 if (owner instanceof ServerPlayer player) {
+                     if (player.connection.isAcceptingMessages()) {
+                         // Leaf start - SparklyPaper - parallel world ticking - handling for pearl teleportation cross-dimension
+diff --git a/net/minecraft/world/entity/projectile/throwableitemprojectile/ThrownSplashPotion.java b/net/minecraft/world/entity/projectile/throwableitemprojectile/ThrownSplashPotion.java
+index f8e0c1871990d34c5dead6b76010ba5533d09b50..667fae209646af2c3c4a17acb01d427a4028f0af 100644
+--- a/net/minecraft/world/entity/projectile/throwableitemprojectile/ThrownSplashPotion.java
++++ b/net/minecraft/world/entity/projectile/throwableitemprojectile/ThrownSplashPotion.java
+@@ -42,7 +42,7 @@ public class ThrownSplashPotion extends AbstractThrownPotion {
+         PotionContents contents = potionItem.getOrDefault(DataComponents.POTION_CONTENTS, PotionContents.EMPTY);
+         float durationScale = potionItem.getOrDefault(DataComponents.POTION_DURATION_SCALE, 1.0F);
+         Iterable<MobEffectInstance> mobEffects = contents.getAllEffects();
+-        AABB potionAabb = hitResult == null ? this.getBoundingBox() : this.getBoundingBox().move(hitResult.getLocation().subtract(this.position())); // Paper - More projectile API
++        AABB potionAabb = gg.hcfrevival.revival.combat.LegacySplash.box(this, hitResult, hitResult == null ? this.getBoundingBox() : this.getBoundingBox().move(hitResult.getLocation().subtract(this.position()))); // Paper - More projectile API // Revival - Projectiles
+         AABB effectAabb = potionAabb.inflate(4.0, 2.0, 4.0);
+         List<LivingEntity> entities = this.level().getEntitiesOfClass(LivingEntity.class, effectAabb);
+         java.util.Map<org.bukkit.entity.LivingEntity, Double> affected = new java.util.HashMap<>(); // CraftBukkit
+@@ -53,8 +53,8 @@ public class ThrownSplashPotion extends AbstractThrownPotion {
+             for (LivingEntity entity : entities) {
+                 if (entity.isAffectedByPotions()) {
+                     double dist = potionAabb.distanceToSqr(entity.getBoundingBox().inflate(margin));
+-                    if (dist < 16.0) {
+-                        double scale = 1.0 - Math.sqrt(dist) / 4.0; // Paper - diff on change, used when calling the splash event for water splash potions
++                    final double scale = gg.hcfrevival.revival.combat.LegacySplash.scale(this, entity, hitResult, dist); // Revival - Projectiles: 1.7's falloff or 26.x's, 0 out of range
++                    if (scale > 0.0) { // Revival - Projectiles
+                         // CraftBukkit start
+                         affected.put(entity.getBukkitEntity(), scale);
+                     }

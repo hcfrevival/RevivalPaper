@@ -1,0 +1,52 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: shaynelarocque <shaynelarocque@gmail.com>
+Date: Thu, 22 Oct 2026 00:41:14 -0400
+Subject: [PATCH] Neue combat
+
+
+diff --git a/net/minecraft/server/network/ServerGamePacketListenerImpl.java b/net/minecraft/server/network/ServerGamePacketListenerImpl.java
+index fe54d3799ff261bc13f69dc130e7f5fcc1bada54..af65b168ebdc2b09caf51e651c75191011645006 100644
+--- a/net/minecraft/server/network/ServerGamePacketListenerImpl.java
++++ b/net/minecraft/server/network/ServerGamePacketListenerImpl.java
+@@ -2911,6 +2911,7 @@ public class ServerGamePacketListenerImpl
+     public void handlePunch(final ServerboundPunchPacket packet) {
+         PacketUtils.ensureRunningOnSameThread(packet, this, this.player.level());
+         if (this.player.revivalAuth.intercept(packet)) return; // Revival - Authoritative netcode: handlePunch
++        gg.hcfrevival.revival.combat.NeueCombat.swung(this.player); // Revival - Neue combat
+         if (this.player.isImmobile()) return; // CraftBukkit
+         this.player.resetLastActionTime();
+         // CraftBukkit start - Raytrace to look for 'rogue armswings'
+diff --git a/net/minecraft/world/entity/LivingEntity.java b/net/minecraft/world/entity/LivingEntity.java
+index 5dece03001aff0a8c49d74b8513821993f6ce5a1..2213cc8ff32b80b1f3ed484bb399714d73f3a25d 100644
+--- a/net/minecraft/world/entity/LivingEntity.java
++++ b/net/minecraft/world/entity/LivingEntity.java
+@@ -1512,6 +1512,8 @@ public abstract class LivingEntity extends Entity implements Attackable, Waypoin
+             return false;
+         }
+ 
++        if (gg.hcfrevival.revival.combat.NeueCombat.parried(this, source)) return false; // Revival - Neue combat
++
+         if (source.is(DamageTypeTags.IS_FIRE) && this.hasEffect(MobEffects.FIRE_RESISTANCE)) {
+             return false;
+         }
+@@ -1565,6 +1567,7 @@ public abstract class LivingEntity extends Entity implements Attackable, Waypoin
+         boolean tookFullDamage = true;
+         if (this.damageCooldownTime > (float)this.invulnerableDuration / 2.0F && !source.is(DamageTypeTags.BYPASSES_COOLDOWN)) { // CraftBukkit - restore use of maxNoDamageTicks
+             if (damage <= this.lastHurt) {
++                gg.hcfrevival.revival.combat.NeueCombat.windowRejected(this, source); // Revival - Neue combat
+                 return false;
+             }
+ 
+diff --git a/net/minecraft/world/entity/player/Player.java b/net/minecraft/world/entity/player/Player.java
+index 3d80bc12946d381f9b41553116b7bc4f2e50b721..6193f7733e57dcce9fa6d6eab78459ee38fa8b99 100644
+--- a/net/minecraft/world/entity/player/Player.java
++++ b/net/minecraft/world/entity/player/Player.java
+@@ -1134,7 +1134,7 @@ public abstract class Player extends Avatar implements ContainerUser {
+                         this.itemAttackInteraction(entity, attackingItemStack, damageSource, true);
+                         this.damageStatsAndHearts(entity, oldLivingEntityHealth);
+                         this.causeFoodExhaustion(this.level().spigotConfig.combatExhaustion, org.bukkit.event.entity.EntityExhaustionEvent.ExhaustionReason.ATTACK); // CraftBukkit - EntityExhaustionEvent // Spigot - Change to use configurable value
+-                    } else {
++                    } else if (!gg.hcfrevival.revival.combat.NeueCombat.quiet(this)) { // Revival - Neue combat
+                         this.playServerSideSound(SoundEvents.PLAYER_ATTACK_NODAMAGE);
+                     }
+                 }

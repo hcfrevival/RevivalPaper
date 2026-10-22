@@ -93,7 +93,8 @@ start, and writes any missing key back on later starts.
 | `legacy-enchant-protection` | `true` | 1.7.10 Protection instead of 26.x's. |
 | `randomize-protection` | `true` | Roll each hit's Protection between half and all of it, as 1.7.10 did. |
 | `hide-cooldown-indicator` | `true` | No cooldown bar while a legacy weapon is held. |
-| `max-attacks-per-tick` | `0` | Legacy attacks a player may land per tick; `0` is unlimited, as in 1.7.10. |
+| `max-attacks-per-tick` | `0` | Legacy attacks a player may land per tick; `0` is unlimited, as in 1.7.10. Keep it `0` with a click buffer. |
+| `rules` | `classic` | The combat rule set this world uses: `classic` (plain 1.7), `neue` or a set under `combat-rules` (see below). |
 
 ### `world-settings.<world>.legacy-combat.projectiles`
 
@@ -114,6 +115,19 @@ start, and writes any missing key back on later starts.
 | `fishing-rod.reel-pull-other` | `legacy` | 1.7.10 (`legacy`) or 26.x (`vanilla`) pull on hooked mobs. |
 | `fishing-rod.reel-durability` | `3` | Rod durability used by reeling in a hooked entity. |
 | `fishing-rod.cast-speed`, `fishing-rod.gravity` | `1.5`, `0.04` | 1.7 cast speed and bobber gravity. |
+| `throw` | `legacy-1.7` | A player's throw starts at 1.7's origin with 1.7's heading and spread and never inherits the thrower's motion; `vanilla` is 26.x's. |
+| `flight` | `legacy-1.7` | Thrown items and the rod hook fly 1.7's path (move, then drag and gravity); 26.x pearls land 1.4-2.1 blocks short. |
+| `hit-detection` | `legacy-1.7` | Entity boxes grow by `hit-margin` (0.3) from the first tick, 1.7's intercept, the owner immune for `owner-immune-ticks` (5); `vanilla` is 26.x's growing margin. |
+| `throw-eye-height`, `throw-drop`, `throw-side`, `throw-spread` | `1.62`, `0.1`, `0.16`, `0.0075` | 1.7's throw origin and spread. |
+| `lag-compensation.projectiles` | `[minecraft:fishing_bobber, minecraft:snowball, minecraft:egg]` | Under authority, these projectiles hit players where the shooter's client drew them (capped like melee). |
+| `ender-pearl.enabled` | `true` | Pearls are legacy: 1.7 throw, flight and hits, and a pearl hit lands on players. |
+| `ender-pearl.client-walls` | `true` | Under authority, pearls also stop at blocks only the thrower's client has (fake combat and claim walls). |
+| `ender-pearl.safe-landing`, `max-backtrack`, `backtrack-step` | `true`, `1.5`, `0.0625` | Land only where a standing box fits, moving back along the flight; no glitching into gates, doors, slabs or ceilings. |
+| `ender-pearl.pass-through` | `[]` | Block ids or `#tags` pearls fly through and may land in. |
+| `ender-pearl.no-landing` | `refund` | When nothing fits: `refund` the pearl (cooldown cleared) or just `cancel` the teleport. |
+| `splash-potion.enabled`, `splash-potion.falloff` | `true`, `legacy-1.7` | Splash potions are legacy; strength `1 - d/4` from the burst point to the feet, 1 on a direct hit, as 1.7 (`vanilla`: 26.x's box-to-box). |
+
+The design, the 1.7 sources and the numbers are in [`docs/revival/projectiles.md`](docs/revival/projectiles.md).
 
 ### `world-settings.<world>.legacy-combat.damage-windows`
 
@@ -168,6 +182,41 @@ preset fixes keep reaching servers that never edited them.
 
 The presets other than `legacy-1.7`, `legacy-1.8` and `hcfr*` come from archived server configs as curated by
 [Mental](https://github.com/owengregson/Mental) (MIT); their authenticity can't be verified.
+
+### Combat rules (`classic`, `neue`)
+
+A world picks a rule set with `legacy-combat.rules`. `classic` is plain 1.7 and changes nothing. `neue` is the rule
+set of Combo, the HCF team's own 1.7-PvP game ([neue-combat.md](docs/revival/neue-combat.md)):
+
+- **Click cap and buffer.** 12 attacks a second at most; a click the victim's damage window turns away waits 0.15 s
+  and lands on the first tick the window opens, if you're still free to swing and in reach. No more CPS race.
+- **Tipper.** A hit from the edge of reach (2.6 blocks or more, eye to box) knocks 10% further; a point-blank one
+  (under 1.4) knocks 10% less. Height is never touched.
+- **DI.** The victim's held keys bend the knock up to 15°.
+- **Parry.** A fresh sword block parries the first hit in its first 0.15 s, if the sword rested: a block raised
+  within 0.3 s of a swing (a block-hit) never parries, and the window grows from nothing to full over 0.35 to 1 s of
+  rest from blocking. The parried attacker is thrown back, their sword shows the cooldown sweep (no block for 0.5 s),
+  they can't attack for 0.5 s and move at 35%; the parrier's next hit within 0.6 s is a crit.
+
+`combat-rules.<name>` overrides a preset of the same name key by key; any other name starts from `classic`. Only
+sets you write are in the file. Durations are seconds, rounded to whole ticks.
+
+| Key | `classic` | `neue` | What it does |
+|---|---|---|---|
+| `max-cps`, `click-burst` | `0`, `2.0` | `12.0`, `2.0` | Attacks a second (0 off) and the burst the click bucket holds. |
+| `click-buffer-seconds`, `click-buffer-line-of-sight` | `0`, `true` | `0.15`, `true` | How long a click into a shut window waits; whether a block in the way drops it. |
+| `influence-degrees`, `influence-projectiles` | `0`, `false` | `15.0`, `true` | DI; whether it also bends rod, snowball and egg knocks. |
+| `tipper-from`, `tipper-knock` | `2.6`, `1.0` | `2.6`, `1.1` | Tipper distance and horizontal knock scale. |
+| `sour-under`, `sour-knock` | `1.4`, `1.0` | `1.4`, `0.9` | Point-blank distance and scale. |
+| `parry` | `false` | `true` | Fresh blocks parry (needs `sword-blocking.enabled`). |
+| `parry-window-seconds`, `parry-block-hit-seconds` | `0.15`, `0.3` | `0.15`, `0.3` | The full window; how soon after a swing a block is a block-hit. |
+| `parry-rearm-seconds`, `parry-rest-seconds` | `0.35`, `1.0` | `0.35`, `1.0` | Rest from blocking that gives no window, and the whole window. |
+| `parry-projectiles`, `parry-jitter-ticks` | `true`, `2` | `true`, `2` | Rods, snowballs and eggs are parried too (no stagger); slack for a blocker's late packets. |
+| `riposte-seconds` | `0.6` | `0.6` | The parrier's crit window. |
+| `stagger-seconds`, `stagger-recoil-horizontal`, `stagger-recoil-vertical` | `0.5`, `0.45`, `0.22` | same | The parried attacker's lockout and recoil. |
+| `stagger-move-multiplier` | `1.0` | `0.35` | Movement while staggered; `1.0` sends no slow. |
+| `stagger-sword-cooldown`, `stagger-lowers-block` | `true`, `true` | same | The cooldown sweep on the sword; a raised block drops. |
+| `feedback.<event>-sound`, `-volume`, `-pitch`, `-particle`, `-particle-count` | | | Cues for `tipper`, `sour`, `parry`, `parry-spark` and `stagger`; `''` turns one off. |
 
 `knockback-autosave` (default `false`) saves every `/revival kb` edit to `revival.yml` straight away. With it
 off, edits are live but are lost on restart until you run `/revival kb save`.

@@ -510,3 +510,19 @@ one when there is no claim. "Zero corrections" in §14 means zero beyond these d
   `min(max-rewind-ms, rttBase + jitter + K·50 ms)`; a sustained ack RTT far above `rttBase` is flagged.
 - Non-player entities never veto a hit in v1 (only blocks and mirrored players take part in the pick).
 - Exempt attackers: refused in `enforce`.
+
+### 15.8 Kick policy and client profiles (2026-10-22, after the Lunar/client-compat study)
+
+Most HCF players run Lunar Client (and some Fabric mods), not vanilla. A kick in HCF is a combat-logger death, so
+protocol strictness must never cost an honest player a fight. This supersedes the "kick in enforce" parts of §15.1
+and §15.4 for ordering-only violations:
+
+- **Counted, not kicked** (kick only past a sustained rate, `client-profiles.protocol-kick-rate`): a pong or accept
+  after a window's keybind packets, a second `PlayerInput` or sprint command in one window, and other packets sent
+  outside the vanilla tick pipeline that carry no advantage. They still feed statistics and staff alerts.
+- **Still an instant kick:** unknown, future or skipped pong ids; forged accepts (ids never sent, non-finite);
+  window or log overflow; a second position claim in one window (vanilla 26.3 already kicks that).
+- **Client profiles** per player (`docs/revival/client-compat.md`): built from the brand, the `lunar:apollo`
+  channel and the Apollo options the server pushed to that player. Input-grammar rules relax per profile only
+  where the client provably behaves differently (verified by the manual Lunar session or the rig's Apollo stand-in),
+  never on a guess, and relaxed rules never count toward anomaly alerts.

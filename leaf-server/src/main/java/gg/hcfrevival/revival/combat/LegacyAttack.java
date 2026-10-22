@@ -79,15 +79,19 @@ public final class LegacyAttack {
         return modern - modernSharpness.floatValue() + LegacyDamage.sharpness(sharpnessLevel, settings);
     }
 
-    /** The 1.7.10 crit rule (EntityPlayer.attackTargetEntityWithCurrentItem): 26.x's, without the sprint and attack-cooldown conditions. */
+    /**
+     * The 1.7.10 crit rule (EntityPlayer.attackTargetEntityWithCurrentItem): 26.x's, without the sprint and
+     * attack-cooldown conditions. Under Neue a ready riposte (the parrier's next hit within 0.6 s) is a crit too
+     * (Combo's {@code Combat.Melee}: {@code crit = riposte || falling}).
+     */
     public static boolean canCriticalAttack(final Player attacker, final Entity target) {
-        return attacker.fallDistance > 0.0
+        return target instanceof LivingEntity && (attacker.fallDistance > 0.0
             && !attacker.onGround()
             && !attacker.onClimbable()
             && !attacker.isInWater()
             && !attacker.isMobilityRestricted()
             && !attacker.isPassenger()
-            && target instanceof LivingEntity;
+            || NeueCombat.riposteReady(attacker));
     }
 
     /** Whether the stack is a legacy weapon with a damage entry under these settings. */

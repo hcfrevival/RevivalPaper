@@ -61,6 +61,30 @@ class BypassAuditorTest {
     }
 
     @Test
+    void aSwappedCopyMatchesAndTheQueueStaysBounded() {
+        // Review E13: a plugin that replaces packet objects on the way (ProtocolLib setPacket)
+        final ConcurrentLinkedQueue<Packet<?>> expected = new ConcurrentLinkedQueue<>();
+        final BypassAuditor audit = new BypassAuditor(SELF, expected, null);
+        final EmbeddedChannel channel = channel(audit);
+        expected.add(new ClientboundSetEntityMotionPacket(SELF, new Vec3(0.0, 0.42, 0.0)));
+        channel.writeOutbound(new ClientboundSetEntityMotionPacket(SELF, new Vec3(0.0, 0.42, 0.0)));
+        assertNull(audit.pollBypassed(), "an equal copy of a logged packet is what was logged");
+        assertTrue(expected.isEmpty());
+        // Swapped for other content every time: each is a bypass, and the logged originals don't pile up
+        for (int i = 0; i < 4 * BypassAuditor.SCAN; i++) {
+            expected.add(new ClientboundSetEntityMotionPacket(SELF, new Vec3(i, 0.0, 0.0)));
+            channel.writeOutbound(new ClientboundSetEntityMotionPacket(SELF, new Vec3(i, 1.0, 0.0)));
+        }
+        assertEquals(4 * BypassAuditor.SCAN, audit.packetBypasses());
+        assertTrue(expected.size() <= BypassAuditor.SCAN, "the queue holds " + expected.size());
+        // A later honest packet still matches
+        final ClientboundSetEntityMotionPacket honest = new ClientboundSetEntityMotionPacket(SELF, new Vec3(0.0, 0.0, 9.0));
+        expected.add(honest);
+        channel.writeOutbound(honest);
+        assertEquals(4 * BypassAuditor.SCAN, audit.packetBypasses());
+    }
+
+    @Test
     void loggedPacketsThatNeverGotWrittenAreSkipped() {
         final ConcurrentLinkedQueue<Packet<?>> expected = new ConcurrentLinkedQueue<>();
         final BypassAuditor audit = new BypassAuditor(SELF, expected, null);

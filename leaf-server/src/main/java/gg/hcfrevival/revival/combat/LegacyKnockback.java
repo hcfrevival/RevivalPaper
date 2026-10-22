@@ -54,7 +54,10 @@ public final class LegacyKnockback {
      * if one was set ({@code /revival kb use <profile> player <name>} or the API), otherwise their world's.
      */
     public static @Nullable KnockbackProfile profile(final @Nullable Entity attacker, final DamageSource source) {
-        final LegacyCombatSettings settings = source.getDirectEntity() == attacker ? LegacyAttack.settings(source) : null;
+        return profile(attacker, source.getDirectEntity() == attacker ? LegacyAttack.settings(source) : null);
+    }
+
+    private static @Nullable KnockbackProfile profile(final @Nullable Entity attacker, final @Nullable LegacyCombatSettings settings) {
         if (settings == null) {
             return null;
         }
@@ -89,8 +92,10 @@ public final class LegacyKnockback {
             new RevivalKnockbackEvent((org.bukkit.entity.LivingEntity) victim.getBukkitEntity(), player.getBukkitEntity(), profile, CraftVector.toBukkit(motion), comesFromEffect).callEvent();
         }
         if (!DEBUG.isEmpty() && (DEBUG.contains(player.getUUID()) || DEBUG.contains(victim.getUUID()))) {
-            final Component line = Component.text(String.format(Locale.ROOT, "[kb] %s -> %s %s%s: (%.4f, %.4f, %.4f)",
-                player.getScoreboardName(), victim.getScoreboardName(), profile, comesFromEffect ? " extra only" : "", motion.x, motion.y, motion.z), NamedTextColor.GRAY);
+            final String spot = comesFromEffect || !settings.rules().shapesKnock() ? "" : NeueShape.name(NeueCombat.state(player).spot());
+            final Component line = Component.text(String.format(Locale.ROOT, "[kb] %s -> %s %s%s%s: (%.4f, %.4f, %.4f)",
+                player.getScoreboardName(), victim.getScoreboardName(), profile, comesFromEffect ? " extra only" : "", spot.isEmpty() ? "" : " " + spot,
+                motion.x, motion.y, motion.z), NamedTextColor.GRAY);
             if (DEBUG.contains(player.getUUID())) {
                 player.getBukkitEntity().sendMessage(line);
             }
@@ -138,7 +143,8 @@ public final class LegacyKnockback {
      * are in the air, and pull them into the floor.
      */
     public static @Nullable Vec3 targetMovement(final LivingEntity victim, final DamageSource source, final @Nullable Entity attacker, final Vec3 current, final double xd, final double zd, final boolean comesFromEffect) {
-        final KnockbackProfile profile = profile(attacker, source);
+        final LegacyCombatSettings settings = source.getDirectEntity() == attacker ? LegacyAttack.settings(source) : null;
+        final KnockbackProfile profile = profile(attacker, settings);
         if (profile == null) {
             return comesFromEffect ? null : LegacyProjectiles.targetMovement(victim, source, current, xd, zd);
         }
@@ -152,7 +158,10 @@ public final class LegacyKnockback {
             return pushed;
         }
         player.revivalBaseKnockTarget = victim;
-        return KnockbackEngine.knockback(motion(victim, current, profile), xd, zd, player.getYRot(), level, profile, victim.getAttributeValue(Attributes.KNOCKBACK_RESISTANCE), victim.getRandom());
+        final Vec3 knock = KnockbackEngine.knockback(motion(victim, current, profile), xd, zd, player.getYRot(), level, profile, victim.getAttributeValue(Attributes.KNOCKBACK_RESISTANCE), victim.getRandom());
+        // Neue's tipper and DI shape the whole fresh knock (docs/revival/neue-combat.md §6.2); classic returns it untouched.
+        // The overflow extra knock above is never shaped, as Combo's ExtraKnock isn't
+        return settings.rules().shapesKnock() ? NeueCombat.shapeMelee(knock, victim, player, settings.rules(), profile) : knock;
     }
 
     /**
