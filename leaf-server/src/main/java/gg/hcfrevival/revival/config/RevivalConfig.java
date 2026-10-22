@@ -24,7 +24,7 @@ import org.jspecify.annotations.Nullable;
  */
 public final class RevivalConfig {
 
-    public static final int CURRENT_VERSION = 2;
+    public static final int CURRENT_VERSION = 3;
 
     static final List<String> HEADER = List.of(
         "This is the main configuration file for RevivalPaper.",
@@ -186,6 +186,13 @@ public final class RevivalConfig {
         } else if (version < CURRENT_VERSION) {
             // Migrations from older versions go here, oldest first. 2 added combat-rules and legacy-combat.rules (Neue):
             // new keys that default to classic, so nothing moves
+            if (version < 3) {
+                // 3: defaults that changed. A file written by an older jar holds the old default for every key (defaults are
+                // written back), so a value equal to an old default moves to the new one; anything else the owner set stays
+                migrateDefault(reader, "authoritative.max-rewind-ms", AuthoritativeSettings.MAX_REWIND_MS, 300, 400); // now a sanity bound
+                migrateDefault(reader, "authoritative.rtt-ceiling-ms", AuthoritativeSettings.RTT_CEILING_MS, 300);
+                migrateDefault(reader, "authoritative.external-movers.entity-range", AuthoritativeSettings.EXTERNAL_MOVER_ENTITY_RANGE, 1.0); // contact only
+            }
             reader.set("config-version", CURRENT_VERSION);
         }
         if (!yaml.isConfigurationSection(ConfigReader.WORLD_SETTINGS + "." + ConfigReader.DEFAULT_WORLD)) {
@@ -209,6 +216,22 @@ public final class RevivalConfig {
             AuthoritativeSettings.read(reader),
             rules
         );
+    }
+
+    // A key still at one of its old defaults takes its new default (logged); a value the owner chose is left alone
+    static void migrateDefault(final ConfigReader reader, final String path, final double now, final double... old) {
+        final YamlConfiguration yaml = reader.config();
+        if (!yaml.contains(path) || !(yaml.get(path) instanceof final Number value)) {
+            return;
+        }
+        for (final double previous : old) {
+            if (value.doubleValue() == previous) {
+                final Object written = now == Math.rint(now) && value instanceof Integer ? (Object) (int) now : (Object) now;
+                reader.set(path, written);
+                LOGGER.info("revival.yml: {} was {} (the old default); it is now {} (the new default)", path, value, written);
+                return;
+            }
+        }
     }
 
     /** The outcome of {@link #reload()}: whether the new settings went live, and any values that fell back to defaults. */

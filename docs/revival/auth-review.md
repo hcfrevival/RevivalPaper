@@ -238,14 +238,16 @@ Three lenses (correctness, exploit, perf-threading) reviewed the tree around 22:
 
 ## Status (netcode, 2026-10-22)
 
-Every finding checked against the tree after HR-2/NW-2. "Test" names the unit test or live scenario that covers the fix.
+Every finding checked against the tree after HR-2/NW-2. Verified 02:20: unit 411/412 (the one failure is the sim's
+`VelocityAfterMoveTest.allocatesNothingOnceWarm`, flaky under load), live sync run `fd36e162` (all auth scenarios,
+cheat suite 82/82). "Test" names the unit test or live scenario that covers the fix.
 
 | id | status | what / why | test |
 |---|---|---|---|
 | timer-backlog-permanent | fixed | The timer's ack floor is per window (`ClientStream.Window.timerAckNanos`): a drain's pongs bind only later frames' windows, or a window whose TickEnd came `timer-ack-settle-ms` (100) after them; catch-up ticks of the same frame keep the stall's credit. A client answering pings without ticking still forfeits the idle time a settle later. | `ClientStreamTest.catchUpTicksAfterAStallKeepTheirCredit`, `answeringWhileSendingNoTicksStillForfeitsTheTime` |
 | mirrors-empty-after-activation | fixed | `AuthPlayer.repairMirrors(true)` at activation and after a resync re-pairs every tracked player (logged spawn); a periodic pass (`repair-interval-ticks`, spread by entity id) repairs missing or inexact mirrors in `exact-radius` that the path feed doesn't repair itself. | live: every cheat-suite combat scenario (victims join before the attacker activates) |
 | stale-stamp-stationary-targets | handed to combat | The stamp is `RemoteMirror`'s (auth/combat): an identical keep-alive move must refresh `displayStamp`. Netcode side ready to send keep-alives for off-mode player targets once the mirror takes them. | — |
-| rewind-cap-flat-300 | already fixed | HR-2: `CombatWiring.rewindCap` = rttBase + measured display + jitter + slack, ceiling `max-rewind-ms` 400. | `RewindCapTest`, live `combat: latency 1/3/5 ticks`, `combat: fake lag` |
+| rewind-cap-flat-300 | fixed | HR-2, then the Overwatch-style policy (2026-10-22): `CombatWiring.rewindCap` = `min(rttBase, rtt-ceiling-ms 250)` + measured display + jitter (spread capped at the ceiling) + slack; `max-rewind-ms` (600) is only a sanity bound; one method for melee, Neue's landing and projectiles. Config version 3 moves files still holding the old 300/400 to 600. | `RewindCapTest`, `RevivalConfigTest.oldDefaultsMoveToTheNewOnesAndOwnerValuesStay`, live `combat: an honest hit at 50/150/250 ms`, `at 300 ms on a target sprinting across`, `combat: fake lag` |
 | abort-destroy-after-accept-kick | fixed | `ClientStream.DRAIN_ABORT`: an ABORT_DESTROY_BLOCK right after an accept is a drain reply; replayed at its place, the truth's attack strength reset (`Simulation.resetAttackStrength`). | `ClientStreamTest.theAbortAfterAnAcceptIsADrainReply` |
 | teleport-accept-bookkeeping-kicks | fixed | No completion at arrival; `checkAccept` completes only pre-activation ids (older than the first teleport logged under authority); any other unawaited accept waits in `earlyAccepts` (bounded 8, matched at its teleport's apply, a protocol violation after 2 × deadline); forced and upper-bound applies don't await an accept; a lost log clears the bookkeeping. `acceptedBeforeAuthority` is gone (E11). | `ReviewFixesTest.vanillaTeleportIdsAreOrderedAcrossTheWrap`; live `teleport:` scenarios |
 | refused-window-drops-oneshot-state | fixed | `frozen` is recomputed before each window runs; refused windows still replay state-only packets (slot, input, sprint/shift commands, close, client command, abilities, PlayerLoaded); observe never refuses. | live `stall:` scenarios |
@@ -276,7 +278,7 @@ Every finding checked against the tree after HR-2/NW-2. "Test" names the unit te
 | PT-12 | fixed | Another container's slot packets take no snapshot; the inventory is re-read once per window at the ack. | live `inventory-move:` |
 | E7 | fixed | A window holding more than 4096 drain items or 65536 released entries overflows: a kick in enforce, authority off for the session in observe. | live `timer: TickEnd never sent` |
 | E8 | fixed | CLICK_WHILE_MOVING excuses click-then-close only if some tick since the last close sent no walking keys (the screen's opening). | `InputRulesTest.clickAndCloseEveryTickWhileWalkingNeverOpenedAScreen` |
-| E9 | fixed | The rotation comes only from a matched accept; non-finite rotations never reach the model in any mode; an unmatched accept is a protocol violation once it expires. | live `teleport: accept an id never sent` |
+| E9 | fixed | The rotation comes only from a matched accept; non-finite rotations never reach the model in any mode; an accept for an id vanilla never issued (`SGPLI.revivalLastTeleportId`) is a protocol violation at once, an unmatched issued one once it expires. | live `teleport: accept a vanilla id never sent` |
 | E10 | fixed | One log line per reason per minute (counts in `/revival auth inspect`); backwards or far-jumping prediction sequences are counted soft violations and never move `lastSequence`. | `WorldViewSequenceTest.aSequenceFarAheadIsRefusedAndDoesNotPoisonTheNextOnes` |
 | E11 | fixed | See teleport-accept-bookkeeping-kicks. | as above |
 | E12 | fixed | Level events (splashes, breaks, doors) and block-break progress near or by a hidden player are culled; hidden ids are forgotten on unpair and when their entity is gone. | live `visibility:` |

@@ -89,11 +89,14 @@ public final class CombatWiring implements ViewerMirrors, AttackJudge, Projectil
     private final MirrorBook.Sample capSample = new MirrorBook.Sample();
 
     /**
-     * The attacker's own rewind cap (pvp-issues HR-2): {@code rttBase + display + jitter + slack}, at most
-     * {@code max-rewind-ms}. {@code display} is measured from the attacker's own mirror of the target: how far the box its
-     * client shows at this tick (interpolating, K2) lags the newest position of the target it has acked. A rewind is then
-     * honest when {@code now - newest acked position <= rttBase + jitter + slack}: what the client could have seen is
-     * bounded by what it acked, so a client that holds pongs to keep an old view only makes its own view older.
+     * The attacker's own rewind cap (pvp-issues HR-2, Overwatch's policy): the attacker's ping compensated in full up to
+     * {@code rtt-ceiling-ms}, plus the display delay its client really has, plus its jitter allowance and the tick waits:
+     * {@code min(rttBase, rtt-ceiling-ms) + display + jitter + slack}. {@code display} is measured from the attacker's own
+     * mirror of the target: how far the box its client shows at this tick (interpolating, K2) lags the newest position of
+     * the target it has acked. A rewind is then honest when {@code now - newest acked position <= rtt + jitter + slack}:
+     * what the client could have seen is bounded by what it acked, so a client that holds pongs to keep an old view only
+     * makes its own view older. {@code max-rewind-ms} (600) is only a sanity bound on top. Past the ceiling a high-ping
+     * shooter's hits on moving players come back REWIND: it has to lead them (the judge refuses rather than clamps).
      */
     long rewindCap(final AuthPlayer attacker, final int targetId, final int tick, final AuthoritativeSettings settings) {
         final long rttBase = attacker.transactions().rttBaseNanos() / 1_000_000L;
@@ -101,9 +104,12 @@ public final class CombatWiring implements ViewerMirrors, AttackJudge, Projectil
         final long newest = attacker.newestStamp(targetId);
         final long shown = newest != Long.MIN_VALUE && book(attacker).sample(targetId, tick, this.capSample) ? this.capSample.stamp : Long.MIN_VALUE;
         final long display = displayDelay(newest, shown);
-        final long cap = cap(rttBase, rttHigh, display, settings.rewindJitterFactor(), settings.rewindSlackMs());
-        attacker.recordRewindCap(cap, display);
-        return Math.min(settings.maxRewindMs(), cap);
+        // The jitter spread is the client's own pongs too: no wider than the ceiling, or erratic pongs would buy a backtrack
+        final long spreadHigh = Math.min(rttHigh, rttBase + settings.rttCeilingMs());
+        final long cap = cap(Math.min(rttBase, settings.rttCeilingMs()), rttBase, spreadHigh, display, settings.rewindJitterFactor(), settings.rewindSlackMs());
+        final long bounded = Math.min(settings.maxRewindMs(), cap);
+        attacker.recordRewindCap(bounded, display);
+        return bounded;
     }
 
     /**
@@ -147,9 +153,13 @@ public final class CombatWiring implements ViewerMirrors, AttackJudge, Projectil
         return Math.max(0L, newestAcked - shownStamp);
     }
 
-    /** {@code rttBase + display + factor × (rttHigh − rttBase) + slack}, all in milliseconds, before the ceiling. */
-    static long cap(final long rttBase, final long rttHigh, final long display, final double jitterFactor, final long slack) {
-        return rttBase + display + Math.round(Math.max(0L, rttHigh - rttBase) * jitterFactor) + slack;
+    /**
+     * {@code compensated + display + factor × (rttHigh − rttBase) + slack}, all in milliseconds, before the sanity bound.
+     * {@code compensated} is the round trip made good ({@code min(rttBase, rtt-ceiling-ms)}); the jitter is the
+     * attacker's own spread (p90 − p10 of its ack round trips).
+     */
+    static long cap(final long compensated, final long rttBase, final long rttHigh, final long display, final double jitterFactor, final long slack) {
+        return compensated + display + Math.round(Math.max(0L, rttHigh - rttBase) * jitterFactor) + slack;
     }
 
     // The player a position-carrying tracker packet is about, or MIN_VALUE

@@ -79,7 +79,7 @@ class SimCollisionTest {
     @Test
     void solidEntityBoxesCollide() {
         final SimTestWorld world = new SimTestWorld().floor(63, Blocks.STONE.defaultBlockState());
-        world.entityBoxes.add(new AABB(-0.5, 64.0, 1.0, 1.5, 64.5625, 2.0));
+        world.solid(new AABB(-0.5, 64.0, 1.0, 1.5, 64.5625, 2.0));
         final SimPlayer p = box(0.5, 64.0, 0.5);
         // walking into a boat-height box steps up onto it (0.5625 < 0.6)
         this.sim.collide(p, world, 0.0, -0.0784000015258789, 0.5, this.out);

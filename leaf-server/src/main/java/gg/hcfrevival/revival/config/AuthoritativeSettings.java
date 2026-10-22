@@ -25,8 +25,8 @@ import gg.hcfrevival.revival.auth.AuthMode;
  *                              the client is stuck off the truth, where a relative one can't reach it
  * @param correctionPersistTicks a claim off the truth by less than the threshold this many ticks in a row is corrected
  *                               anyway, so every client converges
- * @param maxRewindMs lag compensation never rewinds further than this (anti-backtrack, ping spoof): the ceiling of the
- *                    per-attacker cap, {@code rttBase + the attacker's own display delay + jitter + rewind-slack-ms}
+ * @param maxRewindMs a sanity bound on the per-attacker rewind cap, {@code min(rttBase, rtt-ceiling-ms) + the attacker's
+ *                    own display delay + jitter + rewind-slack-ms}; the ceiling on ping is {@code rtt-ceiling-ms}
  * @param rewindJitterFactor the jitter allowance in that cap: this times the attacker's ack-RTT spread (p90 − p10)
  * @param rewindSlackMs the tick waits in that cap: a step waits for its flush, the client tick that shows it and the
  *                      attack's window for the server tick (up to 3 ticks)
@@ -36,9 +36,10 @@ import gg.hcfrevival.revival.auth.AuthMode;
  *                         its catch-up ticks, which the stall is owed
  * @param maxBankedTicks the most client ticks a player can run in a burst after a stall (the client's own cap is 10)
  * @param timerQueueCapMs a client tick over the time budget waits this long for budget before it is refused
- * @param rttCeilingMs the most round trip any slack granted to the client is sized from: the ack deadline, the
- *                     visibility growth and the correction lead use {@code min(rttBase, this)}, so a client that delays
- *                     its pongs to inflate its RTT can't stretch them (review E5); the rewind cap has its own ceiling
+ * @param rttCeilingMs the most round trip lag compensation makes good, and that any slack granted to the client is sized
+ *                     from: the rewind cap, the ack deadline, the visibility growth and the correction lead all use
+ *                     {@code min(rttBase, this)}, so a client that delays its pongs can't stretch them (review E5); past
+ *                     it a high-ping shooter has to lead moving players
  * @param ackJitterTicks a logged packet still unacked {@code ceil(rttBase / 50) + this} client ticks after it was sent
  *                       is applied to the truth anyway (§15.1)
  * @param maxUnackedMs a player whose oldest ping is unanswered this long (or whose client tick stays open this long) is
@@ -178,6 +179,10 @@ public record AuthoritativeSettings(
 ) {
 
     static final String PATH = "authoritative.";
+    /** Defaults that changed: {@code RevivalConfig}'s migration moves a file still holding an old default onto these. */
+    public static final int MAX_REWIND_MS = 600;
+    public static final int RTT_CEILING_MS = 250;
+    public static final double EXTERNAL_MOVER_ENTITY_RANGE = 0.1;
 
     private static String apolloRules(final ConfigReader reader) {
         final String value = reader.getString(PATH + "client-profiles.apollo-rules", "follow").trim().toLowerCase(java.util.Locale.ROOT);
@@ -225,14 +230,14 @@ public record AuthoritativeSettings(
             Math.max(1, reader.getInt(PATH + "max-corrections-per-second", 5)),
             Math.max(1, reader.getInt(PATH + "correction-repeat-limit", 2)),
             Math.max(1, reader.getInt(PATH + "correction-persist-ticks", 20)),
-            Math.max(0, reader.getInt(PATH + "max-rewind-ms", 400)),
+            Math.max(0, reader.getInt(PATH + "max-rewind-ms", MAX_REWIND_MS)),
             Math.max(0.0, reader.getDouble(PATH + "rewind-jitter-factor", 1.0)),
             Math.max(0, reader.getInt(PATH + "rewind-slack-ms", 150)),
             Math.max(0, reader.getInt(PATH + "timer-drift-ms", 120)),
             Math.max(0, reader.getInt(PATH + "timer-ack-settle-ms", 100)),
             Math.max(1, reader.getInt(PATH + "max-banked-ticks", 10)),
             Math.max(0, reader.getInt(PATH + "timer-queue-cap-ms", 1000)),
-            Math.max(50, reader.getInt(PATH + "rtt-ceiling-ms", 300)),
+            Math.max(50, reader.getInt(PATH + "rtt-ceiling-ms", RTT_CEILING_MS)),
             Math.max(0, reader.getInt(PATH + "ack-jitter-ticks", 4)),
             Math.max(100, reader.getInt(PATH + "max-unacked-ms", 1500)),
             vehicles(reader),
@@ -272,7 +277,7 @@ public record AuthoritativeSettings(
             Math.max(0.0, reader.getDouble(PATH + "external-movers.block-range", 14.0)),
             Math.max(0.0, reader.getDouble(PATH + "external-movers.band", 0.6)),
             Math.max(0.0, reader.getDouble(PATH + "external-movers.drift-cap", 1.6)),
-            Math.max(0.0, reader.getDouble(PATH + "external-movers.entity-range", 0.1)),
+            Math.max(0.0, reader.getDouble(PATH + "external-movers.entity-range", EXTERNAL_MOVER_ENTITY_RANGE)),
             Math.max(0.0, reader.getDouble(PATH + "external-movers.max-move", 1.0)),
             Math.max(0, reader.getInt(PATH + "external-movers.geyser-depth", 24)),
             reader.getBoolean(PATH + "debug.hud", false),

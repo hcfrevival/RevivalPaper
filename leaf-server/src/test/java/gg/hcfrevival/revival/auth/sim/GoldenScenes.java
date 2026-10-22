@@ -1,6 +1,9 @@
 package gg.hcfrevival.revival.auth.sim;
 
 import net.minecraft.core.Direction;
+import net.minecraft.util.Mth;
+import net.minecraft.world.entity.EntityTypes;
+import net.minecraft.world.entity.monster.Shulker;
 import net.minecraft.world.entity.player.Input;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.LadderBlock;
@@ -9,6 +12,8 @@ import net.minecraft.world.level.block.SlabBlock;
 import net.minecraft.world.level.block.StairBlock;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.block.state.properties.SlabType;
+import net.minecraft.world.phys.AABB;
+import net.minecraft.world.phys.Vec3;
 
 /**
  * Scripted movement scenes for {@link MovementSimGoldenTest}: a world, a start state and per-tick keys, rotation and
@@ -26,7 +31,8 @@ public final class GoldenScenes {
     public static final String[] NAMES = {
         "walk_sprint_jump", "stairs_step_up", "sneak_edge", "ice_slide", "water_swim", "lava_wade", "ladder_climb", "slime_bounce",
         "soul_sand_honey", "cobweb_fall", "knockback_air", "item_use_slow", "cardinal_wall", "bubble_column", "attack_slowdown",
-        "auto_jump_steps", "rocket_glide", "no_gravity"
+        "auto_jump_steps", "rocket_glide", "no_gravity", "boat_step_up", "boat_clutch", "boat_moving", "boat_sneak_edge", "shulker_auto_jump",
+        "ghast_from_above", "shulker_section_ceiling"
     };
 
     public static final int TICKS = 40;
@@ -56,7 +62,7 @@ public final class GoldenScenes {
 
     /** The client's auto-jump option in the scene (vanilla's default is off). */
     public static boolean autoJump(final String name) {
-        return name.equals("auto_jump_steps");
+        return name.equals("auto_jump_steps") || name.equals("shulker_auto_jump");
     }
 
     /** Whether the player wears an elytra in the scene. */
@@ -163,8 +169,81 @@ public final class GoldenScenes {
                     w.set(x, 1, 10, Blocks.STONE_SLAB.defaultBlockState().setValue(SlabBlock.TYPE, SlabType.BOTTOM));
                 }
             }
+            case "shulker_section_ceiling" -> {
+                // a low room in the section below y = 16, the shulker hanging from the ceiling block at y = 17
+                floor(w, stone, 12);
+                w.set(0, 17, 0, stone);
+            }
             default -> floor(w, stone, -1);
         }
+    }
+
+    // ------------------------------------------------------------------------------------------------ solid entities
+
+    /**
+     * A solid entity of a scene at one tick, as the client holds it when the player ticks: a boat, a shulker (attached to
+     * {@code face}, its lid at {@code rawPeek} percent, not moving) or a happy ghast (on its still timeout or not).
+     */
+    public record Solid(String kind, double x, double y, double z, Direction face, int rawPeek, boolean still) {
+        static Solid boat(final double x, final double y, final double z) {
+            return new Solid("boat", x, y, z, Direction.DOWN, 0, false);
+        }
+
+        static Solid shulker(final double x, final double y, final double z, final Direction face, final int rawPeek) {
+            return new Solid("shulker", x, y, z, face, rawPeek, false);
+        }
+
+        static Solid ghast(final double x, final double y, final double z, final boolean still) {
+            return new Solid("ghast", x, y, z, Direction.DOWN, 0, still);
+        }
+
+        /** The client's peek: {@code Shulker.updatePeekAmount}'s target, reached and held. */
+        public float peek() {
+            return this.rawPeek * 0.01F;
+        }
+
+        /**
+         * The client's bounding box: EntityDimensions.makeBoundingBox at the position (boat, adult ghast), or
+         * Shulker.makeBoundingBox, {@code getProgressAabb} of the physical peek {@code 0.5 - sin((0.5 + peek) pi) / 2}
+         * (Shulker.java:203-212).
+         */
+        public AABB box() {
+            return switch (this.kind) {
+                case "boat" -> EntityTypes.OAK_BOAT.getDimensions().makeBoundingBox(this.x, this.y, this.z);
+                case "ghast" -> EntityTypes.HAPPY_GHAST.getDimensions().makeBoundingBox(this.x, this.y, this.z);
+                default -> Shulker.getProgressAabb(1.0F, this.face.getOpposite(), 0.5F - Mth.sin((0.5F + this.peek()) * 3.1415927F) * 0.5F,
+                    new Vec3(this.x, this.y, this.z));
+            };
+        }
+
+        /** SimWorld.ENTITY_SOLID, or ENTITY_SOLID_FROM_ABOVE for a ghast off its still timeout. */
+        public int rule() {
+            return this.kind.equals("ghast") && !this.still ? SimWorld.ENTITY_SOLID_FROM_ABOVE : SimWorld.ENTITY_SOLID;
+        }
+    }
+
+    private static final Solid[] NONE = new Solid[0];
+
+    /**
+     * The scene's solid entities at tick {@code t}, before the player's tick: index {@code i} is the same entity every tick
+     * (null while it is not in the level). Each scene keeps its entities in one entity section, so the client's order is
+     * the order they were added: the index.
+     */
+    public static Solid[] solids(final String name, final int t) {
+        return switch (name) {
+            case "boat_step_up" -> new Solid[] {Solid.boat(0.5, 0.0, 2.5), Solid.boat(1.9, 0.0, 2.6), Solid.boat(0.7, 0.0, 6.0)};
+            // a boat placed under a falling player, gone again later
+            case "boat_clutch" -> new Solid[] {t >= 6 && t < 32 ? Solid.boat(2.5, 0.0, 2.5) : null};
+            // one boat crossing the player's path, one driving into the player
+            case "boat_moving" -> new Solid[] {Solid.boat(6.5 - 0.15 * t, 0.0, 2.5), Solid.boat(2.5, 0.0, 9.0 - 0.12 * t)};
+            case "boat_sneak_edge" -> new Solid[] {Solid.boat(0.5, 0.0, 0.5)};
+            case "shulker_auto_jump" -> new Solid[] {Solid.shulker(0.5, 0.0, 3.5, Direction.DOWN, 0), Solid.shulker(1.5, 0.0, 3.5, Direction.DOWN, 0),
+                Solid.shulker(0.5, 1.0, 3.5, Direction.DOWN, 0), Solid.shulker(2.5, 0.0, 7.5, Direction.DOWN, 100)};
+            // the player stands on a ghast, walks off it and back into its side; then it stays still around the player
+            case "ghast_from_above" -> new Solid[] {Solid.ghast(4.0, -2.0, 4.0, t >= 32)};
+            case "shulker_section_ceiling" -> new Solid[] {Solid.shulker(0.5, 16.0, 0.5, Direction.UP, 100)};
+            default -> NONE;
+        };
     }
 
     public static Start start(final String name) {
@@ -179,6 +258,11 @@ public final class GoldenScenes {
             case "bubble_column" -> new Start(0.5, 0.0, 0.5, 0.0F, 0.0F);
             case "attack_slowdown" -> new Start(6.5, 0.0, 0.5, 90.0F, 0.0F);
             case "rocket_glide" -> new Start(0.5, 30.0, 0.5, 20.0F, 10.0F);
+            case "boat_clutch" -> new Start(2.5, 12.0, 2.5, 0.0F, 0.0F);
+            case "boat_moving" -> new Start(2.5, 0.0, 0.5, 0.0F, 0.0F);
+            case "boat_sneak_edge" -> new Start(0.5, 0.5625, 0.5, 0.0F, 30.0F);
+            case "ghast_from_above" -> new Start(4.0, 2.0, 4.0, -90.0F, 0.0F);
+            case "shulker_section_ceiling" -> new Start(0.5, 13.0, 0.5, 0.0F, -30.0F);
             default -> new Start(0.5, 0.0, 0.5, 0.0F, 0.0F);
         };
     }
@@ -207,6 +291,13 @@ public final class GoldenScenes {
                 t == 5 ? "rocket 15" : t == 12 ? "rocket 12" : t == 30 ? "rocket 5" : null);
             case "no_gravity" -> new Step(keys(t < 2 ? "" : t < 30 ? "W" : "WJ"), 0.0F, 0.0F,
                 t == 4 ? "motion 0.1 0.5 0.0" : t == 8 ? "nogravity on" : t == 20 ? "nogravity off" : null);
+            case "boat_step_up" -> new Step(keys(t < 2 ? "" : t < 22 ? "WR" : t < 26 ? "WRJ" : "W"), t < 14 ? 0.0F : 12.0F, 0.0F, null);
+            case "boat_clutch" -> new Step(keys(t < 20 ? "" : t < 24 ? "W" : ""), 0.0F, 0.0F, null);
+            case "boat_moving" -> new Step(keys(t < 2 ? "" : t < 30 ? "W" : "WJ"), 0.0F, 0.0F, null);
+            case "boat_sneak_edge" -> new Step(keys(t < 2 ? "" : t < 22 ? "WC" : t < 30 ? "C" : "W"), t < 12 ? 0.0F : 50.0F, 30.0F, null);
+            case "shulker_auto_jump" -> new Step(keys(t < 2 ? "" : "WR"), t < 20 ? 0.0F : 15.0F, 0.0F, null);
+            case "ghast_from_above" -> new Step(keys(t < 2 ? "" : t < 4 ? "J" : t < 19 ? "WR" : t < 23 ? "" : "S"), -90.0F, 0.0F, null);
+            case "shulker_section_ceiling" -> new Step(keys(t == 3 || t == 20 ? "J" : t > 24 ? "W" : ""), 0.0F, -30.0F, null);
             default -> new Step(keys(""), 0.0F, 0.0F, null);
         };
     }

@@ -485,8 +485,7 @@ public final class NeueCombat {
             return;
         }
         state.begin(victim.getId(), null, distance, true);
-        state.enter();
-        attacker.attack(victim);
+        attacker.attack(victim); // beforeAttack enters the context: no token, no swing, no new context
         settle(attacker, state);
     }
 

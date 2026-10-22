@@ -1,7 +1,7 @@
 # The movement port (`auth.sim`)
 
 Status: stage 2 done, 2026-10-21, branch `revival/authoritative`; `velocityAfterMove` and the missing-chunk fix
-2026-10-22. Design: `authoritative.md` §4-5. Research:
+2026-10-22; solid entities (boats, shulkers, happy ghasts) 2026-10-22. Design: `authoritative.md` §4-5. Research:
 report 01 (the client movement pipeline and the proposed port), report 02 (what the client sends and applies), report
 07 (the rigs). This file covers what is ported, what proves it exact, what it costs and what stays out of scope.
 
@@ -20,16 +20,16 @@ server jar, so the same sources are proven against vanilla offline and run on th
 | `MoveVelocity` | `velocityAfterMove`'s work: the tick's start and its aiStep up to the move for each key combination, then the tick's after-move half for every reading of the move the world allows (§3.4). Created on first use. |
 | `SimPlayer` | The whole client-side state of one player (report 01 §11.2): kinematics, pose and dimensions, contact flags, supporting block, fall distance, stuck multiplier, fluid trackers, input, client timers (auto-jump included), shared flags, abilities, game modes, food, the client's copies of items, attributes and effects, exempt states, `movementThisTick`. Public fields; `copyFrom` forks it without allocating. |
 | `SimAttributes` | The attributes movement reads, with client `AttributeInstance` semantics: base + modifiers keyed by `Identifier`, fastutil `Object2ObjectOpenHashMap`/`Object2ObjectArrayMap` fed the client's history (so several `ADD_MULTIPLIED_TOTAL` modifiers multiply in the client's order), vanilla ranges, `applyUpdate` = `handleUpdateAttributes`. The maps are subclassed only to copy their tables and walk their values in fastutil's iterator order without allocating. |
-| `SimWorld` | The narrow world interface the port reads (report 01 §11.3): block and fluid states, chunk loaded, section has fluid, height range, border bounds, solid entity boxes, fast lava. `auth.view.WorldView` implements it live; the rigs over a map. |
+| `SimWorld` | The narrow world interface the port reads (report 01 §11.3): block and fluid states, chunk loaded, section has fluid, height range, border bounds, the solid entities the client holds (box, position, rule; auth-sim-requests.md §2), fast lava. `auth.view.WorldView` implements it live; the rigs over a map and, in the oracle fuzz, over real vanilla entities. |
 | `SimTickInput` | One tick's keys (`Input`, as the client sent them) and raw rotation. |
 | `ExemptReason` | Why a tick was not simulated: `PASSENGER`, `SLEEPING`, `DEAD`, `SPECTATOR_CAMERA`, `RIPTIDE`, `EXTERNAL_MOVER` (`NONE` when simulated). |
-| `SimCollision` | Vanilla collision: `BlockCollisions` (cursor order, face/edge rules, `joinIsNotEmpty` with the entity box), entity colliders, the world border, `Shapes.collide` with the 1e-7 early exit, `collideWithShapes` axis order, `Entity.collide`'s step-up (26.3 `maxUpStep` entity-box expansion, candidate heights), `noCollision`, suffocation, `findSupportingBlock`, `containsAnyLiquid`, and auto-jump's `getCollisions` scan. |
+| `SimCollision` | Vanilla collision: `BlockCollisions` (cursor order, face/edge rules, `joinIsNotEmpty` with the entity box), entity colliders (per query, from the world's candidates: the client's entity section lookup, box intersection, `canCollideWith` with the happy ghast's from-above rule, `Shapes.create`), the world border, `Shapes.collide` with the 1e-7 early exit, `collideWithShapes` axis order, `Entity.collide`'s step-up (26.3 `maxUpStep` entity-box expansion, candidate heights), `noCollision`, suffocation, `findSupportingBlock`, `containsAnyLiquid`, and auto-jump's `getCollisions` scan. |
 | `SimShape`, `ShapeCache` | Voxel shapes as data (coordinate lists, full cells, first/last full), read once per shape by identity; `VoxelShape.collideX`, `findIndex` and `toAabbs` ported, with moved (`OffsetDoubleList`, binary search) and unmoved (`CubeVoxelShape` floor) semantics; `Shapes.create` for boxes; the border ring. |
 | `SimCollisionContext` | The client's `CollisionContext.of(player)`: `EntityCollisionContext` semantics as a snapshot (entity bottom, descending, held item). |
 | `SimFluids` | `EntityFluidInteraction` (26.3): trackers per fluid holder, currents per tag, eye-in-fluid with `getHeightForCamera`, `hasFluidAndLoaded`, `applyCurrentTo` (players average), plus `FlowingFluid.getHeight/getFlow`. |
 | `SimBlocks` | `getOnPos`, jump and speed factors, `onClimbable` (trapdoor over ladder), `applyEffectsFromBlocks`: slime `stepOn`, the `checkInsideBlocks` walk (`forEachBlockIntersectedBetween`, `collidedAlongVector`) and the movement `entityInside` effects (cobweb with weaving, sweet berry bush, powder snow, honey slide, bubble columns). |
 | `SimClip` | `AABB.clip` and the long-fall `FALLDAMAGE_RESETTING`/water clip of `Entity.move`. |
-| `SimBox`, `SimBoxList`, `SimLevel` | A mutable `AABB` with vanilla arithmetic; a flat box list; a `BlockGetter` over `SimWorld` for vanilla's per-state data methods. |
+| `SimBox`, `SimBoxList`, `SimLevel` | A mutable `AABB` with vanilla arithmetic; a flat list of entity colliders (box, position, rule); a `BlockGetter` over `SimWorld` for vanilla's per-state data methods. |
 
 ## 2. API
 
@@ -108,7 +108,7 @@ Every method in the sources names the vanilla class, method and 26.3 line it mir
 | Velocity floor | players' horizontal `9.0E-6` and vertical `0.003` floor |
 | Travel | `LivingEntity.travel`, `travelInAir` (FRICTION_MODIFIER, AIR_DRAG_MODIFIER, levitation, slow falling, no gravity; no unloaded-chunk `-0.1` on a client, §6), `travelInFluid`/`travelInWater`/`travelInLava` (water efficiency = depth strider, dolphins grace, fluid-falling adjustment, `jumpOutOfFluid`), `handleOnClimbable` (scaffolding exception), `getFrictionInfluencedSpeed` (ice variants by block friction), `Player.getFlyingSpeed`, swimming look pull |
 | `Entity.move` | stuck multiplier, edge back-off, collide, long-fall clip, `movementThisTick`, collision flags, `LocalPlayer.isHorizontalCollisionMinor`, `checkSupportingBlock`, `checkFallDamage` with the mid-move fluid update, `restituteMovementAfterCollisions` (26.3 bounce rules), block speed factor (`MOVEMENT_EFFICIENCY` lerp: soul sand, soul speed's attribute) |
-| Collision | §1 `SimCollision`, `SimShape`; world border; scaffolding standing/descending and powder snow (falling, leather boots) through the context |
+| Collision | §1 `SimCollision`, `SimShape`; world border; scaffolding standing/descending and powder snow (falling, leather boots) through the context; solid entities: `EntityGetter.getEntityCollisions` (`Level.getEntities` over `EntitySectionStorage`'s section range, `canCollideWith`: `AbstractBoat`, `Shulker`, `HappyGhast.canBeCollidedWith`), in `Entity.collide`, `noCollision` and auto-jump's `getCollisions` (§3.5) |
 | Fluids | §1 `SimFluids`; `Entity.updateFluidInteraction`, `Player.updateSwimming`, `LocalPlayer.isUnderWater` (`wasUnderwater`), lava halving fall distance |
 | Blocks | slime `stepOn`; cobweb (weaving), sweet berry bush, powder snow (stuck in its own block, freeze flag, `canEntityWalkOnPowderSnow`), honey slide, bubble columns (precise, above/inside); climbable tag and trapdoor ladders. Magma's `stepOn` only hurts (server side), soul speed is an attribute the server syncs |
 | Pose | `updatePlayerPose` (crawling, swimming), `Avatar.POSES` dimensions scaled by `SCALE`, refresh on pose change and at tick end for `SCALE` |

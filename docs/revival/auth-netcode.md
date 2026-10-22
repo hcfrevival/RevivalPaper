@@ -182,10 +182,10 @@ All under `authoritative.` (defaults in brackets):
 | `correction-persist-ticks` [20] | a claim off by less than the threshold this many ticks in a row is corrected anyway |
 | `correction-repeat-limit` [2] | the same correction (or accepts that keep needing one) this many times goes out absolute |
 | `max-corrections-per-second` [5] | |
-| `max-rewind-ms` [400], `rewind-jitter-factor` [1.0], `rewind-slack-ms` [150] | the per-attacker rewind cap (HR-2): rttBase + display + jitter + slack, at most `max-rewind-ms` |
+| `max-rewind-ms` [600], `rewind-jitter-factor` [1.0], `rewind-slack-ms` [150] | the per-attacker rewind cap (HR-2, one method for melee, Neue's landing and projectiles): `min(rttBase, rtt-ceiling-ms)` + the client's measured display delay + jitter (spread capped at the ceiling) + slack; `max-rewind-ms` is only a sanity bound. Past the ceiling a high-ping shooter's hits on moving players come back REWIND (it has to lead them) |
 | `attack-eye-offset-cap` [0.5] | off the truth, attacks are cast from the claim only within this per axis (review E3) |
 | `timer-drift-ms` [120], `timer-ack-settle-ms` [100], `max-banked-ticks` [10], `timer-queue-cap-ms` [1000] | the tick clock; pongs bind the timer for later frames, or after the settle (review timer-backlog) |
-| `rtt-ceiling-ms` [300] | slack (deadlines, visibility growth, correction lead) is sized from `min(rttBase, this)` (review E5) |
+| `rtt-ceiling-ms` [250] | the ping lag compensation makes good, and what every slack (deadlines, visibility growth, correction lead) is sized from: `min(rttBase, this)` (review E5) |
 | `ack-jitter-ticks` [4], `max-unacked-ms` [1500] | ack deadline; past `max-unacked-ms` the player is frozen (NW-2: never kicked for a stall) |
 | `client-profiles.protocol-kick-rate` [20], `client-profiles.apollo-rules` [`follow`] | §15.8: ordering-only violations kick only past this many in 60 s; Apollo options read into the profile |
 | `ineligible` [`allow`] | `deny` refuses ViaVersion/Geyser players while the mode is enforce (review E4) |
@@ -249,6 +249,9 @@ async tracker on (the second run) authority refuses.
 - World border lerp and entity colliders (boats, shulkers, happy ghasts) are not modelled: a tick touching one, or over
   a potent sulfur geyser, is exempt (vanilla takes the claim within `external-movers.max-move`, a re-seed after);
   colliders are requested from the port (auth-sim-requests §2). Pistons and shulker boxes are banded, rod pulls modelled.
+- Config version 3 moves a file still holding an old default to the new one (`max-rewind-ms` 300/400 → 600,
+  `rtt-ceiling-ms` 300 → 250, `external-movers.entity-range` 1.0 → 0.1); values an owner chose stay. Defaults are still
+  written back into revival.yml, so every future default change needs such a rule.
 - Kick policy (§15.8): only forged or unknown replies, skipped pings, overflow (a 512-packet tick, 4096 drain replies or
   65536 released entries) and a second move claim kick at once; ordering-only violations are counted (named in
   `inspect`) and kick past `protocol-kick-rate` in 60 s; a stall freezes. The keep-alive RTT isn't used against the

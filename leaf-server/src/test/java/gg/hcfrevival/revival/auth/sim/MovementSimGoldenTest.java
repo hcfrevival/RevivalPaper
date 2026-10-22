@@ -16,8 +16,10 @@ import org.junit.jupiter.params.provider.ValueSource;
  * The port against vanilla 26.3's own movement code, bit for bit: each {@link GoldenScenes} scene (walking, sprint
  * jumps, stairs, sneaking at an edge, ice, water, lava, ladders, slime, soul sand and honey, cobwebs, knockback, item
  * use, a cardinal yaw along a wall, a bubble column, attack slowdown, auto-jump over steps, an elytra glide boosted by
- * firework rockets, no gravity) replayed on the port must give the positions and
- * flags vanilla's Player code produced for it on the auth-rig oracle ({@link GoldenData}).
+ * firework rockets, no gravity; and solid entities: stepping onto boats, landing on a placed boat, moving boats, sneaking
+ * at a boat's edge, auto-jumping onto shulkers, a happy ghast only solid from above, a shulker lid the client's section
+ * lookup misses) replayed on the port must give the positions and flags vanilla's Player code produced for it on the
+ * auth-rig oracle ({@link GoldenData}), where the entities were real vanilla ones.
  */
 @RevivalTest
 @RevivalRegistries
@@ -27,7 +29,8 @@ class MovementSimGoldenTest {
     @ValueSource(strings = {
         "walk_sprint_jump", "stairs_step_up", "sneak_edge", "ice_slide", "water_swim", "lava_wade", "ladder_climb", "slime_bounce",
         "soul_sand_honey", "cobweb_fall", "knockback_air", "item_use_slow", "cardinal_wall", "bubble_column", "attack_slowdown",
-        "auto_jump_steps", "rocket_glide", "no_gravity"
+        "auto_jump_steps", "rocket_glide", "no_gravity", "boat_step_up", "boat_clutch", "boat_moving", "boat_sneak_edge", "shulker_auto_jump",
+        "ghast_from_above", "shulker_section_ceiling"
     })
     void sceneMatchesVanilla(final String name) {
         int index = -1;
@@ -52,6 +55,13 @@ class MovementSimGoldenTest {
         final List<int[]> rockets = new ArrayList<>();
         for (int t = 0; t < GoldenScenes.TICKS; t++) {
             final GoldenScenes.Step step = GoldenScenes.step(name, t);
+            // the solid entities as the client holds them for this tick, in its order
+            world.solids.clear();
+            for (final GoldenScenes.Solid solid : GoldenScenes.solids(name, t)) {
+                if (solid != null) {
+                    world.solid(solid.box(), solid.x(), solid.y(), solid.z(), solid.rule());
+                }
+            }
             if (step.action() != null) {
                 final String[] a = step.action().split(" ");
                 switch (a[0]) {

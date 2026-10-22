@@ -162,6 +162,31 @@ public final class SimShape {
         return EMPTY;
     }
 
+    /**
+     * Whether {@code Shapes.create} gives this box as an {@code ArrayVoxelShape} over one full cell (Shapes.java:56-88):
+     * not degenerate, and some axis not on the 1/8 grid of [0, 1]. Any box away from the origin is, so entity colliders
+     * nearly always are.
+     */
+    static boolean isArrayBox(final double minX, final double minY, final double minZ, final double maxX, final double maxY, final double maxZ) {
+        return !(maxX - minX < 1.0E-7) && !(maxY - minY < 1.0E-7) && !(maxZ - minZ < 1.0E-7)
+            && (findBits(minX, maxX) < 0 || findBits(minY, maxY) < 0 || findBits(minZ, maxZ) < 0);
+    }
+
+    /** An array box shape to fill with {@link #setArrayBox}: the same data {@link #create} builds for such a box. */
+    static SimShape arrayBox() {
+        return new SimShape(new double[2], new double[2], new double[2], new boolean[] {true}, new int[] {0, 0, 0}, new int[] {1, 1, 1}, false, false);
+    }
+
+    /** Refills an {@link #arrayBox} shape (only those): its coordinate lists are the box's bounds. */
+    void setArrayBox(final double minX, final double minY, final double minZ, final double maxX, final double maxY, final double maxZ) {
+        this.xs[0] = minX;
+        this.xs[1] = maxX;
+        this.ys[0] = minY;
+        this.ys[1] = maxY;
+        this.zs[0] = minZ;
+        this.zs[1] = maxZ;
+    }
+
     /** {@code Shapes.block()}: a CubeVoxelShape of one full cell. */
     static final SimShape BLOCK = new SimShape(new double[] {0.0, 1.0}, new double[] {0.0, 1.0}, new double[] {0.0, 1.0}, new boolean[] {true},
         new int[] {0, 0, 0}, new int[] {1, 1, 1}, true, true);

@@ -1,6 +1,6 @@
 # Authoritative cheat suite
 
-Status: 2026-10-21, branch `revival/authoritative`. Code:
+Status: 2026-10-22, branch `revival/authoritative`. Code:
 `leaf-server/src/revivalLiveTest/java/gg/hcfrevival/revival/livetest/AuthCheatScenarios.java`, registered after
 `AuthLiveScenarios` in `RevivalLiveTests`. Design: `authoritative.md` (§1 threat model, §14 proof, §15 binding).
 
@@ -43,204 +43,126 @@ Tip while other agents rebuild: the runner unpacks into the shared `leaf-server/
 during a run corrupts it (`ZipFile invalid LOC header`). A copy of the script, the two jars and the cache under a scratch
 root (the script finds everything relative to itself) runs isolated.
 
-## Results (tree at 21:45, run `d51d72d3`)
+## Results (tree at 02:20 on 2026-10-22, run `fd36e162`)
 
-51 of 70 scenarios pass. 7 cheats still leak (bold); 12 lines are an honest client hurt by the server's own handling: 9
-correction loops after a cheat (A) and 3 honest hits refused by the fix for the combat leaks (B, C).
+82 of 82 scenarios pass: every cheat blocked, every honest control unaffected (sync-tracker run; the async run has no
+cheat suite, authority refuses there). The three `honest:` joins at the top guard the load-test regression of
+2026-10-22 (a truth that fell through the floor of a crowd joining together). The latency controls follow the rewind-cap
+policy of 2026-10-22 (ping made good up to `rtt-ceiling-ms` 250, plus the client's own display delay, jitter and tick
+waits): honest hits land at 50, 150 and 250 ms, and at a steady 300 ms on a target sprinting across the line of sight
+(rewind 445 ms, cap 513 ms). Past roughly 350-400 ms of steady ping, hits on moving players come back REWIND. Outcomes as
+printed by the suite:
 
 | # | Cheat | Outcome | Evidence |
 |---|---|---|---|
-| 1 | fly: claims rising 0.25/tick | blocked, honest client affected (A) | claimed +7.5; truth and ServerPlayer y max +0.0; 29 corrections |
-| 2 | fly: jump then hover | blocked, honest affected (A) | claims held ≥ +1.0 for 38 ticks; truth y max +1.2522 (a jump), landed; 36 corrections |
-| 3 | speed: 1.5x the walk | blocked | truth = honest walk (5.1369, gap 0); claims up to 0.216 ahead; 24 corrections |
-| 4 | step-up 1.0 | blocked | truth = honest path; claimed standing on the block; truth y +0, z stops 1.2e-8 short of the face |
-| 5 | phase through a wall | blocked | claimed 5.0 past the face; truth/ServerPlayer z stop at the face; 29 corrections |
-| 6 | phase through a closed door | blocked | same as 5 |
-| 7 | vclip 6 down through the floor | blocked, honest affected (A) | claimed y -6; truth/ServerPlayer y min +0; 14 corrections |
-| 8 | spider (climb a plain wall) | blocked, honest affected (A) | claimed +5; truth = honest path, y +0; 24 corrections |
-| 9 | jesus (walk on water) | blocked, honest affected (A) | claims crossed the water; truth never stood on it, sank to -1.83; 22 corrections |
-| 10 | no-fall (onGround through 12 blocks) | blocked | 9.0 damage, an honest fall 9.0 (server fall distance 10.81 both); 18 onGround lies counted |
-| 11 | no-slow sneaking | blocked | truth = honest sneak (1.6922, gap 0); claims up to 0.233 ahead |
-| 12 | no-slow blocking | blocked | truth = honest blocking walk (1.0274, gap 0); claims up to 0.266 ahead |
-| 13 | anti-KB: pongs, claims ignore the knock | blocked, honest affected (A) | truth and ServerPlayer knocked 3.20 back, +1.25 up; 19 corrections; forced 0 |
-| 14 | anti-KB: withhold every pong | blocked | 27 entries forced at the deadline (5 windows); knock on the truth (+2.17); frozen at 1740 ms; kicked at 4990 ms "Timed out (no transaction replies)" |
-| 15 | anti-KB: delay pongs 3 ticks | bounded (lag within the deadline) | knock lands at window +3, the client's choice; deadline 5 |
-| 16 | anti-KB: delay pongs 9 ticks | blocked, honest affected (A) | knock forced at +5, not the client's +9 |
-| 17 | anti-KB: batch two knocks past the deadline | blocked, honest affected (A) | first knock lands alone (window 22), second at 24; 12 forced |
-| 18 | pongs out of order | blocked | kicked "Invalid transaction replies" |
-| 19 | pong: unknown id in our band | blocked | kicked |
-| 20 | pong: future id | blocked | kicked |
-| 21 | pong: duplicate of an acked id | blocked | ignored, counted as a duplicate, no violation |
-| 22 | pong: foreign ids (4242, -1234) | blocked | passed through, no violation |
-| 23 | pong after a keybind packet | blocked (counted only) | 1 grammar violation; no kick; no movement gain |
-| 24 | timer 22 tps for 4 s | blocked | 82 of 88 windows ran in 4002 ms (budget 91); truth walked exactly 82 ticks |
-| 25 | timer 30 tps for 4 s | blocked | 90 of 120 ran (budget 91), 8 refused past the 1 s queue cap |
-| 26 | blink 1.2 s, then a burst | blocked | ServerPlayer frozen during the blink; burst ran 10 of 24 at once (bank 10), then ≤ 1 per tick |
-| 27 | 15 tps for 3 s, then 10 at once | blocked | the ack clock let 2 of 10 run at once |
-| 28 | **TickEnd never sent** | **leaked** | nobody moved, but the open window held 661 packets (cap 512); no kick, no freeze |
-| 29 | two move claims in one window | blocked (counted only) | 1 grammar violation; neither claim taken; not kicked (vanilla kicks) |
-| 30 | **accept a server teleport with spoofed coordinates** | **leaked** | ServerPlayer at +6.0 for 10 ticks (vanilla took the accept's coordinates) |
-| 31 | **never accept a server teleport** | **leaked** | truth took the teleport and walked 4.06 on; ServerPlayer frozen 4.06 blocks away |
-| 32 | **accept an id never sent (correction band)** | **leaked** | fake wall worked as control; after the accept `sentCount` 10 → 0 and the truth walked 5.02 past the fake wall |
-| 33 | accept a vanilla id never sent | blocked | nothing moved; counted as an accept mismatch |
-| 34 | NaN position claim | blocked | kicked "Invalid move player packet received"; no non-finite packet out |
-| 35 | infinite position claim | blocked | kicked "Invalid transaction replies" |
-| 36 | NaN rotation claim | blocked | kicked |
-| 37 | NaN accept for a server teleport | blocked | vanilla kick |
-| 38 | NaN accept for our correction | blocked | counted; correction not left in flight |
-| 39 | 1e-7 creep into a door (epsilon 0) | blocked | truth stayed at the face after 100 creeping claims |
-| 40 | 1e-7 creep into a fence gate (epsilon 0) | blocked | same |
-| 41 | 0.9e-10 creep into a door (epsilon 1e-10) | blocked | 1300 claims: truth 9.9e-10 in from touching, never past the face (`RebaseGuard` + `clearPath`) |
-| 42 | 0.9e-10 creep down into the floor (epsilon 1e-10) | blocked | gravity resets it every tick |
-| 43 | claims 0.05 inside a wall | blocked | truth at the face; 5 corrections |
-| 44 | combat control: honest hit at 2.5 | passes | valid, lands |
-| 45-47 | reach 3.5 / 4.5 / 6.0 | blocked | each judged invalid, no hit |
-| 48 | through a wall at 2.5 | blocked | invalid |
-| 49 | killaura without aim | blocked | invalid |
-| 50 | 5 attacks in one window | blocked | 1 lands, 4 over cap |
-| 51 | control after the cheats | passes | lands |
-| 52 | reach 4.5 while a server teleport is pending | blocked | not delivered |
-| 53 | control: honest hit at 2.5 while a teleport is pending | **honest affected (B)** | refused |
-| 54 | backtrack past the rewind cap (pongs held 500 ms) | blocked | invalid |
-| 55-56 | after one lag spike past the ack deadline: no-aim / reach 4.5 | blocked | not delivered |
-| 57 | control: honest hit after that lag spike | **honest affected (C)** | refused (victim mirror stays inexact) |
-| 58-59 | after a pong placed behind an attack: no-aim / reach 4.5 | blocked | not delivered |
-| 60 | control: honest hit after that | **honest affected (C)** | refused |
-| 61 | autoblock (attack while blocking) | blocked | grammar drop |
-| 62 | **attack in the window that closes a screen** | **leaked** | landed, 0 grammar violations |
-| 63 | inventory-move (container click while walking) | blocked | click not handled |
-| 64 | mount under `vehicles: deny` | blocked | forced mount refused |
-| 65 | attack while riding (`vehicles: vanilla`) | blocked | exempt 11 ticks, attack refused |
-| 66 | place a block without holding one, stand on it | blocked, honest affected (A) | no prediction admitted; truth never on it, walked through the spot |
-| 67 | spam placements with block acks held | blocked | 5 predictions, all expired at the deadline with acks still held; every sequence acked |
-| 68 | break a protected block, walk through | blocked | refused break is no prediction; truth stops at it |
-| 69 | **self-echo: STOP_SPRINTING before acking the sprint attribute sync** | **leaked (bounded)** | the truth kept the sprint modifier while not sprinting for 2 ticks |
-| 70 | **self-echo: drop sprint without STOP_SPRINTING, ack the sync late** | **leaked** | 31 ticks with the sprint modifier and no sprint: walks 0.2806/tick (sprint speed), honest walk 0.2159 |
+| 1 | honest: 5 players join 2 ticks apart on a floor, then walk | honest | Crowd1 not kicked; Crowd1 corrections 0; Crowd1 exact 28/28; Crowd1 walked (z +4.3134); Crowd1 stands on the floor (y -60.0000); Crowd2 not kicked; Crowd2 corrections 0; Crowd2 exact 28/28; Crowd2 walked (z +4.3134); Crowd2 stands on the floor (y -60.0000);... |
+| 2 | honest: a player joins into chunks still being sent, then walks | honest | Crowd6 not kicked; Crowd6 corrections 0; Crowd6 exact 28/28; Crowd6 walked (z +4.3134); Crowd6 stands on the floor (y -60.0000) |
+| 3 | honest: 3 bots that report loaded before their chunk arrives join, then walk (the load-test regression) | honest | Crowd7 not kicked; Crowd7 corrections 0; Crowd7 exact 28/28; Crowd7 walked (z +4.3134); Crowd7 stands on the floor (y -60.0000); Crowd8 not kicked; Crowd8 corrections 0; Crowd8 exact 28/28; Crowd8 walked (z +4.3134); Crowd8 stands on the floor (y -60.0000);... |
+| 4 | fly: claims rising 0.25/tick | blocked | claimed up to +7.5000; truth y max +0.0000; ServerPlayer y max +0.0000; corrections 12 (accepted 12); honest again: 0 corrections, 12/12 claims exact |
+| 5 | fly: jump then hover | blocked | claims held at +1.0 or more for 38 ticks; truth y max +1.2522 (a jump); truth landed (y +0.0000); ServerPlayer y max +1.2522; corrections 12; honest again: 0 corrections, 12/12 claims exact |
+| 6 | speed: claims 1.5x the walk | blocked | truth is the honest path after 25 ticks (moved 5.1369, reference 5.1369, gap 0.0000); claims ran up to 1.6179 ahead of the truth; ServerPlayer z max +5.1369; corrections 9; honest again: 0 corrections, 12/12 claims exact |
+| 7 | step: 1.0 block step-up | blocked | truth is the honest path after 30 ticks (moved 2.2000, reference 2.2000, gap 0.0000); claimed standing on the block (+1.0000); truth max y +0.0000, max z -1.192e-08 past the face; ServerPlayer y max +0.0000; corrections 6; honest again: 0 corrections, 12/12... |
+| 8 | phase: through a wall | blocked | truth is the honest path after 30 ticks (moved 2.2000, reference 2.2000, gap 0.0000); claimed 5.0000 past the face; truth z max -1.192e-08 past touching; ServerPlayer z max -1.192e-08 past touching; corrections 12; honest again: 0 corrections, 12/12 claims ... |
+| 9 | phase: through a closed door | blocked | truth is the honest path after 30 ticks (moved 2.2000, reference 2.2000, gap 0.0000); claimed 5.0000 past the face; truth z max -1.192e-08 past touching; ServerPlayer z max -1.192e-08 past touching; corrections 12; honest again: 0 corrections, 12/12 claims ... |
+| 10 | vclip: claims 6 blocks down through the floor | blocked | claimed y -6.0000; truth y min 0.0000; ServerPlayer y min 0.0000; corrections 6; honest again: 0 corrections, 12/12 claims exact |
+| 11 | spider: claims climbing a plain wall | blocked | truth is the honest path after 25 ticks (moved 0.2000, reference 0.2000, gap 0.0000); claimed +5.0000; truth y max +0.0000; ServerPlayer y max +0.0000; corrections 9; honest again: 0 corrections, 12/12 claims exact |
+| 12 | jesus: claims walking on water | blocked | claims crossed the water to z +6.6385; truth stood on the water surface for 0 ticks; truth sank to -1.8302, ServerPlayer to -1.8302; corrections 12; honest again: 0 corrections, 12/12 claims exact |
+| 13 | no-fall: claims onGround through a 12-block fall | blocked | fall damage 9.0, an honest fall took 9.0 (server fall distance 10.8065 vs 10.8065); onGround lies counted: 18; truth landed (y +0.0000); honest again: 0 corrections, 12/12 claims exact |
+| 14 | no-slow: sneaking at walking speed | blocked | truth is the honest path after 25 ticks (moved 1.6922, reference 1.6922, gap 0.0000); claims ran up to 2.0848 ahead of the truth; corrections 8; honest again: 0 corrections, 12/12 claims exact |
+| 15 | no-slow: blocking with a sword at walking speed | blocked | truth is the honest path after 25 ticks (moved 1.0274, reference 1.0274, gap 0.0000); the server player is blocking; claims ran up to 2.3827 ahead of the truth; corrections 9; honest again: 0 corrections, 12/12 claims exact |
+| 16 | anti-knockback: pongs normally, claims ignore the knock | blocked | truth knocked 3.2022 back, +1.2523 up; ServerPlayer knocked 3.2022; the client was corrected: 3 corrections, 3 accepted, forced 0; claim now 0.0000 from the truth; honest again: 0 corrections, 12/12 claims exact |
+| 17 | anti-knockback: withhold every pong | blocked | unacked entries force-applied: 28 (deadline 5 windows); the knock reached the truth without an ack (z +2.1730); frozen after 1749 ms without a pong; windows refused while frozen: 6; still frozen after 5003 ms, not kicked (); the knock stayed on the truth (z... |
+| 18 | stall: 4.5 s with nothing in or out, walking | honest | not kicked (); frozen during the stall; running again; recovered with 1 correction(s); honest again: 0 corrections, 12/12 claims exact |
+| 19 | stall: 12.0 s with nothing in or out, standing | honest | not kicked (); frozen during the stall; running again; recovered with 0 correction(s); honest again: 0 corrections, 12/12 claims exact |
+| 20 | anti-knockback: delay pongs 3 ticks to choose when the knock lands | bounded (lag within the deadline) | the knock landed at window +3, the client's choice +3, within the deadline 5 (forced 0); corrections 0; honest again: 0 corrections, 12/12 claims exact |
+| 21 | anti-knockback: delay pongs 9 ticks to choose when the knock lands | blocked | the knock landed at window +5, not the client's +9 (deadline 5, forced 58); forced entries 58; corrections 2; honest again: 0 corrections, 12/12 claims exact |
+| 22 | anti-knockback: batch two knocks into one drain past the deadline | blocked | the first knock reached the truth on its own (window 22); the second one after it (window 24); forced entries 13; honest again: 0 corrections, 12/12 claims exact |
+| 23 | pongs: answered out of order | blocked | kicked: 'Invalid transaction replies'; transaction violations 1, stats 1 |
+| 24 | pongs: unknown id in our band | blocked | kicked: 'Invalid transaction replies'; transaction violations 1, stats 1 |
+| 25 | pongs: future id | blocked | kicked: 'Invalid transaction replies'; transaction violations 1, stats 1 |
+| 26 | pongs: duplicate of an acked id | blocked | not kicked ; no violation (transactions 0, stats 0, duplicates 1); honest again: 0 corrections, 12/12 claims exact |
+| 27 | pongs: foreign ids | blocked | not kicked ; no violation (transactions 0, stats 0, duplicates 0); honest again: 0 corrections, 12/12 claims exact |
+| 28 | pongs: pong placed after a keybind packet | blocked | grammar violation counted: 1; counted, not kicked ; the knock reached the truth (z +2.9502); applied at its pong, not forced (0); honest again: 0 corrections, 12/12 claims exact |
+| 29 | grammar: two PlayerInput packets in one tick | blocked | counted, not kicked ; grammar violation counted: 1; the last input before the move is the tick's: no jump, no correction (0); honest again: 0 corrections, 12/12 claims exact |
+| 30 | timer: 22 tps for 4 s | blocked | windows run 83 of 88 sent in 4000 ms (real-time budget 91); the extra ticks waited or were refused: queued 5, refused 0; the truth walked 17.6567, no further than 83 ticks of walking (17.6567); honest again: 0 corrections, 12/12 claims exact |
+| 31 | timer: 30 tps for 4 s | blocked | windows run 90 of 120 sent in 4000 ms (real-time budget 91); the extra ticks waited or were refused: queued 30, refused 7; past timer-queue-cap-ms windows are refused: 7; the truth walked 17.6567, no further than 83 ticks of walking (17.6567); honest again:... |
+| 32 | timer: blink (1.2 s without packets, then the burst) | blocked | during the blink the ServerPlayer stayed (z +0.0000); the burst ran 10 of 24 windows at once (bank 10); then at most 2 per server tick; the truth walked 6.0003 for 29 windows; refused 0, queued 15; honest again: 0 corrections, 12/12 claims exact |
+| 33 | timer: 15 tps for 3 s, then a 10-tick burst | blocked | the ack clock let 3 of 10 run at once (cap 6, bank 10); honest again: 0 corrections, 12/12 claims exact |
+| 34 | timer: TickEnd never sent | blocked | nothing moved: windows run 0, truth z +0.0000; grammar violations 1; the open window holds 4 packets (cap 512); kicked, frozen false |
+| 35 | timer: two move claims in one window | blocked | grammar violation counted: 1; neither claim was taken (truth z +0.0000); kicked; kicked, no honest phase |
+| 36 | teleport: accept a server teleport with spoofed coordinates | blocked | ServerPlayer y max +0.0000 (0 ticks at the spoofed height); the accept was flagged: mismatches 1; the truth took the teleport (z 0.0000, y 0.0000); the ServerPlayer is back on the truth; honest again: 0 corrections, 12/12 claims exact |
+| 37 | teleport: never accept a server teleport | blocked | the truth took the teleport and walked on (z +4.0576 past it); the ServerPlayer follows the truth (it is 0.0000 away, at z +4.0576); counted, not kicked ; counted after the ack deadline: {a server teleport was never accepted=>1}; honest again: 0 corrections... |
+| 38 | teleport: accept an id never sent (correction band) to drop fake walls | blocked | control: the fake wall stops truth and client alike (z -1.192e-08, corrections 0); the truth still stops at the fake wall (z max -1.192e-08 past it; sent states 10 -> 10); the accept counted: violations 1; kicked, no honest phase |
+| 39 | teleport: accept a vanilla id never sent | blocked | nothing moved; flagged: violations 1, accept mismatches 0; kicked, no honest phase |
+| 40 | non-finite: NaN position claim | blocked | truth and ServerPlayer stay finite; non-finite position packets sent to the client: 0; windows handled without an exception (0 thrown); rejected: kicked 'Invalid move player packet received'; corrections 0; kicked, no honest phase |
+| 41 | non-finite: infinite position claim | blocked | truth and ServerPlayer stay finite; non-finite position packets sent to the client: 0; windows handled without an exception (0 thrown); rejected: kicked 'Invalid transaction replies'; corrections 0; kicked, no honest phase |
+| 42 | non-finite: NaN rotation claim | blocked | truth and ServerPlayer stay finite; non-finite position packets sent to the client: 0; windows handled without an exception (0 thrown); rejected: kicked 'Invalid move player packet received'; corrections 0; kicked, no honest phase |
+| 43 | non-finite: NaN accept for a server teleport | blocked | ServerPlayer finite; kicked: 'Invalid transaction replies' |
+| 44 | non-finite: NaN accept for our correction | blocked | truth and ServerPlayer finite; the NaN accept counted: violations 1; kicked or the correction is not left in flight (corrections 1, reconciler violations 0, kicked true); kicked, no honest phase |
+| 45 | creep: 1e-7 per tick into a closed door (rebase-epsilon 0) | blocked | touching the face (-1.192e-08); after 100 creeping claims the truth sat 0.0000 inside, then reached -1.192e-08 past the face; claims exact 23/120, corrections while creeping 4, in all 5; honest again: 0 corrections, 12/12 claims exact |
+| 46 | creep: 1e-7 per tick into a closed fence gate (rebase-epsilon 0) | blocked | touching the face (-1.192e-08); after 60 creeping claims the truth sat 0.0000 inside, then reached -1.192e-08 past the face; claims exact 23/82, corrections while creeping 2, in all 3; honest again: 0 corrections, 12/12 claims exact |
+| 47 | creep: 0.9e-10 per tick into a closed door (rebase-epsilon 1e-10, its max) | blocked | touching the face (-1.192e-08); after 1300 creeping claims the truth sat 9.900e-10 inside, then reached -1.093e-08 past the face; claims exact 35/1263, corrections while creeping 61, in all 62; honest again: 0 corrections, 12/12 claims exact |
+| 48 | creep: 0.9e-10 per tick down into the floor (rebase-epsilon 1e-10) | blocked | gravity sets the truth back on the floor every tick (min 0.0000); exact 1/96, corrections 4; honest again: 0 corrections, 12/12 claims exact |
+| 49 | overlap: claims 0.05 inside a wall | blocked | claimed 0.0500 inside; truth z max -1.192e-08 past the face; corrections 5; honest again: 0 corrections, 12/12 claims exact |
+| 50 | combat: honest hit at 2.5 (control) | control | an honest hit lands: landed 1 of 1 (judged valid 1, invalid 0, over cap 0) |
+| 51 | combat: reach 3.5 | blocked | refused: landed 0 of 1 (judged valid 0, invalid 1, over cap 0) |
+| 52 | combat: reach 4.5 | blocked | refused: landed 0 of 1 (judged valid 0, invalid 1, over cap 0) |
+| 53 | combat: reach 6.0 | blocked | refused: landed 0 of 1 (judged valid 0, invalid 1, over cap 0) |
+| 54 | combat: through a wall at 2.5 | blocked | refused: landed 0 of 1 (judged valid 0, invalid 1, over cap 0) |
+| 55 | combat: killaura without aim (target 2 blocks to the side) | blocked | refused: landed 0 of 1 (judged valid 0, invalid 1, over cap 0) |
+| 56 | combat: 5 attacks in one window (autoclicker) | blocked | landed 1 of 5 (judged valid 5, invalid 0, over cap 4) |
+| 57 | combat: honest hit at 2.5 after the cheats (control) | control | an honest hit lands: landed 1 of 1 (judged valid 1, invalid 0, over cap 0) |
+| 58 | combat: reach 4.5 while a server teleport is pending | blocked | refused: landed 0 (teleport pending true, judged valid 0, invalid 1) |
+| 59 | combat: honest hit at 2.5 while a server teleport is pending (control) | control | an honest hit lands: landed 1 (teleport pending true, judged valid 1, invalid 0) |
+| 60 | combat: backtrack past the rewind cap (pongs held 500 ms) | blocked | refused: landed 0 (forced 12, judged valid 0, invalid 1) |
+| 61 | combat: one lag spike past the ack deadline -> then killaura without aim | blocked | refused: landed 0 of 1 (judged valid 0, invalid 1, over cap 0) |
+| 62 | combat: one lag spike past the ack deadline -> then reach 4.5 | blocked | refused: landed 0 of 1 (judged valid 0, invalid 1, over cap 0) |
+| 63 | combat: one lag spike past the ack deadline -> then an honest hit at 2.5 (control) | control | an honest hit lands: landed 1 of 1 (judged valid 1, invalid 0, over cap 0) |
+| 64 | combat: a pong placed after an attack in its window | blocked | counted, not kicked ; counted: {a pong after the tick's keybinds=>1}; the attack before the pong landed 1 (judged at its place) |
+| 65 | combat: a pong placed after an attack in its window -> then killaura without aim | blocked | refused: landed 0 of 1 (judged valid 0, invalid 1, over cap 0) |
+| 66 | combat: a pong placed after an attack in its window -> then reach 4.5 | blocked | refused: landed 0 of 1 (judged valid 0, invalid 1, over cap 0) |
+| 67 | combat: a pong placed after an attack in its window -> then an honest hit at 2.5 (control) | control | an honest hit lands: landed 1 of 1 (judged valid 1, invalid 0, over cap 0) |
+| 68 | combat: an honest hit at 50 ms of latency (control) | control | an honest hit lands: landed 1 of 1 (judged valid 1, invalid 0, over cap 0) |
+| 69 | combat: an honest hit at 150 ms of latency (control) | control | an honest hit lands: landed 1 of 1 (judged valid 1, invalid 0, over cap 0) |
+| 70 | combat: an honest hit at 250 ms of latency (control) | control | an honest hit lands: landed 1 of 1 (judged valid 1, invalid 0, over cap 0) |
+| 71 | combat: an honest hit at 300 ms of latency on a target sprinting across | control | an honest hit lands: landed 1 (judged valid 1, invalid 0; rewind 445 ms, cap 513 ms, display 102 ms, rtt base 344 ms, verdict VALID) |
+| 72 | combat: fake lag (pongs on time, the victim's movement shown 10 ticks late) | blocked | refused: landed 0 (judged valid 0, invalid 1, verdict INVALID MISSED) |
+| 73 | combat: attack while blocking (autoblock) | blocked | refused: landed 0 while blocking true (judged valid 0) |
+| 74 | combat: attack in the window that closes a screen | blocked | refused: landed 0 (judged valid 0, grammar violations 0) |
+| 75 | inventory-move: container click while walking | blocked | refused: clicks handled 0 with the tick's keys holding forward (grammar violations 0) |
+| 76 | vehicles: mount under enforce (authoritative.vehicles: deny) | blocked | a forced mount is refused (passenger false) |
+| 77 | combat: attack from an exempt state (riding) | blocked | riding (authoritative.vehicles: vanilla) is exempt (11 ticks); refused: landed 0 (judged valid 0) |
+| 78 | world: place a block without holding one, stand on it | blocked | no prediction admitted (0) and no block placed; the truth never stood on it (y max +0.0000); the truth walked through the spot (z +4.9893); corrections 6; honest again: 0 corrections, 12/12 claims exact |
+| 79 | world: spam placements with block acks held | blocked | first placement made; diagnostics: hand 63 minecraft:stone, windows 22, refused 0, queued 0, grammar 0, predictions refused 0, loaded true, in range true, pos (24.5, -60.0, -7.5), unobstructed true, entities there [], awaiting teleport null; the first block... |
+| 80 | world: break a protected block, walk through before the revert | blocked | the refused break is no prediction (0), the block stands; the truth stops at it (z -1.192e-08); corrections 7; honest again: 0 corrections, 12/12 claims exact |
+| 81 | self-echo: STOP_SPRINTING before acking the sprint attribute sync | blocked | ticks the truth kept the sprint modifier while not sprinting: 0 (speed attribute now 0.1000); walking 0.2159/tick, honest walk 0.2159; combat reads the simulated sprint (false, truth false); self attribute syncs carrying the sprint modifier: 2; ServerPlayer... |
+| 82 | self-echo: sprint dropped without STOP_SPRINTING, attribute sync acked late | blocked | ticks the truth kept the sprint modifier while not sprinting: 0 (speed attribute now 0.1000); walking 0.2159/tick, honest walk 0.2159; combat reads the simulated sprint (false, truth false); self attribute syncs carrying the sprint modifier: 2; ServerPlayer... |
 
-Leaked earlier today and fixed by the netcode agent during this session (re-run green at 21:45): reach 4.5 and killaura
-without aim through `UNKNOWN` verdicts (teleport pending, forced entries, pong after an attack: `UNKNOWN` fell back to
-Paper's `entity range + 3` check); autoblock; inventory-move; NaN/infinite claims (a NaN correction was sent, then
-`Reconciler.bounded` threw `IllegalArgumentException: min is NaN` in every window); NaN rotations taken silently; riding
-attackers (now `vehicles: deny`); the 1e-10 creep (the truth sat 8.8e-8 inside a door before `RebaseGuard`/`clearPath`).
+82 of 82 blocked.
 
-## Leaks: root cause and fix
+## Since the 21:45 run (51 of 70)
 
-Line numbers are the tree at 21:45 (other agents were editing; method names are stable).
+Fixed by the netcode, each with its scenario above:
 
-### TickEnd never sent (#28)
-
-`ClientStream.record` (`auth/net/ClientStream.java:226-227`) adds the packet to the window before checking `MAX_ITEMS`,
-so the cap only counts a violation: a client that never ends a tick buffers without bound (661 packets in 5.5 s here,
-unbounded in general) and is never frozen or kicked, because the freeze only looks at unanswered pings. Nobody moves, so
-it is a memory and stall exploit, not a movement one.
-
-Fix: when `window.items >= MAX_ITEMS`, drop the packet and treat it as a protocol violation (kick in enforce); and add
-an open-window age limit (no `TickEnd` for `max-unacked-ms` while packets keep coming → frozen, 3x → kicked), the same
-rule as unanswered pings.
-
-### Spoofed accept for a server teleport (#30)
-
-`AuthPlayer.onTeleportAccept` (`auth/AuthPlayer.java:627-636`) returns `false` for vanilla teleport ids, so vanilla's
-`handleAcceptTeleportPacket` runs and ends with `handlePlayerPositionChange(packet.x(), packet.y(), packet.z(), ...)`
-(`ServerGamePacketListenerImpl.java:834`, hooked in patch 1011 line 111): the client's coordinates become the
-`ServerPlayer`'s, with `PlayerMoveEvent` and every side effect, until the window's `TickEnd` writes the truth back.
-Holding the `TickEnd` holds the spoofed position (10 ticks here; nothing bounds it, see #28). Any server teleport works:
-pearls, `/spawn`, plugin setbacks; the accept's position may be anywhere vanilla's own move check allows (about 10 blocks).
-
-Fix: in enforce, consume vanilla accepts too. A patch-1011 method such as `revivalAcceptServerTeleport()` does vanilla's
-bookkeeping (`absSnapTo(awaitingPositionFromClient)`, `lastGood*`, `awaitingPositionFromClient = null`) and skips the
-`handlePlayerPositionChange` with the packet's coordinates; `checkAccept` already judges the accept as a claim.
-
-### Never accepting a server teleport (#31)
-
-The truth takes the teleport at its pong (`AuthPlayer.apply`, `SELF_POSITION`, line 1475-1486) and keeps simulating, but
-`revivalApplyTruth` writes nothing while vanilla waits for the accept (`if (this.hasClientLoaded() &&
-!this.updateAwaitingTeleport())`, `ServerGamePacketListenerImpl.java:1583`, patch 1012 line 27), and Paper disabled the
-resend (`if (false && ...)`, line 1932). So the client walks on with legal physics while its hitbox stays at the
-destination: it attacks from the truth's eye (the judge uses the simulation), others can only hit the frozen body, and
-Paper's own range check measures from the body (up to 6 blocks).
-
-Fix: in enforce the teleport is complete at its pong window (§15.3). At that point clear vanilla's awaiting state
-(the same patch method as above, called from `apply(SELF_POSITION)`), so `revivalApplyTruth` writes again; if the accept
-never follows its pong, count it and kick after the ack deadline like a missing correction accept.
-
-### Accept with a correction id never sent (#32)
-
-`AuthPlayer.checkAccept` (line 1454) treats an accept in the correction band that is not in flight as "a teleport we did
-not model" and calls `resync()`, whose `this.world.clear()` (line 1692) drops every persistent sent state, plugin fake
-blocks included (HCF combat and claim walls). One forged packet, no kick, and the truth walks through every fake wall
-the client still has (5.02 blocks past it here).
-
-Fix: our correction ids are ours alone, so an unknown one is a protocol violation like an unknown pong (kick in enforce,
-§15.1). Independently, `resync()` must never clear `WorldView.sent`: those entries are what the client was sent, which a
-resync from the server does not change; only `pinned` and `predictions` may go.
-
-### Attack in the window that closes a screen (#62)
-
-The rule exists (`InputRules`: `CONTAINER_CLOSE` sets `closed`, line 99; `ATTACK_AFTER_CLOSE`, line 115) but
-`handleContainerClose` is not intercepted (`ServerGamePacketListenerImpl.java:3269`, missing from patch 1011), so the
-close is handled at once and never enters a window: 0 grammar violations, the attack lands.
-
-Fix: hook the network entry `handleContainerClose(ServerboundContainerClosePacket)` (the one-argument overload, so
-server-initiated closes through the two-argument one stay immediate) with `if (this.player.revivalAuth.intercept(packet))
-return;`, list it in `markers.txt`, and replay it in the window's GUI part.
-
-### Sprint modifier kept without sprint (#69, #70)
-
-`SelfEcho.attributes` (`auth/view/SelfEcho.java:100`) decides the `sprinting` modifier from the simulation's sprint state
-when the packet is sent. A movement-speed sync sent while sprinting and acked after the client stopped sprinting
-re-adds the modifier: `SimAttributes.applyUpdate` (`auth/sim/SimAttributes.java:81`) replaces the modifiers with the
-packet's, as the vanilla client does (MC-69459). With `STOP_SPRINTING` the server's own resync removes it a round trip
-later (2 ticks here); without it the server never resends, and the client and the truth walk at sprint speed without
-sprinting (0.2806 vs 0.2159 per tick, 31 ticks and counting). §15.4 says the truth must not copy MC-69459.
-
-Fix: in `PortSimulation.attributes` (line 183) strip `sprinting` from the `movement_speed` snapshot and re-apply it from the
-simulation's own sprint flag, so the truth never has it while not sprinting (the client gets corrected). To spare honest
-clients the corrections, also resend `movement_speed` (through `SelfEcho`) whenever the simulation's sprint state changes
-while a sync that says the opposite is still unacked.
-
-## Honest clients hurt by the server
-
-### (A) Correction loop after a large divergence
-
-After the cheats in rows 1, 2, 7, 8, 13, 16, 17 and 66 the client, honest again, is corrected every tick forever
-(`dpos (0, +0.0784, 0)`, absolute velocity `(0, -0.0784, 0)`, 12 corrections in 12 ticks, no claim compared). Cause:
-the accept-residual path in `AuthPlayer.checkAccept` (line 1448) sends `sendCorrection(dx, dy, dz, sim.vx(), sim.vy(),
-sim.vz(), false)`: Δ is `truth(T-1) - accept(T)`, but the client applies it one tick later, after it already ran tick T
-from the accepted state. Whenever that tick differs from the truth's (here the accepted state was in the air, the truth on
-the ground), the client lands off by that difference: 0.0784 inside the floor, where vanilla collision no longer stops it,
-so it falls 0.0784 again before the next identical correction. A vanilla client does exactly the same; any correction
-that lands it inside a block traps it. Row 9 shows the mild version (1 correction, then claims 2e-4 off forever).
-
-Fix: propagate the residual like the main path (`sim.correction`): re-base the belief on the accept (position, and the
-velocity the correction gave), run truth and belief over the ticks until the client applies the next packet (at least 1),
-send that Δ; if the propagated belief box overlaps a collision shape, send an absolute position instead of a relative one.
-
-### (B) Honest hit while one's own server teleport is pending
-
-`AuthPlayer.runAttack` only judges when `teleportsPending == 0` (line 1053); otherwise the verdict stays `UNKNOWN`, and
-player targets now need `VALID` (line 1072). A pearl and an immediate hit loses the hit. Fix: judge it anyway; the
-windows in flight are simulated from the pre-teleport state, which is where the client really is.
-
-### (C) Honest hits after one lag spike or a misplaced pong
-
-Entries force-applied at the ack deadline are applied with `exact = false` (line 799) and events that arrive after their
-tick ran (a pong placed after an attack, which is only counted, line 612) call `markInexact` (`MirrorBook.java:185-189,
-311`). Exactness only comes back on a spawn (`RemoteMirror.java:167`), so `HitValidator` returns `UNKNOWN` for that target
-(`INEXACT_TARGET`, `HitValidator.java:82`) for as long as both stay in range, and since `UNKNOWN` no longer delivers, an
-ordinary 250 ms lag spike makes that player unhittable for the rest of the fight. Fixes: re-pair the target on that
-viewer (fresh `AddEntity` from `PathWiring`) as soon as it is marked inexact, so the mirror is exact again within a few
-ticks; and make a pong after a keybind packet a protocol violation (kick in enforce, like the other pong rules) instead
-of applying it late.
+- **TickEnd never sent**: a window past 512 packets, 4096 drain replies or 65536 released entries overflows (a kick in
+  enforce, authority off for the session in observe); an open window counts toward the freeze.
+- **Spoofed / never / forged accepts**: server teleports complete at their pong and vanilla never takes an accept's
+  coordinates; an accept for an id vanilla never issued, or a correction id never sent, is a protocol violation at once
+  (§15.8); a teleport never accepted is counted, not kicked (the truth applied it: no gain). A resync never clears the
+  sent block states.
+- **Attack in the window that closes a screen**: dropped (vanilla's `missTime = 10000` drops those clicks).
+- **Sprint modifier kept without sprint**: the truth's sprint comes from the simulation (§15.5), and a speed sync in
+  flight is followed by a fresh one when the sprint changes before its ack.
+- **Honest clients hurt (A, B, C)**: corrections forecast to the apply tick and go absolute when they keep missing or
+  after refused ticks; honest hits while one's own teleport is pending or after a lag spike are judged on re-paired,
+  exact mirrors; the rewind cap is per attacker (HR-2).
+- **Stalls (NW-2)** freeze and recover with one correction; **ordering-only violations** (a pong or accept after the
+  keybinds, a second input or sprint command) are counted and kick only past `client-profiles.protocol-kick-rate`.
 
 ## Smaller observations
 
-- Two move claims in one window and a pong after a keybind are counted, never refused or kicked (§15.4 says rejected).
-  No gain was found from either.
-- A client within `correction-threshold` but not exact (the budget path) is never corrected and never exact again: row
-  12's honest phase and the floor creep end with claims 0/12 exact and 0 corrections. Harmless, but `compared - exact`
-  stops meaning "something is wrong".
+- A client within `correction-threshold` but not exact is corrected after `correction-persist-ticks` (20) in a row.
 - The truth stops 1.192e-8 short of every wall face (the same in the client: the port is exact). Tolerances in the suite
   are 1e-9 elsewhere and 1e-7 for "touching".
-- An accept for a vanilla id that was never sent is only a `teleportAcceptMismatches` count, not a violation (§15.1 says
-  flag and resync).
+- Joins: a client that reports itself loaded before it holds its chunk (bots, not vanilla) is exempt `chunk-unknown`
+  while it claims ground over a chunk our record lacks, so the truth never falls through a floor the client stands on.

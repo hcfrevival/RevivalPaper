@@ -264,6 +264,7 @@ final class AuthCheatScenarios {
         this.combatLatency(1);
         this.combatLatency(3);
         this.combatLatency(5);
+        this.combatLatencyMoving(6);
         this.combatFakeLag();
         this.combatAutoblock();
         this.combatContainerClose();
@@ -1516,6 +1517,60 @@ final class AuthCheatScenarios {
             + this.c.auth.lastHitRewindMillis() + " ms, cap " + this.c.auth.lastRewindCap() + " ms (display " + this.c.auth.lastDisplayDelay() + " ms), verdict "
             + this.c.auth.lastHitVerdict()));
         this.step(1, id + ": done", this::leaveAll);
+    }
+
+    // The rewind-cap policy (2026-10-22): ping made good up to rtt-ceiling-ms (250) plus the client's own display delay,
+    // jitter and tick waits. Expected at 300 ms on a target sprinting across the line of sight: the hit lands (the ceiling
+    // plus the 150 ms tick-wait slack still covers a 300 ms round trip and its waits); past roughly 350-400 ms of steady
+    // ping, hits on moving players come back REWIND and the shooter has to lead (RewindCapTest.pastTheCeiling...)
+    private void combatLatencyMoving(final int ticks) {
+        final String id = "combat: an honest hit at " + ticks * 50 + " ms of latency on a target sprinting across";
+        this.combatJoin(id);
+        this.step(1, id + ": latency", () -> this.c.latencyTicks = ticks);
+        // A steady ping, not one just switched on: rttBase (the p10 of 256 round trips) has to have caught up, or the
+        // deadline still sized from the old ping forces every entry and the mirror goes inexact
+        this.step(320, id + ": the round trip settles", () -> this.tests.getLogger().info("REVIVAL_CHEAT_NOTE " + id + ": rtt base "
+            + this.c.auth.transactions().rttBaseNanos() / 1_000_000L + " ms"));
+        this.step(1, id + ": the target takes its place", () -> {
+            this.open(id);
+            this.label = "CONTROL";
+            this.place(-1.8, 2.2); // it crosses in front, inside reach (3.0) when the attack is made
+        });
+        // A teleport leaves the attacker's mirror inexact until the feed re-spawns it (replication.repair-interval-ticks);
+        // the yaw is set after the teleport (which turns the target to face the attacker) reached its client
+        this.step(30, id + ": the target sprints across", () -> {
+            this.v.yaw = -90.0F; // facing +x: across the attacker's line of sight
+            this.v.keys = FORWARD_SPRINT;
+        });
+        this.step(8, id + ": aim where the attacker's client shows it, attack", () -> {
+            this.base = this.snap(this.c);
+            this.attacksBase = this.attacksOf(this.c);
+            final gg.hcfrevival.revival.auth.combat.RemoteMirror shown = CombatWiring.book(this.c.auth).mirror(this.v.player.getId());
+            final Simulation s = this.c.auth.simulation();
+            if (shown != null) {
+                final double dx = shown.x() - s.x();
+                final double dy = shown.y() + shown.height() * 0.5 - (s.y() + s.eyeHeight());
+                final double dz = shown.z() - s.z();
+                this.c.yaw = (float) Math.toDegrees(Math.atan2(-dx, dz));
+                this.c.pitch = (float) -Math.toDegrees(Math.atan2(dy, Math.sqrt(dx * dx + dz * dz)));
+                this.tests.getLogger().info("REVIVAL_CHEAT_NOTE " + id + ": mirror exact " + shown.exact() + ", present " + shown.present()
+                    + ", target speed " + f(this.v.auth.simulation().vx()));
+            }
+            this.attack(this.c, 1);
+        });
+        this.judge(4, id, () -> {
+            final Snap d = this.delta(this.c);
+            final int landed = this.attacksOf(this.c) - this.attacksBase;
+            this.honestExpect(landed == 1 && d.attacksAccepted() == 1, "an honest hit lands: landed " + landed + " (judged valid " + d.attacksAccepted()
+                + ", invalid " + d.attacksRejected() + "; rewind " + this.c.auth.lastHitRewindMillis() + " ms, cap " + this.c.auth.lastRewindCap()
+                + " ms, display " + this.c.auth.lastDisplayDelay() + " ms, rtt base " + this.c.auth.transactions().rttBaseNanos() / 1_000_000L
+                + " ms, verdict " + this.c.auth.lastHitVerdict() + ")");
+        });
+        this.step(1, id + ": verdict", () -> {
+            this.v.keys = NONE;
+            this.record();
+            this.leaveAll();
+        });
     }
 
     private void combatFakeLag() {

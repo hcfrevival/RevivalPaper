@@ -16,13 +16,14 @@ import net.minecraft.world.phys.AABB;
 /**
  * An in-memory {@link SimWorld} for tests (the offline rig's RigWorld without the vanilla oracle): a sparse block map,
  * every chunk loaded unless {@link #unload}ed (then void air, like the client's EmptyLevelChunk), a far border, optional
- * solid entity boxes.
+ * solid entities (in the order added, which stands for the client's).
  */
 final class SimTestWorld implements SimWorld {
 
     private final Long2ObjectOpenHashMap<BlockState> blocks = new Long2ObjectOpenHashMap<>();
     private final Long2IntOpenHashMap sectionFluids = new Long2IntOpenHashMap();
-    final List<AABB> entityBoxes = new ArrayList<>();
+    /** Solid entities as the client holds them, in its order: box, position, rule ({@code SimWorld.ENTITY_*}). */
+    final List<Solid> solids = new ArrayList<>();
     private final LongOpenHashSet unloaded = new LongOpenHashSet();
     double borderMinX = -2.9999984E7;
     double borderMinZ = -2.9999984E7;
@@ -47,6 +48,19 @@ final class SimTestWorld implements SimWorld {
                 this.set(x, y, z, state);
             }
         }
+        return this;
+    }
+
+    record Solid(AABB box, double x, double y, double z, int rule) {
+    }
+
+    /** A solid entity at the bottom centre of its box (a boat, a shulker on the floor). */
+    SimTestWorld solid(final AABB box) {
+        return this.solid(box, (box.minX + box.maxX) * 0.5, box.minY, (box.minZ + box.maxZ) * 0.5, SimWorld.ENTITY_SOLID);
+    }
+
+    SimTestWorld solid(final AABB box, final double x, final double y, final double z, final int rule) {
+        this.solids.add(new Solid(box, x, y, z, rule));
         return this;
     }
 
@@ -117,9 +131,12 @@ final class SimTestWorld implements SimWorld {
 
     @Override
     public void collectEntityColliders(final SimBox area, final SimBoxList out) {
-        for (final AABB b : this.entityBoxes) {
+        // indexed: an iterator allocates unless escape analysis removes it, which allocation tests must not count on
+        for (int i = 0; i < this.solids.size(); i++) {
+            final Solid e = this.solids.get(i);
+            final AABB b = e.box();
             if (b.intersects(area.minX, area.minY, area.minZ, area.maxX, area.maxY, area.maxZ)) {
-                out.add(b.minX, b.minY, b.minZ, b.maxX, b.maxY, b.maxZ);
+                out.add(b.minX, b.minY, b.minZ, b.maxX, b.maxY, b.maxZ, e.x(), e.y(), e.z(), e.rule());
             }
         }
     }

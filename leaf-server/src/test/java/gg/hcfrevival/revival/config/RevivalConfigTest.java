@@ -58,6 +58,29 @@ class RevivalConfigTest {
     }
 
     @Test
+    void oldDefaultsMoveToTheNewOnesAndOwnerValuesStay() throws Exception {
+        // Version 3: a file an older jar wrote holds every old default; those move, values the owner chose don't
+        Files.writeString(this.file.toPath(), """
+            config-version: 2
+            authoritative:
+              max-rewind-ms: 300
+              rtt-ceiling-ms: 280
+              external-movers:
+                entity-range: 1.0
+            """);
+
+        RevivalConfig.init(this.file);
+
+        final AuthoritativeSettings settings = RevivalConfig.settings().authoritative();
+        assertEquals(AuthoritativeSettings.MAX_REWIND_MS, settings.maxRewindMs(), "300 was the old default: now a sanity bound of 600");
+        assertEquals(280, settings.rttCeilingMs(), "an owner's own value stays");
+        assertEquals(AuthoritativeSettings.EXTERNAL_MOVER_ENTITY_RANGE, settings.externalMoverEntityRange());
+        final YamlConfiguration saved = YamlConfiguration.loadConfiguration(this.file);
+        assertEquals(RevivalConfig.CURRENT_VERSION, saved.getInt("config-version"));
+        assertEquals(AuthoritativeSettings.MAX_REWIND_MS, saved.getInt("authoritative.max-rewind-ms"));
+    }
+
+    @Test
     void malformedFileStopsStartupAndIsNotOverwritten() throws Exception {
         Files.writeString(this.file.toPath(), BROKEN);
 

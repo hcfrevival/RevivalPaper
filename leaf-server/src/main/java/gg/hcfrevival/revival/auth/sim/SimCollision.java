@@ -20,13 +20,18 @@ import net.minecraft.world.phys.shapes.VoxelShape;
  * Collider lists keep vanilla's order (entities, border, blocks in cursor order) because {@code Shapes.collide} returns
  * 0 as soon as the remaining distance is under 1e-7, so order matters at that scale.
  * <p>
- * Not thread-safe; one per {@link MovementSim}. Reuses its scratch state, so the hot path does not allocate (entity
- * colliders, rare, allocate their shapes).
+ * Entity colliders come from {@link SimWorld#collectEntityColliders} as candidates; each query picks its own the way
+ * the client's {@code Level.getEntities} does (section lookup, box intersection, {@code canCollideWith}).
+ * <p>
+ * Not thread-safe; one per {@link MovementSim}. Reuses its scratch state, so the hot path does not allocate (an entity
+ * box on the 1/8 grid of [0, 1], only possible at the origin, allocates its shape).
  */
 final class SimCollision {
 
     /** PowderSnowBlock.FALLING_COLLISION_SHAPE, {@code Shapes.box(0, 0, 0, 1, 0.8999999761581421, 1)}. */
     private static final SimShape POWDER_SNOW_FALLING = SimShape.create(0.0, 0.0, 0.0, 1.0, 0.8999999761581421, 1.0);
+    /** How far past a query the entity candidates are asked for, so the tick's other queries reuse them. */
+    private static final double CANDIDATE_MARGIN = 2.0;
 
     final SimLevel level = new SimLevel();
     final ShapeCache shapes = new ShapeCache();
@@ -38,6 +43,11 @@ final class SimCollision {
     private final Colliders step = new Colliders();
     private final Colliders entities = new Colliders();
     private final SimBoxList entityBoxes = new SimBoxList();
+    // the entity candidates the world gave for candidateArea, until the world is bound again
+    private final SimBoxList entityCandidates = new SimBoxList();
+    private final SimBox candidateArea = new SimBox();
+    private boolean candidatesValid;
+    private final SimBox entityArea = new SimBox();
     private final SimBox area = new SimBox();
     private final SimBox stepBox = new SimBox();
     private final SimBox grounded = new SimBox();
@@ -62,11 +72,13 @@ final class SimCollision {
     private double fallDistance;
     private boolean leatherBoots;
     private double sourceX;
+    private double sourceY;
     private double sourceZ;
 
-    /** The world the following queries read. */
+    /** The world the following queries read; its entity candidates are asked for afresh. */
     void world(final SimWorld world) {
         this.level.world(world);
+        this.candidatesValid = false;
     }
 
     /**
@@ -80,6 +92,7 @@ final class SimCollision {
         this.fallDistance = player.fallDistance;
         this.leatherBoots = player.feet.getItem() == Items.LEATHER_BOOTS;
         this.sourceX = player.x;
+        this.sourceY = player.y;
         this.sourceZ = player.z;
     }
 
@@ -242,7 +255,10 @@ final class SimCollision {
 
     // ------------------------------------------------------------------------------------------------ gathering
 
-    /** EntityGetter.getEntityCollisions (EntityGetter.java:54-72): nothing for a box under 1e-7, else the inflated query. */
+    /**
+     * EntityGetter.getEntityCollisions (EntityGetter.java:54-72): nothing for a box under 1e-7, else
+     * {@code Shapes.create(entity.getBoundingBox())} of each entity the inflated query finds, in its order.
+     */
     private void gatherEntities(final SimWorld world, final SimBox testArea, final Colliders out) {
         out.clear();
         if (!this.queryEntities(world, testArea)) {
@@ -250,18 +266,68 @@ final class SimCollision {
         }
         final SimBoxList b = this.entityBoxes;
         for (int i = 0; i < b.size(); i++) {
-            out.add(this.entityShapes.get(b.get(i, 0), b.get(i, 1), b.get(i, 2), b.get(i, 3), b.get(i, 4), b.get(i, 5)), false, 0, 0, 0);
+            out.add(this.entityShapes.get(i, b.get(i, 0), b.get(i, 1), b.get(i, 2), b.get(i, 3), b.get(i, 4), b.get(i, 5)), false, 0, 0, 0);
         }
     }
 
-    /** The entity query of getEntityCollisions into {@link #entityBoxes}; true when it found any. */
+    /**
+     * The entity query of getEntityCollisions into {@link #entityBoxes}; true when it found any. Vanilla asks
+     * {@code level.getEntities(player, testArea.inflate(1e-7), NO_SPECTATORS.and(player::canCollideWith))}
+     * (Level.java:768-784): the entity sections around the area, each section's entities whose box intersects it, then
+     * the predicate. The candidates come from the world (asked again only for an area they do not cover), in the
+     * client's order, which a filter keeps.
+     */
     private boolean queryEntities(final SimWorld world, final SimBox testArea) {
         this.entityBoxes.clear();
         if (testArea.size() < 1.0E-7) {
             return false;
         }
-        this.probe.set(testArea).inflate(1.0E-7, 1.0E-7, 1.0E-7);
-        world.collectEntityColliders(this.probe, this.entityBoxes);
+        final SimBox bb = this.entityArea.set(testArea).inflate(1.0E-7, 1.0E-7, 1.0E-7);
+        final SimBox known = this.candidateArea;
+        if (!this.candidatesValid || bb.minX < known.minX || bb.minY < known.minY || bb.minZ < known.minZ || bb.maxX > known.maxX
+            || bb.maxY > known.maxY || bb.maxZ > known.maxZ) {
+            known.set(bb).inflate(CANDIDATE_MARGIN, CANDIDATE_MARGIN, CANDIDATE_MARGIN);
+            this.entityCandidates.clear();
+            world.collectEntityColliders(known, this.entityCandidates);
+            this.candidatesValid = true;
+        }
+        final SimBoxList c = this.entityCandidates;
+        if (c.size() == 0) {
+            return false;
+        }
+        // EntitySectionStorage.forEachAccessibleNonEmptySection (EntitySectionStorage.java:65-87): only the sections in
+        // this range are searched, so an entity whose box reaches the area from a section outside it is not found
+        final int x0 = Mth.floor(bb.minX - 2.0) >> 4;
+        final int y0 = Mth.floor(bb.minY - 4.0) >> 4;
+        final int z0 = Mth.floor(bb.minZ - 2.0) >> 4;
+        final int x1 = Mth.floor(bb.maxX + 2.0) >> 4;
+        final int y1 = Mth.floor(bb.maxY + 0.0) >> 4;
+        final int z1 = Mth.floor(bb.maxZ + 2.0) >> 4;
+        for (int i = 0; i < c.size(); i++) {
+            // the entity's section: SectionPos of its blockPosition (Entity.setPosRaw)
+            final int sx = Mth.floor(c.get(i, 6)) >> 4;
+            final int sy = Mth.floor(c.get(i, 7)) >> 4;
+            final int sz = Mth.floor(c.get(i, 8)) >> 4;
+            if (sx < x0 || sx > x1 || sy < y0 || sy > y1 || sz < z0 || sz > z1) {
+                continue;
+            }
+            final double minX = c.get(i, 0);
+            final double minY = c.get(i, 1);
+            final double minZ = c.get(i, 2);
+            final double maxX = c.get(i, 3);
+            final double maxY = c.get(i, 4);
+            final double maxZ = c.get(i, 5);
+            // EntitySection.getEntities (EntitySection.java:31-39): entity.getBoundingBox().intersects(bb)
+            if (!(minX < bb.maxX && maxX > bb.minX && minY < bb.maxY && maxY > bb.minY && minZ < bb.maxZ && maxZ > bb.minZ)) {
+                continue;
+            }
+            // canCollideWith → canBeCollidedWith(player): a happy ghast off its still timeout only for a player at or
+            // above its top, at the player's position now (HappyGhast.java:578-589)
+            if (c.rule(i) == SimWorld.ENTITY_SOLID_FROM_ABOVE && !(this.sourceY >= maxY)) {
+                continue;
+            }
+            this.entityBoxes.add(minX, minY, minZ, maxX, maxY, maxZ, c.get(i, 6), c.get(i, 7), c.get(i, 8), c.rule(i));
+        }
         return this.entityBoxes.size() != 0;
     }
 
@@ -635,41 +701,27 @@ final class SimCollision {
     }
 
     /**
-     * {@code Shapes.create(box)} of the entity colliders, remembered for the last few boxes: an entity standing still
-     * (a parked boat, a shulker) gives the same box every tick, so its shape is built once. Shapes are immutable data,
-     * so a hit is the same shape vanilla would build again.
+     * {@code Shapes.create(box)} of the entity colliders, without allocating: collider {@code i} of a gather is a reused
+     * array box shape, refilled. Only one entity gather is in use at a time (collide's main and step sweeps share
+     * theirs; auto-jump's scan comes after the move), so the next gather may overwrite them. A box {@code Shapes.create}
+     * gives another kind of shape (degenerate, or on the 1/8 grid of [0, 1]) is built as vanilla builds it.
      */
     static final class EntityShapes {
-        private static final int SIZE = 8;
-        private final long[] keys = new long[SIZE * 6];
-        private final SimShape[] shapes = new SimShape[SIZE];
-        private int next;
+        private SimShape[] shapes = new SimShape[0];
 
-        SimShape get(final double minX, final double minY, final double minZ, final double maxX, final double maxY, final double maxZ) {
-            final long a = Double.doubleToRawLongBits(minX);
-            final long b = Double.doubleToRawLongBits(minY);
-            final long c = Double.doubleToRawLongBits(minZ);
-            final long d = Double.doubleToRawLongBits(maxX);
-            final long e = Double.doubleToRawLongBits(maxY);
-            final long f = Double.doubleToRawLongBits(maxZ);
-            for (int i = 0; i < SIZE; i++) {
-                final int k = i * 6;
-                if (this.shapes[i] != null && this.keys[k] == a && this.keys[k + 1] == b && this.keys[k + 2] == c && this.keys[k + 3] == d
-                    && this.keys[k + 4] == e && this.keys[k + 5] == f) {
-                    return this.shapes[i];
-                }
+        SimShape get(final int i, final double minX, final double minY, final double minZ, final double maxX, final double maxY, final double maxZ) {
+            if (!SimShape.isArrayBox(minX, minY, minZ, maxX, maxY, maxZ)) {
+                return SimShape.create(minX, minY, minZ, maxX, maxY, maxZ);
             }
-            final SimShape shape = SimShape.create(minX, minY, minZ, maxX, maxY, maxZ);
-            final int slot = this.next;
-            this.next = (slot + 1) % SIZE;
-            final int k = slot * 6;
-            this.keys[k] = a;
-            this.keys[k + 1] = b;
-            this.keys[k + 2] = c;
-            this.keys[k + 3] = d;
-            this.keys[k + 4] = e;
-            this.keys[k + 5] = f;
-            this.shapes[slot] = shape;
+            if (i >= this.shapes.length) {
+                final SimShape[] grown = Arrays.copyOf(this.shapes, Math.max(8, i * 2));
+                for (int k = this.shapes.length; k < grown.length; k++) {
+                    grown[k] = SimShape.arrayBox();
+                }
+                this.shapes = grown;
+            }
+            final SimShape shape = this.shapes[i];
+            shape.setArrayBox(minX, minY, minZ, maxX, maxY, maxZ);
             return shape;
         }
     }

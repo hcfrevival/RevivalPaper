@@ -78,6 +78,9 @@ final class NeueLiveScenarios implements Listener {
     private static final Input NONE = Input.EMPTY;
     private static final Input HOLD_LEFT = new Input(false, false, true, false, false, false, false);
     private static final String TEAM = "neuelive";
+    /** The duel lane's x offset from the open lane. */
+    private static final int DUEL = 4;
+    private static final double DUEL_GAP = 2.4;
 
     private final RevivalLiveTests tests;
     private final MinecraftServer server;
@@ -198,10 +201,13 @@ final class NeueLiveScenarios implements Listener {
         this.bx = spawn.getBlockX() - 40;
         this.bz = spawn.getBlockZ() + 40;
         this.gy = this.level.getHeight(Heightmap.Types.MOTION_BLOCKING, this.bx, this.bz);
-        // The attacker's backstop
+        // Two lanes. Both have a wall behind the attacker. The duel lane also has one behind the victim, 2.4 away, so a fresh
+        // hit can't knock it out of reach of the next click; the open lane leaves the victim free for any distance
         for (int x = this.bx - 1; x <= this.bx + 1; x++) {
             for (int y = this.gy; y < this.gy + 3; y++) {
                 this.level.setBlockAndUpdate(new BlockPos(x, y, this.bz - 1), Blocks.STONE.defaultBlockState());
+                this.level.setBlockAndUpdate(new BlockPos(x + DUEL, y, this.bz - 1), Blocks.STONE.defaultBlockState());
+                this.level.setBlockAndUpdate(new BlockPos(x + DUEL, y, this.bz + 3), Blocks.STONE.defaultBlockState());
             }
         }
         final net.minecraft.server.ServerScoreboard scoreboard = this.server.getScoreboard();
@@ -210,8 +216,8 @@ final class NeueLiveScenarios implements Listener {
             team = scoreboard.addPlayerTeam(TEAM);
         }
         team.setCollisionRule(net.minecraft.world.scores.Team.CollisionRule.NEVER);
-        this.attacker = new Duelist("NeueAttacker", this.attackerSpot(), 0.0F);
-        this.victim = new Duelist("NeueVictim", this.victimSpot(2.5), 180.0F);
+        this.attacker = new Duelist("NeueAttacker", this.attackerSpot(0), 0.0F);
+        this.victim = new Duelist("NeueVictim", this.victimSpot(0, 2.5), 180.0F);
         this.server.server.getPluginManager().registerEvents(this, this.tests);
         this.driver = this.server.server.getScheduler().runTaskTimer(this.tests, this::drive, 1L, 1L);
         this.tests.check(this.attacker.auth.mode() == AuthMode.OFF, "neue: the duel starts outside authority");
@@ -242,18 +248,28 @@ final class NeueLiveScenarios implements Listener {
         this.attacker.tick();
     }
 
-    private Vec3 attackerSpot() {
-        return new Vec3(this.bx + 0.5, this.gy, this.bz + 0.3); // back of the box on the wall's face
+    private Vec3 attackerSpot(final int lane) {
+        return new Vec3(this.bx + lane + 0.5, this.gy, this.bz + 0.3); // back of the box on the wall's face
     }
 
-    private Vec3 victimSpot(final double gap) {
-        return new Vec3(this.bx + 0.5, this.gy, this.bz + 0.3 + gap);
+    private Vec3 victimSpot(final int lane, final double gap) {
+        return new Vec3(this.bx + lane + 0.5, this.gy, this.bz + 0.3 + gap);
+    }
+
+    // In the open lane, `gap` apart
+    private void place(final double gap) {
+        this.place(0, gap);
+    }
+
+    // In the duel lane: the victim's back on its wall too, 2.4 apart (eye to box 2.1, plain)
+    private void placeDuel() {
+        this.place(DUEL, DUEL_GAP);
     }
 
     // Both back on their marks, standing, fresh windows and health; the victim's 1.7 shadow at rest
-    private void place(final double gap) {
-        this.attacker.teleport(this.attackerSpot(), 0.0F);
-        this.victim.teleport(this.victimSpot(gap), 180.0F);
+    private void place(final int lane, final double gap) {
+        this.attacker.teleport(this.attackerSpot(lane), 0.0F);
+        this.victim.teleport(this.victimSpot(lane, gap), 180.0F);
         this.victim.keys = NONE;
         for (final Duelist duelist : new Duelist[] {this.attacker, this.victim}) {
             final ServerPlayer player = duelist.player;
@@ -264,6 +280,9 @@ final class NeueLiveScenarios implements Listener {
             player.lastHurt = 0.0F;
             player.revivalDamageWindows = null;
             player.revivalMotionShadow.set(new Vec3(0.0, -0.0784000015258789, 0.0));
+            // No natural regeneration (it needs food 18), so health counts damage alone
+            player.getFoodData().setFoodLevel(17);
+            player.getFoodData().setSaturation(0.0F);
         }
     }
 
@@ -322,7 +341,7 @@ final class NeueLiveScenarios implements Listener {
     // before (one decrement from open). Otherwise nothing lands
     private void buffer(final String name, final int after, final boolean lands) {
         final long[] before = new long[2];
-        this.tests.after(30, name + " (place)", () -> this.place(2.5));
+        this.tests.after(30, name + " (place)", this::placeDuel);
         this.tests.after(15, name + " (fresh hit)", () -> this.attacker.attack(this.victim));
         this.tests.after(after, name + " (click into the window)", () -> {
             this.tests.check(this.victim.player.getHealth() == 12.0F, name + ": the first hit dealt 8 (health " + this.victim.player.getHealth() + ")");
@@ -356,7 +375,7 @@ final class NeueLiveScenarios implements Listener {
     // Parry, stagger, riposte ------------------------------------------------------------------------------------------
 
     private void parry(final String name) {
-        this.tests.after(40, name + " (place)", () -> this.place(2.5));
+        this.tests.after(40, name + " (place)", this::placeDuel);
         this.tests.after(15, name + " (block)", () -> this.victim.use());
         this.tests.after(1, name + " (click)", () -> {
             // The click meets the block one tick old, inside its 3-tick window
@@ -433,7 +452,7 @@ final class NeueLiveScenarios implements Listener {
     }
 
     private void blockHit(final String name) {
-        this.tests.after(40, name + " (place)", () -> this.place(2.5));
+        this.tests.after(40, name + " (place)", this::placeDuel);
         this.tests.after(15, name + " (swing)", () -> this.victim.attack(this.attacker)); // the swing of a block-hit
         this.tests.after(2, name + " (block)", () -> this.victim.use()); // two ticks after the swing: a block-hit
         this.tests.after(1, name + " (click)", () -> {
@@ -450,7 +469,7 @@ final class NeueLiveScenarios implements Listener {
     }
 
     private void classicBlock(final String name) {
-        this.tests.after(40, name + " (place)", () -> this.place(2.5));
+        this.tests.after(40, name + " (place)", this::placeDuel);
         this.tests.after(15, name + " (block)", () -> this.victim.use());
         this.tests.after(1, name + " (click)", () -> {
             this.parryEvents = 0;
