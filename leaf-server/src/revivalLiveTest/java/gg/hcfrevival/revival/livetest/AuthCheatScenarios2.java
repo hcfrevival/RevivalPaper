@@ -139,6 +139,7 @@ final class AuthCheatScenarios2 {
     private static final Input FORWARD = new Input(true, false, false, false, false, false, false);
     private static final Input BACKWARD = new Input(false, true, false, false, false, false, false);
     private static final Input LEFT = new Input(false, false, true, false, false, false, false);
+    private static final Input RIGHT = new Input(false, false, false, true, false, false, false);
     private static final int WARM = 15;
     private static final String TEAM = "authcheat2";
     private static final double EPS = 1.0E-9;
@@ -277,6 +278,9 @@ final class AuthCheatScenarios2 {
 
         // Client profile
         this.only("lunarSpoof", () -> this.lunarSpoof());
+
+        // Server faults: authority code that throws
+        this.only("faults", () -> this.faults());
 
         this.step(1, "cheat suite 2: summary", this::summary);
         this.step(1, "cheat suite 2: rules classic again", () -> this.rules(CombatRules.DEFAULT));
@@ -1776,6 +1780,94 @@ final class AuthCheatScenarios2 {
             this.leaveAll();
         });
     }
+
+    // pvp-issues SV-4: a bug in authority code. Each heavy call of the port (a tick, the belief, a correction, a velocity,
+    // the attack and use bookkeeping) throws on its first call and 1 in 8 after, and the judge on 1 attack in 4, both players under
+    // authority, through a 300-tick strafing fight. The victim ignores knockback, so corrections run too. Every guarded
+    // call falls back to the claim for that tick and the next re-seeds: nobody is kicked, every fault is counted, and with
+    // the faults gone the attacker is exact again
+    private void faults() {
+        final String id = "server faults: the port throws on 1 call in 8 of each heavy method (its first included), the judge on 1 attack in 4, through a 300-tick fight";
+        final boolean[] on = {false};
+        final Map<String, Integer> thrown = new java.util.TreeMap<>();
+        this.step(1, id + ": the port that throws", () -> Authority.setSimulationFactory(owner -> faulting(new PortSimulation(owner.player()), on, thrown)));
+        this.combatJoin(id, 2.8);
+        final long[] errors = new long[2];
+        final int[] tick = {0};
+        final int[] judged = {0};
+        this.step(1, id + ": faults on, the fight", () -> {
+            this.open(id);
+            this.label = "HELD";
+            this.give(this.c, 0, new ItemStack(Items.DIAMOND_SWORD));
+            errors[0] = this.c.auth.stats().simulationErrors();
+            errors[1] = this.h.auth.stats().simulationErrors();
+            final gg.hcfrevival.revival.auth.AttackJudge real = CombatWiring.INSTANCE;
+            Authority.setAttackJudge((attacker, target, at) -> {
+                if (on[0] && ++judged[0] % 4 == 0) {
+                    thrown.merge("judge", 1, Integer::sum);
+                    throw new IllegalStateException("injected fault (pvp-issues SV-4) in the attack judge");
+                }
+                return real.judge(attacker, target, at);
+            });
+            on[0] = true;
+            this.h.ignoreMotion = true;
+            this.c.before = x -> {
+                tick[0]++;
+                x.keys = tick[0] / 20 % 2 == 0 ? LEFT : RIGHT;
+                x.yaw = (float) Math.toDegrees(Math.atan2(-(this.h.player.getX() - x.player.getX()), this.h.player.getZ() - x.player.getZ()));
+                if (tick[0] % 10 == 0) {
+                    x.click(this.h, true);
+                }
+            };
+            this.h.before = x -> {
+                x.keys = tick[0] / 15 % 2 == 0 ? RIGHT : LEFT;
+                x.player.setHealth(x.player.getMaxHealth()); // knocked, never killed
+            };
+        });
+        this.step(300, id + ": faults off", () -> {
+            on[0] = false;
+            Authority.setAttackJudge(CombatWiring.INSTANCE);
+            this.h.ignoreMotion = false;
+            this.c.before = null;
+            this.h.before = null;
+            this.h.keys = NONE;
+        });
+        this.judge(1, id, () -> {
+            final long counted = this.c.auth.stats().simulationErrors() - errors[0] + this.h.auth.stats().simulationErrors() - errors[1];
+            final int total = thrown.values().stream().mapToInt(Integer::intValue).sum();
+            this.note("thrown " + total + " " + thrown + "; counted " + counted + "; the victim corrected " + this.h.auth.stats().corrections());
+            this.expect(!this.c.kicked && !this.h.kicked, "nobody kicked (" + this.kicks.getOrDefault(this.c.player.getUUID(), "")
+                + this.kicks.getOrDefault(this.h.player.getUUID(), "") + ")");
+            this.expect(thrown.keySet().containsAll(List.of("tick", "belief", "correction", "judge")) && (thrown.containsKey("setVelocity")
+                || thrown.containsKey("addVelocity")), "faults in the tick, the belief, a correction, a velocity and the judge");
+            this.expect(counted == total, "every fault caught and counted (" + counted + " of " + total + ")");
+            this.expect(this.c.auth.mode() == AuthMode.ENFORCE && this.h.auth.mode() == AuthMode.ENFORCE, "both still under enforce");
+        });
+        this.honestAfter(id, LEFT, 0);
+        this.step(1, id + ": the port again", () -> Authority.setSimulationFactory(owner -> new PortSimulation(owner.player())));
+        this.finish(id);
+    }
+
+    // The real port, throwing on the first call and 1 in 8 after of each of its heavy methods (those a window makes in its
+    // guarded paths, so a rare one is hit too) while on[0]; what it threw, by method, goes into `thrown`
+    private static Simulation faulting(final Simulation port, final boolean[] on, final Map<String, Integer> thrown) {
+        final Map<String, Integer> calls = new HashMap<>();
+        return (Simulation) java.lang.reflect.Proxy.newProxyInstance(Simulation.class.getClassLoader(), new Class<?>[] {Simulation.class},
+            (proxy, method, args) -> {
+                if (on[0] && FAULTED.contains(method.getName()) && calls.merge(method.getName(), 1, Integer::sum) % 8 == 1) {
+                    thrown.merge(method.getName(), 1, Integer::sum);
+                    throw new IllegalStateException("injected fault (pvp-issues SV-4) in Simulation." + method.getName());
+                }
+                try {
+                    return method.invoke(port, args);
+                } catch (final java.lang.reflect.InvocationTargetException e) {
+                    throw e.getCause();
+                }
+            });
+    }
+
+    private static final Set<String> FAULTED = Set.of("tick", "belief", "correction", "setVelocity", "addVelocity", "clientAttack", "startUsingItem",
+        "releaseUsingItem", "resetAttackStrength", "retryAttackStrength", "retryWithSlot", "seedFromMove", "snapBeliefOut");
 
     // =================================================================================================================
     // Combat plumbing (attacker c, victim h, as AuthCheatScenarios' combatJoin)

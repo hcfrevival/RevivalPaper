@@ -303,6 +303,8 @@ final class AuthCheatScenarios {
         // pvp-issues SP-3, MV-3: cheats authority closes by design, each against its honest control
         this.keepSprint("keep-sprint: an honest sprint hit (control)", false);
         this.keepSprint("keep-sprint: the client skips its own x0.6 and sprint stop after a sprint hit", true);
+        this.keepSprintAxe("keep-sprint: an honest sprint hit with an axe, one cooldown after the last (control)", false);
+        this.keepSprintAxe("keep-sprint: the same axe hit, the client skipping its own x0.6 and sprint stop", true);
         this.packetCrit("crits: an honest hit standing on the ground (control)", false);
         this.packetCrit("crits: claims a 0.0625 hop off the ground before the hit (packet criticals)", true);
         // Classic audit #9: eating and drinking under enforce, as an honest client does them
@@ -2577,7 +2579,8 @@ final class AuthCheatScenarios {
             this.attack(this.c, 1);
         });
         this.step(4, id + ": let go", () -> this.c.keys = NONE);
-        this.judge(1, id, () -> {
+        // Late enough for a correction that waits behind queued windows (as the axe rows)
+        this.judge(10, id, () -> {
             final Snap d = this.delta(this.c);
             final Simulation s = this.c.auth.simulation();
             final Vec3 truth = new Vec3(s.x(), s.y(), s.z());
@@ -2599,6 +2602,53 @@ final class AuthCheatScenarios {
                 this.expect(knock.distanceTo(this.keepSprintKnock) <= 1.0E-6, "the knock is the honest hit's (" + f(knock.horizontalDistance()) + " across)");
             } else {
                 this.expect(false, "the control ran first (truth " + this.keepSprintTruth + ", knock " + this.keepSprintKnock + ", this knock " + knock + ")");
+            }
+        });
+        this.honestAfter(id, NONE, 0);
+        this.finish(id);
+    }
+
+    // Fable review #7b: a 26.x weapon has a real cooldown, and the retry's "the hit was weak" explained a KeepSprint client's
+    // claims on any full-strength axe hit. Counted from the last hit the ticker is exact, so a sprint hit one cooldown later
+    // keeps the client's x0.6 and sprint stop. The first hit, standing, is honest in both rows: it resets the ticker at a
+    // known tick (an iron axe's cooldown is 22.2 ticks; the second hit comes 30 after the first)
+    private void keepSprintAxe(final String id, final boolean cheat) {
+        this.combatJoin(id);
+        this.step(1, id + ": an axe, the victim in reach", () -> {
+            this.open(id);
+            this.give(this.c, new ItemStack(Items.IRON_AXE));
+            this.place(0.0, 2.8);
+            this.c.forcePosition = true;
+            this.c.keys = NONE;
+        });
+        this.step(25, id + ": the first hit, standing, at full strength", () -> this.attack(this.c, 1));
+        this.step(25, id + ": the victim ahead again, sprint", () -> {
+            this.place(0.0, 3.4);
+            this.c.keys = FORWARD_SPRINT;
+        });
+        final long[] branches = new long[4];
+        this.step(5, id + ": the second hit", () -> {
+            this.base = this.snap(this.c);
+            branches[0] = this.c.auth.stats().attackStrengthBranches();
+            branches[1] = this.c.auth.stats().correctionsHeld();
+            branches[2] = this.c.auth.stats().hotbarBranches();
+            branches[3] = this.c.auth.stats().correctionsWaited();
+            this.c.noAttackPrediction = cheat;
+            this.attack(this.c, 1);
+        });
+        this.step(4, id + ": let go", () -> this.c.keys = NONE);
+        // Late enough for a correction that waits behind queued windows (a loaded run once judged before it landed)
+        this.judge(10, id, () -> {
+            final Snap d = this.delta(this.c);
+            this.note("corrections " + d.corrections() + ", victim health " + this.v.player.getHealth() + "; weak-hit branches "
+                + (this.c.auth.stats().attackStrengthBranches() - branches[0]) + ", held " + (this.c.auth.stats().correctionsHeld() - branches[1])
+                + ", waited " + (this.c.auth.stats().correctionsWaited() - branches[3]) + ", hotbar branches "
+                + (this.c.auth.stats().hotbarBranches() - branches[2]));
+            if (!cheat) {
+                this.label = "CONTROL";
+                this.honestExpect(d.corrections() == 0, "no correction (" + d.corrections() + ")");
+            } else {
+                this.expect(d.corrections() >= 1, "the client that skipped its slowdown was corrected (" + d.corrections() + ")");
             }
         });
         this.honestAfter(id, NONE, 0);

@@ -121,6 +121,11 @@ import gg.hcfrevival.revival.auth.AuthMode;
  * @param anomalyMinTurns aim alert: turns needed before it is judged
  * @param anomalyClickStreakTicks click-streak alert (neue-combat §12.2 detector A): this many eligible client ticks in a
  *                                row with exactly one click (a 20 CPS lock or a one-per-tick macro)
+ * @param anomalyClickLockClicks click-lock alert (neue-combat §12.2 detector B, any fixed rate): this many intervals
+ *                               between clicks, each k or k+1 ticks (the alert waits for the lock to hold this many
+ *                               clicks more), ...
+ * @param anomalyClickLockResidual ...no click further than this many ticks from their least-squares line...
+ * @param anomalyClickLockMinCps ...at this many clicks a second or faster
  * @param pongLagMs a second whose ack RTT runs this much over the keep-alive RTT is counted (pongs held back, review E5)
  * @param anomalyGrammarViolations input-grammar alert: actions a vanilla client can't send, since the player joined
  * @param anomalyJumpResetShare jump-reset alert (classic audit #8): the share of knocks applied on the ground whose own
@@ -216,6 +221,9 @@ public record AuthoritativeSettings(
     double anomalyAimGcdMissRatio,
     int anomalyMinTurns,
     int anomalyClickStreakTicks,
+    int anomalyClickLockClicks,
+    double anomalyClickLockResidual,
+    double anomalyClickLockMinCps,
     int pongLagMs,
     int anomalyGrammarViolations,
     double anomalyJumpResetShare,
@@ -340,6 +348,9 @@ public record AuthoritativeSettings(
             Math.clamp(reader.getDouble(PATH + "stats.aim-gcd-miss-ratio", 0.5), 0.0, 1.0),
             Math.max(1, reader.getInt(PATH + "stats.aim-min-turns", 200)),
             Math.max(1, reader.getInt(PATH + "stats.click-streak-ticks", 100)),
+            Math.clamp(reader.getInt(PATH + "stats.click-lock-clicks", gg.hcfrevival.revival.auth.input.CadenceWatch.LOCK_CLICKS), 10, 1000),
+            Math.max(0.0, reader.getDouble(PATH + "stats.click-lock-residual", gg.hcfrevival.revival.auth.input.CadenceWatch.LOCK_RESIDUAL)),
+            Math.max(0.1, reader.getDouble(PATH + "stats.click-lock-min-cps", gg.hcfrevival.revival.auth.input.CadenceWatch.LOCK_MIN_CPS)),
             Math.max(0, reader.getInt(PATH + "stats.pong-lag-ms", 150)),
             Math.max(1, reader.getInt(PATH + "stats.grammar-violations", 3)),
             Math.clamp(reader.getDouble(PATH + "stats.jump-reset-share", 0.65), 0.0, 1.0),

@@ -33,6 +33,7 @@ public final class Authority {
 
     private static volatile @Nullable AuthMode override;
     private static volatile @Nullable String loggedRefusal;
+    private static volatile boolean warnedLazySends;
     private static volatile AttackJudge judge = CombatWiring.INSTANCE;
 
     static {
@@ -65,6 +66,13 @@ public final class Authority {
         if (org.dreeam.leaf.config.modules.async.SparklyPaperParallelWorldTicking.enabled) {
             return "Leaf async.parallel-world-ticking is enabled (packets are handled while other worlds tick)";
         }
+        // pvp-issues SV-3: packets the knocks and the paths count on reaching every client
+        if (org.dreeam.leaf.config.modules.opt.ReduceUselessPackets.filterClientboundSetEntityMotionPacket) {
+            return "Leaf performance.reduce-packets.reduce-entity-motion-packets is enabled (velocity packets are dropped)";
+        }
+        if (org.dreeam.leaf.config.modules.opt.ReduceUselessPackets.reduceUselessEntityMovePackets) {
+            return "Leaf performance.reduce-packets.reduce-entity-move-packets is enabled (move packets are dropped)";
+        }
         return null;
     }
 
@@ -90,6 +98,12 @@ public final class Authority {
                 LOGGER.warn("Authoritative movement stays off: {}", refusal);
             }
             return AuthMode.OFF;
+        }
+        if (org.dreeam.leaf.config.modules.network.OptimizeNonFlushPacketSending.enabled && !warnedLazySends) {
+            // pvp-issues SV-3: not refused (order holds), but timing is what authority is about
+            warnedLazySends = true;
+            LOGGER.warn("Leaf network.OptimizeNonFlushPacketSending is enabled: a packet sent without a flush waits for the next one,"
+                + " so knocks and corrections can reach clients later than authority timed them");
         }
         return mode;
     }

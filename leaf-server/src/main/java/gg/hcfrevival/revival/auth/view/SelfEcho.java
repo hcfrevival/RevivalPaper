@@ -117,6 +117,17 @@ public final class SelfEcho {
      * Whether an attribute sync carries {@code movement_speed}: -1 when it doesn't, else 1 with the sprinting modifier and
      * 0 without.
      */
+    /** A sync's movement-speed snapshot, or null: what the client holds once it lands (it replaces the modifier set). */
+    public static ClientboundUpdateAttributesPacket.@org.jspecify.annotations.Nullable AttributeSnapshot speedSnapshot(
+        final ClientboundUpdateAttributesPacket packet) {
+        for (final ClientboundUpdateAttributesPacket.AttributeSnapshot snapshot : packet.getValues()) {
+            if (snapshot.attribute().equals(Attributes.MOVEMENT_SPEED)) {
+                return snapshot;
+            }
+        }
+        return null;
+    }
+
     public static int speedSync(final ClientboundUpdateAttributesPacket packet) {
         for (final ClientboundUpdateAttributesPacket.AttributeSnapshot snapshot : packet.getValues()) {
             if (snapshot.attribute().equals(Attributes.MOVEMENT_SPEED)) {
@@ -140,15 +151,31 @@ public final class SelfEcho {
      */
     public static @org.jspecify.annotations.Nullable ClientboundUpdateAttributesPacket withoutSprintOnly(final ClientboundUpdateAttributesPacket packet,
                                                                                                         final ClientAttributes client) {
+        final ClientAttributes.Instance held = client.instance(Attributes.MOVEMENT_SPEED);
+        return held == null ? packet : withoutSprintOnly(packet, held.getBaseValue(), held.getModifiers());
+    }
+
+    /**
+     * The same against what the client will hold once every sync on its way has landed: the last movement-speed snapshot
+     * sent ({@code sent}; a sync replaces the client's whole modifier set), else the acked view. Against the view alone, a
+     * sync undoing one still on its way reads as sprint-only and is dropped, and the client keeps the one on its way (a
+     * soul-speed modifier kept on plain ground, fable review #2).
+     */
+    public static @org.jspecify.annotations.Nullable ClientboundUpdateAttributesPacket withoutSprintOnly(final ClientboundUpdateAttributesPacket packet,
+        final ClientboundUpdateAttributesPacket.@org.jspecify.annotations.Nullable AttributeSnapshot sent, final ClientAttributes client) {
+        return sent == null ? withoutSprintOnly(packet, client) : withoutSprintOnly(packet, sent.base(), sent.modifiers());
+    }
+
+    private static @org.jspecify.annotations.Nullable ClientboundUpdateAttributesPacket withoutSprintOnly(final ClientboundUpdateAttributesPacket packet,
+                                                                                                         final double base,
+                                                                                                         final java.util.Collection<AttributeModifier> held) {
         final List<ClientboundUpdateAttributesPacket.AttributeSnapshot> snapshots = packet.getValues();
         for (int i = 0; i < snapshots.size(); i++) {
             final ClientboundUpdateAttributesPacket.AttributeSnapshot snapshot = snapshots.get(i);
             if (!snapshot.attribute().equals(Attributes.MOVEMENT_SPEED)) {
                 continue;
             }
-            final ClientAttributes.Instance held = client.instance(Attributes.MOVEMENT_SPEED);
-            if (held == null || Double.doubleToLongBits(held.getBaseValue()) != Double.doubleToLongBits(snapshot.base())
-                || !sameButSprint(held.getModifiers(), snapshot.modifiers())) {
+            if (Double.doubleToLongBits(base) != Double.doubleToLongBits(snapshot.base()) || !sameButSprint(held, snapshot.modifiers())) {
                 return packet;
             }
             if (snapshots.size() == 1) {
@@ -162,7 +189,7 @@ public final class SelfEcho {
     }
 
     // The two modifier sets are equal once the sprint modifier is left out of both
-    private static boolean sameButSprint(final java.util.Set<AttributeModifier> held, final java.util.Collection<AttributeModifier> sent) {
+    private static boolean sameButSprint(final java.util.Collection<AttributeModifier> held, final java.util.Collection<AttributeModifier> sent) {
         int heldOthers = 0;
         for (final AttributeModifier modifier : held) {
             if (!modifier.id().equals(ClientAttributes.SPRINTING_MODIFIER_ID)) {

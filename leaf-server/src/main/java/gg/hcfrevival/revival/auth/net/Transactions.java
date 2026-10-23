@@ -290,6 +290,15 @@ public final class Transactions {
         final OutboundClassifier.ClassInfo info = OutboundClassifier.info(packet);
         final int self = info.family < 0 ? context.selfId() : 0;
         synchronized (this) {
+            if (packet instanceof net.minecraft.network.protocol.common.ClientboundKeepAlivePacket) {
+                // A vanilla client answers a keep-alive on its network thread, at once; a bundle's packets wait for its
+                // main thread. Stalled past a second (a GC pause, a window drag), it answered a later, unbundled keep-alive
+                // before a bundled one, and Paper kicks for a keep-alive answered out of order (torture freeze1: a 2 s
+                // client hitch at 150 ms). It goes out as it comes, ahead of an open bundle: no transaction rides on it
+                connection.send(packet, listener, flush);
+                this.flushed(flush, context);
+                return;
+            }
             final int kind = info.family >= 0 ? info.family
                 : OutboundClassifier.classify(info.family, packet, self, context.selfUuid(), this.trackedPlayers, this.trackedRockets, this.trackedSolids);
             if (info.tracked) {

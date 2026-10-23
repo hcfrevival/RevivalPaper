@@ -872,7 +872,7 @@ lower detection, never raise false positives.
 exactly one click. It fires when the run reaches `click-streak-ticks` (100: 5 s at exactly 20 CPS). The event's
 `value` is the run.
 
-**Detector B, `click-lock`** (any fixed rate). Keep a ring of the last `N + 1` click ticks (`click-lock-clicks`, 150).
+**Detector B, `click-lock`** (any fixed rate; built 2026-10-23 in `auth.input.CadenceWatch`). Keep a ring of the last `N + 1` click ticks (`click-lock-clicks`, 150).
 `interval = t_i − t_{i−1}`, where 0 means two clicks in one tick. On each click, with the ring full:
 
 1. `spread = max − min` of the N intervals, from a per-value count over 0..20, kept O(1). Require `spread ≤ 1`, so
@@ -888,7 +888,10 @@ exactly one click. It fires when the run reaches `click-streak-ticks` (100: 5 s 
 The event's `value` is the number of locked clicks (≥ N).
 
 **Events.** Both raise `AuthInputAnomalyEvent` with kind `click-streak` or `click-lock`. `AnomalyWatch` gains the two
-kinds: one event per crossing, re-armed when the value drops. Both also show in `/revival auth inspect`.
+kinds: one event per crossing, re-armed when the value drops. Both also show in `/revival auth inspect`. As built, the
+`click-lock` event waits for the lock to hold N more clicks (value ≥ 2N). A code review's simulation (2026-10-23:
+Gaussian intervals, no tempo drift, the tick grid) had the first lock flag steady humans in 15-40 of 40 three-minute
+sessions at 12-14 CPS with a CV of 0.05-0.07; 0-2 held the lock that long, while fixed-rate clickers did in 28-40.
 
 **Keys** (`authoritative.stats.*`):
 
@@ -952,8 +955,10 @@ humans.
 **Tests** (`CadenceWatchTest`):
 
 - A: 99 one-click ticks do not fire, 100 do; a 0- or 2-click tick resets the run; an ineligible window resets it.
-- B: (2, 2, 1)×50 (12 CPS) fires at the 150th interval; 2×150 fires; one interval of 3 among 2s does not; a seeded
-  human-like sequence (CV 0.10, 12 CPS, 10,000 clicks) never fires.
+- B: (2, 2, 1)×50 (12 CPS) fires at the 150th interval; 2×150 and 1×150 fire, and so does 25 CPS (1, 1, 1, 2
+  clicks a tick); a 3 after 150 2s breaks the lock at its click (it sits about a tick off the line; one hiccup among
+  many is still a lock once it is inside the ring); 1s and 3s, or 3s, never lock; an ineligible window or a new N
+  starts the chain over; a seeded human-like sequence (CV 0.10, 12 CPS, 10,000 clicks) never fires.
 - Mining punches never count.
 
 ## 13. Hooks and owners

@@ -763,6 +763,7 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
         this.speedSyncsPending = 0; // syncs a reset dropped are never applied
         this.speedSyncSprint = false;
         this.sentServerFlags = -1; // what vanilla sent before authority isn't recorded
+        this.sentSpeed = null;
         this.netActive = true;
         Authority.activated(this);
         Authority.mirrors().onReset(this);
@@ -831,6 +832,7 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
         this.transactions.reset();
         this.speedSyncsPending = 0;
         this.speedSyncSprint = false;
+        this.sentSpeed = null;
         Authority.mirrors().onReset(this);
         this.world.solids.clear();
     }
@@ -882,8 +884,9 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
             } else if (packet instanceof final ClientboundUpdateAttributesPacket attributes && attributes.getEntityId() == this.player.getId()) {
                 ClientboundUpdateAttributesPacket echo = attributes;
                 if ((this.meant & SelfEcho.SPRINT) == 0) {
-                    // A sprint toggle the client made itself needs no sync; a late one undid the client's next toggle
-                    echo = SelfEcho.withoutSprintOnly(attributes, this.view.attributes);
+                    // A sprint toggle the client made itself needs no sync; a late one undid the client's next toggle.
+                    // Judged against what the client holds once the syncs on their way land, not the acked view
+                    echo = SelfEcho.withoutSprintOnly(attributes, this.sentSpeed, this.view.attributes);
                     if (echo == null) {
                         this.stats.sprintSyncsDropped++;
                         return;
@@ -891,6 +894,7 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
                     echo = SelfEcho.attributes(echo, sim.sprinting());
                 }
                 out = echo;
+                this.sentSpeed(echo);
                 final int speed = SelfEcho.speedSync(echo);
                 if (speed >= 0) {
                     // A movement-speed sync on its way: if the sprint changes before its ack, the client would keep the
@@ -898,6 +902,17 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
                     this.speedSyncsPending++;
                     this.speedSyncSprint = speed == 1;
                 }
+            }
+        } else if (MinecraftServer.getServer().isSameThread()) {
+            // Not filtered (an exempt tick), but what it says is what the client holds next: a later sync compared with
+            // a stale record would be dropped as already sent (fable review #3: fire caught in a boat, its end never sent)
+            if (packet instanceof final ClientboundSetEntityDataPacket data && data.id() == this.player.getId()) {
+                final int sent = SelfEcho.sharedFlags(data);
+                if (sent >= 0) {
+                    this.sentServerFlags = sent & SelfEcho.SERVER_FLAGS;
+                }
+            } else if (packet instanceof final ClientboundUpdateAttributesPacket attributes && attributes.getEntityId() == this.player.getId()) {
+                this.sentSpeed(attributes);
             }
         }
         this.transactions.send(connection, out, listener, flush, this);
@@ -1695,7 +1710,8 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
             && this.player.isAlive() && !this.keybindsUsing && this.player.containerMenu == this.player.inventoryMenu
             && !this.clientDigging && !this.dugThisTick;
         // Cheat suite 2 L2: every attack is a click, Punch or not (a NoSwing autoclicker read as no clicks at all)
-        this.cadence.onWindow(cadenceEligible, Math.max(this.punchesThisTick, this.attacksThisTick));
+        this.cadence.onWindow(cadenceEligible, Math.max(this.punchesThisTick, this.attacksThisTick), settings.anomalyClickLockClicks(),
+            settings.anomalyClickLockResidual(), settings.anomalyClickLockMinCps());
         this.dugThisTick = false;
         this.keybindsUsing = false;
         this.reconciler.afterWindow();
@@ -1726,6 +1742,9 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
             input.turns() >= settings.anomalyMinTurns());
         this.anomaly(AnomalyWatch.INPUT_GRAMMAR, this.rules.total(), settings.anomalyGrammarViolations(), true);
         this.anomaly(AnomalyWatch.CLICK_STREAK, this.cadence.streak(), settings.anomalyClickStreakTicks(), true);
+        // A lock that held another click-lock-clicks: a steady human's chance lock rarely lasts (fable review #5, 12-14 CPS with
+        // no tempo drift: 15-40 of 40 three-minute sessions lock at least once, 0-2 hold; fixed-rate clickers 28-40 hold)
+        this.anomaly(AnomalyWatch.CLICK_LOCK, this.cadence.locked(), 2.0 * settings.anomalyClickLockClicks(), true);
         // Classic audit #8: knocks taken on the ground with a jump in their own window, against the player's own jump rate
         final AuthStats stats = this.stats;
         final double base = stats.groundedTicks() == 0 ? 0.0 : (double) stats.groundJumps() / stats.groundedTicks();
@@ -1893,7 +1912,7 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
         if (!this.simulation.seeded()) {
             return true;
         }
-        final gg.hcfrevival.revival.auth.combat.AttackerSnapshot eye = CombatWiring.snapshot(this);
+        final gg.hcfrevival.revival.auth.combat.AttackerSnapshot eye = this.pickOrigin();
         final gg.hcfrevival.revival.auth.combat.PickRay ray = this.pickRay;
         this.world.readAsClient(true);
         try {
@@ -1904,8 +1923,9 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
         return !ray.blockHit() || ray.blockPosX() == pos.getX() && ray.blockPosY() == pos.getY() && ray.blockPosZ() == pos.getZ();
     }
 
-    // A dig names no point: the face is in sight when its centre or a point 0.4 toward any of its corners is (a block half
-    // behind another is still dug, as its crosshair may be on the visible half)
+    // A dig names no point: the face is in sight when any point of a 5x5 grid across it is, centre first (a block half
+    // behind another is still dug, as its crosshair may be on the visible half; the grid's edge rows find a strip as thin
+    // as the 1/16 gap beside a chest or above farmland, fable review #7a)
     private boolean faceInSight(final BlockPos pos, final net.minecraft.core.Direction face) {
         final double cx = pos.getX() + 0.5 + face.getStepX() * 0.5;
         final double cy = pos.getY() + 0.5 + face.getStepY() * 0.5;
@@ -1914,18 +1934,23 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
         final net.minecraft.core.Direction.Axis axis = face.getAxis();
         final boolean xFace = axis == net.minecraft.core.Direction.Axis.X;
         final boolean zFace = axis == net.minecraft.core.Direction.Axis.Z;
-        for (int i = 0; i < 5; i++) {
-            final double a = i == 0 ? 0.0 : i <= 2 ? 0.4 : -0.4;
-            final double b = i == 0 ? 0.0 : i % 2 == 1 ? 0.4 : -0.4;
-            final double x = cx + (xFace ? 0.0 : a);
-            final double y = cy + (xFace ? a : 0.0) + (zFace ? b : 0.0);
-            final double z = cz + (zFace ? 0.0 : b);
-            if (this.inSight(pos, x, y, z)) {
-                return true;
+        for (int i = 0; i < FACE_GRID.length; i++) {
+            for (int j = 0; j < FACE_GRID.length; j++) {
+                final double a = FACE_GRID[i];
+                final double b = FACE_GRID[j];
+                final double x = cx + (xFace ? 0.0 : a);
+                final double y = cy + (xFace ? a : 0.0) + (zFace ? b : 0.0);
+                final double z = cz + (zFace ? 0.0 : b);
+                if (this.inSight(pos, x, y, z)) {
+                    return true;
+                }
             }
         }
         return false;
     }
+
+    // Offsets across a face from its centre, centre first: 0.5, 0.1 and 0.02 in from the edges
+    private static final double[] FACE_GRID = {0.0, 0.4, -0.4, 0.48, -0.48};
 
     // Within the block's outline as the client holds it, to a hair (an outline hit's location is computed on the block's own
     // shape): its cube, or the bounds of an outline that leaves it (a lectern's top, a piston's arm). The view reads a
@@ -1951,10 +1976,17 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
         if (state.getBlock() instanceof net.minecraft.world.level.block.ShulkerBoxBlock) {
             box = net.minecraft.world.entity.monster.Shulker.getProgressAabb(1.0F, state.getValue(net.minecraft.world.level.block.ShulkerBoxBlock.FACING),
                 0.5F, new Vec3(0.5, 0.0, 0.5));
-        } else if (shape.isEmpty()) {
-            return false;
-        } else {
+        } else if (!shape.isEmpty()) {
             box = shape.bounds();
+        } else {
+            // An outline only the held item shows (a light block to a player holding light, fable review #6); air has
+            // none in any context, so a click into thin air still fails
+            final net.minecraft.world.phys.shapes.VoxelShape held = state.getShape(net.minecraft.world.level.EmptyBlockGetter.INSTANCE, pos,
+                net.minecraft.world.phys.shapes.CollisionContext.of(this.player));
+            if (held.isEmpty()) {
+                return false;
+            }
+            box = held.bounds();
         }
         return x >= box.minX - eps && x <= box.maxX + eps && y >= box.minY - eps && y <= box.maxY + eps && z >= box.minZ - eps && z <= box.maxZ + eps;
     }
@@ -2029,6 +2061,14 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
 
     private final gg.hcfrevival.revival.auth.combat.PickRay pickRay = new gg.hcfrevival.revival.auth.combat.PickRay();
 
+    // Where the client picked blocks from at its keybinds: the truth's end of the last tick, or the server player while the
+    // port isn't stepped (an exempt tick: riding, a solid mover beside it, riptide; or the first tick after one, before the
+    // re-seed). The truth stands where the exemption began then, and a click from where the player really is would read
+    // as unseen (fable review #1)
+    private gg.hcfrevival.revival.auth.combat.AttackerSnapshot pickOrigin() {
+        return this.lastExempt == AuthStats.EXEMPT_NONE && !this.reseedFromServer ? CombatWiring.snapshot(this) : CombatWiring.serverSnapshot(this);
+    }
+
     // The client's crosshair at its keybinds (Minecraft.pick(1.0F), no entity in the way modelled) is on this block
     private boolean onCrosshair(final BlockPos pos) {
         if (!this.simulation.seeded()) {
@@ -2038,7 +2078,7 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
         ray.clear();
         this.world.readAsClient(true); // Minecraft.pick on the client's world: through a block it broke and still lacks
         try {
-            ray.cast(CombatWiring.snapshot(this), this.world);
+            ray.cast(this.pickOrigin(), this.world);
         } finally {
             this.world.readAsClient(false);
         }
@@ -2141,6 +2181,16 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
     }
 
     private int speedSyncsPending;
+    // The movement-speed snapshot of the last self attribute sync sent: what the client holds once the syncs on their way
+    // land (fable review #2). Null after a reset: the view, re-seeded, is that
+    private ClientboundUpdateAttributesPacket.@Nullable AttributeSnapshot sentSpeed;
+
+    private void sentSpeed(final ClientboundUpdateAttributesPacket attributes) {
+        final ClientboundUpdateAttributesPacket.AttributeSnapshot speed = SelfEcho.speedSnapshot(attributes);
+        if (speed != null) {
+            this.sentSpeed = speed;
+        }
+    }
     private boolean speedSyncSprint;
     // The server-owned bits (SelfEcho.SERVER_FLAGS) of the last shared-flags byte sent to the client; -1: unknown, the next goes out
     private int sentServerFlags = -1;
@@ -3638,6 +3688,7 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
         this.speedSyncsPending = 0; // a lost log dropped the syncs in flight; the next sprint change sends a fresh one
         this.speedSyncSprint = false;
         this.sentServerFlags = -1;
+        this.sentSpeed = null;
         // Teleports a lost log dropped never complete at a pong; their accepts complete them as before authority
         this.clearTeleportBookkeeping();
         this.repairMirrors(true, this.settings()); // the book was emptied: every tracked player spawns again, logged

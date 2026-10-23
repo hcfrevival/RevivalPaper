@@ -169,6 +169,12 @@ public final class SimPlayer {
     public int attackStrengthTicker;
     public int itemSwapTicker;
     public ItemStack lastItemInMainHand = ItemStack.EMPTY;
+    /**
+     * The ticker may be a tick off the client's: its last reset was an item change, whose tick the window can't pin (a
+     * number key's SetCarriedItem goes out a window late, design H9), or the port hasn't reset it at all yet. An attack
+     * or a dig's stop resets it at a known tick.
+     */
+    public boolean strengthUncertain = true;
 
     // ----------------------------------------------------------------------------------------- attributes and effects
 
@@ -382,6 +388,7 @@ public final class SimPlayer {
         this.attackStrengthTicker = o.attackStrengthTicker;
         this.itemSwapTicker = o.itemSwapTicker;
         this.lastItemInMainHand = o.lastItemInMainHand;
+        this.strengthUncertain = o.strengthUncertain;
         this.attributes.copyFrom(o.attributes);
         this.jumpBoost = o.jumpBoost;
         this.slowFalling = o.slowFalling;

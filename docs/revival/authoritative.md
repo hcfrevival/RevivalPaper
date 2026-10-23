@@ -93,8 +93,10 @@ Everything in `AuthPlayer` is owned by the main thread (AGENTS.md "Performance, 
 - `handlePong` runs on Netty; its hook re-enqueues the pong onto `server.packetProcessor()` with
   `PacketUtils.ensureRunningOnSameThread`, so pongs are processed in stream order with the movement packets.
 
-Authority refuses to start (logs why, stays `off`) when Leaf `async.async-entity-tracker` or
-`async.parallel-world-ticking` is enabled.
+Authority refuses to start (logs why, stays `off`) when Leaf `async.async-entity-tracker`,
+`async.parallel-world-ticking`, `performance.reduce-packets.reduce-entity-motion-packets` or
+`performance.reduce-packets.reduce-entity-move-packets` is enabled (pvp-issues SV-3: the last two drop velocity and
+move packets). `network.OptimizeNonFlushPacketSending` is warned once.
 
 ## 3. Client stream and transactions
 

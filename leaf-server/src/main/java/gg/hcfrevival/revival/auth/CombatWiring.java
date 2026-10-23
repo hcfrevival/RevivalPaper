@@ -86,6 +86,19 @@ public final class CombatWiring implements ViewerMirrors, AttackJudge, Projectil
             attacker.view().items.mainHand().has(DataComponents.ATTACK_RANGE), attacker.view().passenger());
     }
 
+    /**
+     * The same origin from the server player, for a tick the port isn't stepped on (an exempt tick, or the first one after
+     * it, before the re-seed): vanilla's handler moved the player to the client's claims, so its eye is where the client
+     * picked from.
+     */
+    public static AttackerSnapshot serverSnapshot(final AuthPlayer attacker) {
+        final ServerPlayer p = attacker.player();
+        return new AttackerSnapshot(p.getX(), p.getY(), p.getZ(), p.getX(), p.getY(), p.getZ(), p.getEyeHeight(), attacker.tickYRot(), attacker.tickXRot(),
+            p.getBoundingBox(), attacker.view().attributes.value(Attributes.BLOCK_INTERACTION_RANGE),
+            attacker.view().attributes.value(Attributes.ENTITY_INTERACTION_RANGE), attacker.view().items.mainHand().has(DataComponents.ATTACK_RANGE),
+            attacker.view().passenger());
+    }
+
     private final MirrorBook.Sample capSample = new MirrorBook.Sample();
 
     /**

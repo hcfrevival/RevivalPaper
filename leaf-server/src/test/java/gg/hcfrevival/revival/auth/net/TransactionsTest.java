@@ -215,6 +215,26 @@ class TransactionsTest {
     }
 
     @Test
+    void aKeepAliveIsNeverBundled() {
+        // Torture freeze1: a vanilla client answers a lone keep-alive on its network thread, a bundled one only when its
+        // main thread runs; after a stall it answered them out of order and Paper kicked it
+        this.context.coalesce = true;
+        final Packet<?> a = this.selfMotion(0.1);
+        final Packet<?> keepAlive = new net.minecraft.network.protocol.common.ClientboundKeepAlivePacket(42L);
+        final Packet<?> b = this.selfMotion(0.2);
+        this.send(a);
+        this.send(keepAlive);
+        this.send(b);
+        assertEquals(List.of(keepAlive), this.connection.sent, "the keep-alive goes out at once, ahead of the open bundle");
+        this.transactions.endOfTick(this.connection, this.context, true);
+        assertEquals(2, this.connection.sent.size());
+        final List<Packet<?>> bundle = contents(this.connection.sent.get(1));
+        assertEquals(3, bundle.size(), "the bundle stays open across it: its ping and both motions");
+        assertSame(a, bundle.get(1));
+        assertSame(b, bundle.get(2));
+    }
+
+    @Test
     void aTickWithNothingToSayStillSendsAHeartbeat() {
         this.context.coalesce = true;
         this.transactions.endOfTick(this.connection, this.context, true);

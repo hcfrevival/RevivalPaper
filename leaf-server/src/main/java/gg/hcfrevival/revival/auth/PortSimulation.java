@@ -353,6 +353,8 @@ public final class PortSimulation implements Simulation {
         // MultiPlayerGameMode.stopDestroyBlock -> resetAttackStrengthTicker, in the drain before the tick
         this.player.attackStrengthTicker = 0;
         this.belief.attackStrengthTicker = 0;
+        this.player.strengthUncertain = false;
+        this.belief.strengthUncertain = false;
     }
 
     @Override
@@ -635,11 +637,14 @@ public final class PortSimulation implements Simulation {
         final float delay = (float) (1.0 / alternative.attributes.attackSpeed.value() * 20.0);
         final int ticker = alternative.attackStrengthTicker;
         final boolean fullStrength = fullStrength(ticker, delay);
-        // Only to a strength the client's ticker could have had: the port's one tick either way (the threshold), or reset (an
-        // item change the port saw a tick off). A legacy sword's maxed attack speed is full strength at any ticker, so a
-        // client that skips its own x0.6 after a sprint hit (KeepSprint) isn't explained by a weak hit (pvp-issues SP-3)
-        if (fullStrength(0, delay) == fullStrength && fullStrength(ticker + 1, delay) == fullStrength
-            && (ticker == 0 || fullStrength(ticker - 1, delay) == fullStrength)) {
+        // Only to a strength the client's ticker could have had, and only while the ticker counts from a reset the port
+        // can't pin to a tick (an item change, H9): its one tick either way (the threshold), or reset when that change was
+        // a tick ago. Counted from an attack or a dig's stop the ticker is exact, so a 26.x weapon's full-strength sprint hit
+        // isn't explained by a weak one (fable review #7b: KeepSprint on every axe hit). A legacy sword's maxed attack
+        // speed is full strength at any ticker (pvp-issues SP-3)
+        if (!alternative.strengthUncertain || fullStrength(ticker + 1, delay) == fullStrength
+            && (ticker == 0 || fullStrength(ticker - 1, delay) == fullStrength)
+            && (alternative.itemSwapTicker > 1 || fullStrength(0, delay) == fullStrength)) {
             return false;
         }
         final float base = (float) alternative.attributes.attackKnockback.value();
@@ -655,6 +660,7 @@ public final class PortSimulation implements Simulation {
         }
         alternative.attackStrengthTicker = 0;
         alternative.itemSwapTicker = 0;
+        alternative.strengthUncertain = false; // reset by the attack, at a known tick
         this.sync(alternative, view);
         return this.keepIfClaimed(alternative, view, world, claimX, claimY, claimZ);
     }

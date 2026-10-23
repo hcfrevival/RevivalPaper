@@ -52,6 +52,22 @@ Every such path, checked:
 | Refused windows (timer) | nothing: no physics, claims ignored, never replayed | safe |
 | Teleport accepts | judged as claims (MV-6) | safe |
 
+## Code review (2026-10-23)
+
+An independent read of everything since `3638e753` (code only, no runs) checked each change against the vanilla 26.3
+client's source. Its findings, each confirmed in the code before it was fixed:
+
+| # | Finding | Fix | Proof |
+|---|---|---|---|
+| R1 | The ghost-hand checks cast from the port's eye even while the port isn't stepped (an exempt tick: riding, a solid mover beside the player, riptide), so a click from where the player really is read as unseen | the server player's eye then (`CombatWiring.serverSnapshot`), which vanilla moved to the claims; also for the first tick after an exemption, before the re-seed | by reading; the ghost-hand rows and the real-client blocks set unchanged |
+| R2 | The sprint-only attribute drop compared with the acked view: a sync undoing one still on its way (soul speed off its strip) was dropped, and client and truth kept the modifier: +40% on plain ground, on purpose if wanted | compared with the last movement-speed snapshot sent (`SelfEcho.withoutSprintOnly(packet, sent, view)`), what the client holds once the syncs on their way land | unit `ClientAttributesTest.aSyncUndoingOneOnItsWayStillGoesOut` |
+| R3 | The record of the server-owned flag bits sent missed bytes sent raw (an exempt tick): fire caught in a boat, then its end dropped as already sent | both records follow every self sync sent, filtered or not | by reading |
+| R4 | The keep-alive bypass stamped flushes outside the transaction lock | inside it | unit `TransactionsTest.aKeepAliveIsNeverBundled` |
+| R5 | `click-lock` fired on steady humans (CV 0.05-0.07, no tempo drift) | the alert waits for the lock to hold N more clicks | a replica simulation (`neue-combat.md` §12.2) |
+| R6 | A light block has an outline only for a player holding light; read with an empty context it had none, so creative right-clicks on one were unseen | read with the player's held item | by reading |
+| R7a | A dug face was sampled at five points; a block seen through a 1/16 strip failed when the crosshair pick disagreed | a 5x5 grid | by reading |
+| R7b | `retryAttackStrength` still explained KeepSprint for weapons with a real cooldown: reset is weak for an axe, so every full-strength sprint hit read as a possible weak one (the review saw the threshold tick only) | the branch runs only while the ticker counts from an item change (H9), reset only a tick after it | cheat rows "keep-sprint: the same axe hit, ..." (leaked on the old rule, corrected now) and its control |
+
 ## Already tracked
 
 - Off-crosshair placing and digging (ghost hand through walls): pvp-issues WD-4, solved 2026-10-23 (grammar rule

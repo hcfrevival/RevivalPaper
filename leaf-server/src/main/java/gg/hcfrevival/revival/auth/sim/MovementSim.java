@@ -137,6 +137,7 @@ public final class MovementSim {
             p.attackStrengthTicker = 0;
             p.itemSwapTicker = 0;
             p.lastItemInMainHand = p.mainHand.copy();
+            p.strengthUncertain = true;
         }
         this.updatePlayerPose(p);
         // LocalPlayer.sendPosition (LocalPlayer.java:330), after the tick: the option is read from here on
@@ -1504,6 +1505,7 @@ public final class MovementSim {
         // MultiPlayerGameMode.attack: resetAttackStrengthTicker
         p.attackStrengthTicker = 0;
         p.itemSwapTicker = 0;
+        p.strengthUncertain = false;
     }
 
     /**

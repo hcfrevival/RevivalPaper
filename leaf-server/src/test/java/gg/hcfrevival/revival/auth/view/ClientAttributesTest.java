@@ -70,6 +70,27 @@ class ClientAttributesTest {
     }
 
     @Test
+    void aSyncUndoingOneOnItsWayStillGoesOut() {
+        // Fable review #2: soul speed, 250 ms. The entry sync (base + soul speed) is on its way, the acked view still lacks
+        // it; the exit sync (base only) matches the view but for sprint. Judged against the view it was dropped, and the
+        // client kept soul speed on plain ground once the entry sync landed. Judged against the last one sent, it goes out
+        final ClientAttributes acked = new ClientAttributes();
+        acked.apply(speed(0.10000000149011612));
+        final ClientboundUpdateAttributesPacket entry = new ClientboundUpdateAttributesPacket(7, speed(0.10000000149011612, total("soul_speed", 0.4)));
+        final ClientboundUpdateAttributesPacket.AttributeSnapshot onItsWay = SelfEcho.speedSnapshot(entry);
+        final ClientboundUpdateAttributesPacket exit = new ClientboundUpdateAttributesPacket(7, speed(0.10000000149011612,
+            ClientAttributes.SPEED_MODIFIER_SPRINTING));
+        org.junit.jupiter.api.Assertions.assertNull(SelfEcho.withoutSprintOnly(exit, acked), "against the acked view alone: dropped (the bug)");
+        org.junit.jupiter.api.Assertions.assertSame(exit, SelfEcho.withoutSprintOnly(exit, onItsWay, acked), "against the one on its way: sent");
+        // And a sync that only toggles sprint against the one on its way is still dropped
+        final ClientboundUpdateAttributesPacket sprintOnly = new ClientboundUpdateAttributesPacket(7, speed(0.10000000149011612,
+            total("soul_speed", 0.4), ClientAttributes.SPEED_MODIFIER_SPRINTING));
+        org.junit.jupiter.api.Assertions.assertNull(SelfEcho.withoutSprintOnly(sprintOnly, onItsWay, acked));
+        // With nothing sent since the record began, the view decides
+        org.junit.jupiter.api.Assertions.assertNull(SelfEcho.withoutSprintOnly(exit, null, acked));
+    }
+
+    @Test
     void respawnKeepsModifiersOnlyWhenAsked() {
         final ClientAttributes attributes = new ClientAttributes();
         attributes.apply(speed(0.2, total("speed", 0.4)));

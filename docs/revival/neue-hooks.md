@@ -36,7 +36,8 @@ from the server's own view, held clicks land on server positions, and the tipper
 > using; `applied` for every applied logged entry (acked or forced); no `Punch` replay while locked out. The click cap is
 > `auth.input.ClickBucket` (refilled once per window that runs, before its keybinds; `AuthStats.attacksOverCps`), detector
 > A is `auth.input.CadenceWatch` (`authoritative.stats.click-streak-ticks` 100, `AuthInputAnomalyEvent` kind
-> `click-streak`; detector B is p2). The rewind cap is shared: `CombatWiring.sharedRewindCap`, used by the judge,
+> `click-streak`), and so is detector B (`click-lock-clicks` 150, `click-lock-residual` 0.75, `click-lock-min-cps` 8.0,
+> kind `click-lock`). The rewind cap is shared: `CombatWiring.sharedRewindCap`, used by the judge,
 > `NeueReach.authority` (its one line changed) and projectiles. `NeueLiveScenarios` is registered after
 > `damageWindowScenarios()`.
 
