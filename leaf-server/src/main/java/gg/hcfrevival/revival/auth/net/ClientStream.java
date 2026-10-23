@@ -99,6 +99,7 @@ public final class ClientStream {
         int inputs;
         int sprints;
         int moves;
+        int positions;
         int pongs;
         long timerAckNanos;
         long arrivalNanos;
@@ -195,6 +196,7 @@ public final class ClientStream {
             this.inputs = 0;
             this.sprints = 0;
             this.moves = 0;
+            this.positions = 0;
             this.pongs = 0;
             this.timerAckNanos = 0L;
             this.arrivalNanos = 0L;
@@ -279,13 +281,15 @@ public final class ClientStream {
     public static final int RECORDED = 0;
     /** Out of the vanilla order: counted, kept. */
     public static final int OUT_OF_ORDER = 1;
-    /** A second move claim in one window: a protocol violation (vanilla 26.3 kicks it too). */
+    /** A second position claim in one window: a protocol violation (vanilla 26.3 kicks it too). */
     public static final int SECOND_CLAIM = 2;
     /** Past {@link #MAX_ITEMS} in one window (a client that never ends its tick): dropped, a protocol violation. */
     public static final int OVERFLOW = 3;
     /**
      * A second {@code PlayerInput} or sprint command in one window: counted (design §15.8, a frame-time key press on a
-     * modded client), the last one before the move claim counts.
+     * modded client), the last one before the move claim counts. So is a second move packet that isn't a second position
+     * (review 3 #5: the reply to a rotation packet written around the choke point, which its ping can't place, or a modded
+     * client's packet out of the tick); the window's claim is its last position.
      */
     public static final int EXTRA_INPUT = 4;
 
@@ -329,7 +333,10 @@ public final class ClientStream {
         switch (category) {
             case INPUT -> extra = ++window.inputs > 1;
             case SPRINT -> extra = ++window.sprints > 1;
-            case MOVE -> second = ++window.moves > 1;
+            case MOVE -> {
+                second = ((ServerboundMovePlayerPacket) packet).hasPosition() && ++window.positions > 1;
+                extra = ++window.moves > 1 && !second;
+            }
             default -> {
             }
         }

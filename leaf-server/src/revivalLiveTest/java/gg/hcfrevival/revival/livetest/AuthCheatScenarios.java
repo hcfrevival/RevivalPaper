@@ -244,6 +244,7 @@ final class AuthCheatScenarios {
         this.slowThenBurst();
         this.noTickEnd();
         this.twoMoves();
+        this.strayRotation(); // review 3 #5: only a second position claim is the instant kick
 
         // Teleports
         this.spoofedAccept();
@@ -297,6 +298,11 @@ final class AuthCheatScenarios {
         this.pistonCase("piston: pushed along its lane, the claims adopted (control)", 0);
         this.pistonCase("piston: a piston 10 blocks off toggled, the claims rise 0.55 a tick (a claim-wall climb)", 1);
         this.pistonCase("piston: in the lane, the claims rise 0.55 a tick instead of moving with the push", 2);
+        // Review 3 #6, #7: only a launching geyser's column is exempt, and an exempt tick shows viewers where the server holds
+        // the player
+        this.geyserActive();
+        this.geyserBuried();
+        this.geyserGhost();
         // Classic audit #3: use packets carry no rotation or hand of their own
         this.silentPot();
         this.offhandPot(true);
@@ -1230,6 +1236,32 @@ final class AuthCheatScenarios {
             this.expect(this.track.truthMaxZ <= start[2] + EPS && Math.max(this.track.bodyMaxZ, this.moveMaxZ) <= start[2] + EPS,
                 "neither claim was taken (truth z +" + f(this.track.truthMaxZ - start[2]) + ")");
             this.note(this.c.kicked ? "kicked" : "not kicked, the window ran (vanilla kicks a second position claim)");
+        });
+        this.honestAfter(id, NONE, 0);
+        this.finish(id);
+    }
+
+    // Review 3 #5: the reply to a rotation packet written around the choke point comes before the ping that logs it, so it
+    // reads as a move packet of its own, and the tick's real move was a "second move claim": a kick for any Lunar or Fabric
+    // player near a plugin that turns players by packet
+    private void strayRotation() {
+        final String id = "honest: a rotation reply out of its place (a rotation packet written around the netcode), then the tick's move (review 3 #5, control)";
+        this.begin(id, () -> {
+        });
+        this.arm(id, () -> {
+            this.label = "CONTROL";
+            this.c.keys = FORWARD;
+            this.c.before = x -> {
+                x.before = null;
+                x.preDrain.add(new ServerboundMovePlayerPacket.Rot(x.yaw, x.pitch, false, false));
+            };
+        });
+        this.judge(10, id, () -> {
+            final Snap d = this.delta(this.c);
+            this.honestExpect(!this.c.kicked, "not kicked (" + this.kicks.getOrDefault(this.c.player.getUUID(), "") + ")");
+            this.honestExpect(d.streamViolations() >= 1, "counted: " + d.streamViolations());
+            this.honestExpect(d.corrections() == 0, "the tick's move was its claim: corrections " + d.corrections() + ", exact " + d.exact() + "/" + d.compared());
+            this.c.keys = NONE;
         });
         this.honestAfter(id, NONE, 0);
         this.finish(id);
@@ -2599,6 +2631,108 @@ final class AuthCheatScenarios {
     // Self echo
     // =================================================================================================================
 
+    private static final int EXEMPT_EXTERNAL_MOVER = AuthStats.EXEMPT_SIMULATION_BASE + gg.hcfrevival.revival.auth.sim.ExemptReason.EXTERNAL_MOVER.ordinal();
+
+    // A one-block shaft at (ox, oz + 2) in stone walls, open on top. Active: a continuous potent sulfur at gy over lava, three
+    // water sources above it. Buried: a dry potent sulfur two below the floor, under its stone, the water from gy up (a
+    // base's pool over a sulfur it buried, review 3 #6)
+    private void geyserShaft(final boolean active) {
+        final int x = this.ox;
+        final int z = this.oz + 2;
+        final BlockState stone = Blocks.STONE.defaultBlockState();
+        for (int y = this.gy; y <= this.gy + 3; y++) {
+            this.set(x - 1, y, z, stone);
+            this.set(x + 1, y, z, stone);
+            this.set(x, y, z - 1, stone);
+            this.set(x, y, z + 1, stone);
+        }
+        if (active) {
+            this.set(x, this.gy - 1, z, Blocks.LAVA.defaultBlockState());
+            this.set(x, this.gy, z, Blocks.POTENT_SULFUR.defaultBlockState().setValue(net.minecraft.world.level.block.PotentSulfurBlock.STATE,
+                net.minecraft.world.level.block.state.properties.PotentSulfurState.CONTINUOUS));
+        } else {
+            this.set(x, this.gy - 2, z, Blocks.POTENT_SULFUR.defaultBlockState());
+        }
+        for (int y = active ? this.gy + 1 : this.gy; y <= this.gy + 3; y++) {
+            this.set(x, y, z, Blocks.WATER.defaultBlockState());
+        }
+    }
+
+    private void geyserJoin(final String id, final boolean active) {
+        this.step(1, id + ": arena and join", () -> {
+            this.open(id);
+            this.probe = () -> {
+            };
+            this.track = new Track();
+            this.resetMoves();
+            this.clearArena();
+            this.geyserShaft(active);
+            this.c = new Cheater(this.next("Cheat"), this.ox + 0.5, active ? this.gy + 1 : this.gy, this.oz + 2.5, 0.0F);
+        });
+    }
+
+    private void geyserActive() {
+        final String id = "geyser: in a continuous geyser's column, the claims go to vanilla within max-move (review 3 #6, control)";
+        this.geyserJoin(id, true);
+        this.judge(WARM + 20, id, () -> {
+            this.label = "CONTROL";
+            final long exempt = this.c.auth.stats().exempt(EXEMPT_EXTERNAL_MOVER);
+            this.honestExpect(exempt > 0 && !this.c.kicked, "exempt in the column: " + exempt + " ticks; kicked " + this.c.kicked);
+        });
+        this.finish(id);
+    }
+
+    private void geyserBuried() {
+        final String id = "geyser: a pool over potent sulfur buried under stone, the claims rise 0.9 a tick (review 3 #6)";
+        this.geyserJoin(id, false);
+        final double[] top = {Double.NEGATIVE_INFINITY};
+        final long[] exempt = new long[1];
+        this.step(WARM, id + ": rise", () -> {
+            exempt[0] = this.c.auth.stats().exempt(EXEMPT_EXTERNAL_MOVER);
+            final double[] y = {this.gy};
+            this.c.forcePosition = true;
+            this.c.claimOnGround = false;
+            this.c.cheat = x -> {
+                y[0] += 0.9;
+                x.model.setVelocity(x.model.vx(), 0.0, x.model.vz());
+                x.model.rebase(x.model.x(), y[0], x.model.z());
+            };
+            this.probe = () -> top[0] = Math.max(top[0], this.c.player.getY());
+        });
+        this.judge(12, id, () -> {
+            this.expect(top[0] - this.gy < 1.0, "the server never took the rise (y +" + f(top[0] - this.gy) + ")");
+            this.expect(this.c.auth.stats().exempt(EXEMPT_EXTERNAL_MOVER) == exempt[0], "no tick over it was exempt ("
+                + (this.c.auth.stats().exempt(EXEMPT_EXTERNAL_MOVER) - exempt[0]) + ")");
+        });
+        this.honestAfter(id, NONE, 0);
+        this.finish(id);
+    }
+
+    private void geyserGhost() {
+        final String id = "geyser: in a continuous geyser's column, claims a spot 3 blocks off each tick; viewers are sent where the server holds it (review 3 #7)";
+        this.geyserJoin(id, true);
+        final double[] ghost = {0.0};
+        final long[] refused = new long[1];
+        this.step(WARM, id + ": claims 3 blocks off", () -> {
+            refused[0] = this.c.auth.stats().moverClaimsRefused();
+            this.c.cheat = x -> x.moveOverride = new ServerboundMovePlayerPacket.Pos(new Vec3(this.ox + 3.5, this.gy + 1, this.oz + 2.5), false, false);
+            final double[] step = new double[3];
+            this.probe = () -> {
+                final gg.hcfrevival.revival.auth.replicate.PathFeed feed = gg.hcfrevival.revival.auth.PathWiring.feed(this.c.auth);
+                if (feed != null && feed.newest(step) != Long.MIN_VALUE) {
+                    ghost[0] = Math.max(ghost[0], Math.sqrt(this.c.player.distanceToSqr(step[0], step[1], step[2])));
+                }
+            };
+        });
+        this.judge(10, id, () -> {
+            this.c.cheat = null;
+            final long count = this.c.auth.stats().moverClaimsRefused() - refused[0];
+            this.expect(count > 0, "claims past max-move refused: " + count);
+            this.expect(ghost[0] < 0.5, "the path stayed where the server holds the player (at most " + f(ghost[0]) + " off)");
+        });
+        this.finish(id);
+    }
+
     // kind 0: a piston behind the player (facing +z) extends, and the client moves with it as vanilla does (0.51 a tick,
     // two ticks: the band adopts it, no correction); 1: a piston 10 blocks off extends while the client claims 0.55 up a
     // tick; 2: the piston behind it extends while it claims 0.55 up instead of along the push
@@ -3027,9 +3161,9 @@ final class AuthCheatScenarios {
     }
 
     // pvp-issues WD-1, HCF's block glitch: place a block where a plugin cancels the placement (a claim, a combat wall) and climb
-    // the client's ghost of it over a 2-high wall. The truth never stands on a placement the server denied
-    // (honor-denied-predictions false), so it stays behind the wall; the control places the same block for real and climbs
-    // over. The cheat keeps its ghost past the server's ack, the way a slow ack or a modified client would.
+    // the client's ghost of it over a 2-high wall. The truth never stands on a placement the server denied, so it stays
+    // behind the wall; the control places the same block for real and climbs over. The cheat keeps its ghost past the
+    // server's ack, the way a slow ack or a modified client would.
     private void blockGlitch(final String id, final boolean denied) {
         this.begin(id, () -> this.wall(2, 2, Blocks.STONE.defaultBlockState()));
         final BlockPos[] spot = new BlockPos[1];

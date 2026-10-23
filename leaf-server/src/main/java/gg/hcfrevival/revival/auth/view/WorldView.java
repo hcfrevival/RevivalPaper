@@ -36,8 +36,8 @@ import org.jspecify.annotations.Nullable;
  * here: the simulation computes shapes itself and never calls Paper's patched collision helpers (report 07 §1.6).
  * <p>
  * v1 admits a prediction only where the server's own handling changed the block the same way (a placement the server
- * denied is not honored by the truth, §15.2 {@code honor-denied-predictions: false}); judging what a vanilla client would
- * have predicted on its own is not implemented yet. Main thread only.
+ * denied is not honored by the truth, §15.2); judging what a vanilla client would have predicted on its own is not
+ * implemented yet. Main thread only.
  */
 public final class WorldView implements gg.hcfrevival.revival.auth.sim.SimWorld, gg.hcfrevival.revival.auth.combat.PickWorld, gg.hcfrevival.revival.combat.ProjectileBlocks,
     gg.hcfrevival.revival.auth.visibility.OcclusionWorld {

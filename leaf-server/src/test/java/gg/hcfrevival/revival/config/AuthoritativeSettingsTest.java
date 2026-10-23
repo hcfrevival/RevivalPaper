@@ -1,7 +1,6 @@
 package gg.hcfrevival.revival.config;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import gg.hcfrevival.revival.RevivalTest;
@@ -27,7 +26,6 @@ class AuthoritativeSettingsTest {
         assertEquals(1500, settings.maxUnackedMs());
         assertEquals(1, settings.maxAttacksPerClientTick());
         assertEquals("deny", settings.vehicles());
-        assertFalse(settings.honorDeniedPredictions());
         assertTrue(settings.heartbeatPing());
         assertEquals(2, settings.pathStepTicks());
         assertEquals(1.0E-6, settings.correctionPersistMin(), "NAS glitch: no teleport for a sub-µm gap");

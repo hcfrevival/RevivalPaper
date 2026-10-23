@@ -1103,8 +1103,8 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
             return true;
         }
         switch (this.stream.recordChecked(packet)) {
-            case ClientStream.SECOND_CLAIM -> this.protocolViolation("a second move claim in one client tick");
-            case ClientStream.EXTRA_INPUT -> this.softViolation("a second input or sprint command in one client tick");
+            case ClientStream.SECOND_CLAIM -> this.protocolViolation("a second position claim in one client tick");
+            case ClientStream.EXTRA_INPUT -> this.softViolation("a second input, sprint command or move packet in one client tick");
             case ClientStream.OVERFLOW -> {
                 this.protocolViolation("a client tick past " + ClientStream.MAX_ITEMS + " packets (no TickEnd)");
                 return true; // dropped
@@ -1673,7 +1673,7 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
             switch (window.ref(i)) {
                 case final net.minecraft.network.protocol.game.ServerboundContainerClosePacket ignored -> lastClose = i;
                 case final ServerboundPlayerInputPacket input -> sentInput = input.input();
-                case final ServerboundMovePlayerPacket move -> claim = move;
+                case final ServerboundMovePlayerPacket move -> claim = laterClaim(claim, move);
                 case final ServerboundPlayerAbilitiesPacket abilities -> flying = abilities.isFlying() ? 1 : 0;
                 case final ServerboundPlayerCommandPacket command -> {
                     switch (command.getAction()) {
@@ -1790,6 +1790,15 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
         }
         if (tickEnd != null) {
             this.replay(tickEnd); // vanilla's per-tick resets (known movement, the two-positions guard) at the right point
+        }
+        if (this.exemptStep) {
+            // Review 3 #7: an exempt tick's step is where vanilla's handler left the player, not the claim, which it may
+            // have refused (a mover claim past max-move, moved too quickly): viewers saw, and swung at, a ghost
+            this.exemptStep = false;
+            if (this.teleportsPending == 0) {
+                Authority.pathSink().onTick(this, tick, this.player.getX(), this.player.getY(), this.player.getZ(), this.tickYRot, this.tickXRot,
+                    this.player.onGround());
+            }
         }
         if (this.claimToConfirm) {
             // Review E1: a claim vanilla refused (moved too quickly, a setback) or the truth corrected is no seed's pair
@@ -2331,6 +2340,8 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
     private boolean clientDigging;
     private boolean dugThisTick;
     private int lastExempt = AuthStats.EXEMPT_NONE;
+    // The exempt tick just simulated owes its path step, appended after the window's replay
+    private boolean exemptStep;
     private int keybindExempt = AuthStats.EXEMPT_NONE;
     private int mirroredTick;
     private double eyeOffsetX;
@@ -2545,6 +2556,7 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
         final double cz = hasPos ? claim.getZ(0.0) : 0.0;
 
         this.pushTick = false;
+        this.exemptStep = false;
         int exempt = refused ? AuthStats.EXEMPT_REFUSED : this.exemptReason();
         if (exempt == AuthStats.EXEMPT_NONE && (this.reseedFromServer || !sim.seeded())) {
             this.seedFromServer();
@@ -2685,9 +2697,7 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
                     this.reseedFromServer = true;
                 }
             }
-            if (exempt != AuthStats.EXEMPT_NOT_LOADED && exempt != AuthStats.EXEMPT_REFUSED && hasPos && this.teleportsPending == 0) {
-                Authority.pathSink().onTick(this, this.runningTick, cx, cy, cz, this.tickYRot, this.tickXRot, claim.isOnGround());
-            }
+            this.exemptStep = exempt != AuthStats.EXEMPT_NOT_LOADED && exempt != AuthStats.EXEMPT_REFUSED && hasPos;
         }
         if (claim != null) {
             this.clientOnGround = claim.isOnGround(); // every move packet carries it; none means it didn't change
@@ -2825,6 +2835,11 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
     static boolean exemptClaimRuns(final AuthMode mode, final int exempt) {
         return exempt != AuthStats.EXEMPT_NOT_LOADED && exempt != AuthStats.EXEMPT_REFUSED
             && (exempt != AuthStats.EXEMPT_WARMUP || mode != AuthMode.ENFORCE);
+    }
+
+    /** The window's claim after move packet {@code move}: the last with a position (review 3 #5: a stray Rot is no claim). */
+    static ServerboundMovePlayerPacket laterClaim(final @Nullable ServerboundMovePlayerPacket claim, final ServerboundMovePlayerPacket move) {
+        return claim != null && claim.hasPosition() && !move.hasPosition() ? claim : move;
     }
 
     /** Whether a claimed move fits on every axis within {@code bound} blocks (review E1: the port sweeps the whole move). */

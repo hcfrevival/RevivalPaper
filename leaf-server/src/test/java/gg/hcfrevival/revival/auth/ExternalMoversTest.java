@@ -6,10 +6,15 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import gg.hcfrevival.revival.RevivalRegistries;
 import gg.hcfrevival.revival.RevivalTest;
+import gg.hcfrevival.revival.combat.ProjectileBlocks;
+import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.block.PotentSulfurBlock;
 import net.minecraft.world.level.block.ShulkerBoxBlock;
+import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.block.state.properties.PotentSulfurState;
 import net.minecraft.world.phys.AABB;
 import org.junit.jupiter.api.Test;
 
@@ -45,6 +50,54 @@ class ExternalMoversTest {
         assertFalse(movers.lane(11, player(-3.5, 0.0, 0.5), 12), "behind the piston");
         assertFalse(movers.lane(11, player(5.5, 0.0, 2.5), 12), "beside the lane");
         assertFalse(movers.lane(30, player(5.5, 0.0, 0.5), 12), "the event's window is over");
+    }
+
+    // A column at x = z = 0: what is below y = 0, potent sulfur at 0, water sources from 1 up to (not including) top
+    private static Long2ObjectOpenHashMap<BlockState> column(final BlockState below, final PotentSulfurState state, final int top) {
+        final Long2ObjectOpenHashMap<BlockState> blocks = new Long2ObjectOpenHashMap<>();
+        blocks.put(BlockPos.asLong(0, -1, 0), below);
+        blocks.put(BlockPos.asLong(0, 0, 0), Blocks.POTENT_SULFUR.defaultBlockState().setValue(PotentSulfurBlock.STATE, state));
+        for (int y = 1; y < top; y++) {
+            blocks.put(BlockPos.asLong(0, y, 0), Blocks.WATER.defaultBlockState());
+        }
+        return blocks;
+    }
+
+    private static boolean geyser(final Long2ObjectOpenHashMap<BlockState> blocks, final double feetY) {
+        final ProjectileBlocks world = (x, y, z) -> {
+            final BlockState state = blocks.get(BlockPos.asLong(x, y, z));
+            return state != null ? state : Blocks.AIR.defaultBlockState();
+        };
+        return ExternalMovers.geyserBelow(player(0.5, feetY, 0.5), world, 24);
+    }
+
+    @Test
+    void onlyAnActiveGeyserUnderUnbrokenWaterReachingAirExemptsATick() {
+        // Review 3 #6: potent sulfur launches only ERUPTING or CONTINUOUS (PotentSulfurBlock.getTicker), what is in its water
+        // column, and only while that column is unbroken water reaching air within 4 blocks (findNoxiousGasSourceBlock)
+        assertTrue(geyser(column(Blocks.LAVA.defaultBlockState(), PotentSulfurState.CONTINUOUS, 4), 1.0), "swimming in a geyser");
+        assertTrue(geyser(column(Blocks.LAVA.defaultBlockState(), PotentSulfurState.CONTINUOUS, 4), 2.5), "at its surface");
+        assertTrue(geyser(column(Blocks.MAGMA_BLOCK.defaultBlockState(), PotentSulfurState.ERUPTING, 5), 1.0), "an eruption, 4 deep");
+        assertFalse(geyser(column(Blocks.MAGMA_BLOCK.defaultBlockState(), PotentSulfurState.DORMANT, 4), 1.0), "between eruptions");
+        assertFalse(geyser(column(Blocks.STONE.defaultBlockState(), PotentSulfurState.WET, 4), 1.0), "nothing under it to erupt");
+        assertFalse(geyser(column(Blocks.LAVA.defaultBlockState(), PotentSulfurState.CONTINUOUS, 7), 1.0), "6 deep: no launch");
+        final Long2ObjectOpenHashMap<BlockState> lid = column(Blocks.LAVA.defaultBlockState(), PotentSulfurState.CONTINUOUS, 4);
+        lid.put(BlockPos.asLong(0, 4, 0), Blocks.STONE.defaultBlockState());
+        assertFalse(geyser(lid, 1.0), "a sealed column launches nothing");
+        // The audit's case: a sulfur buried under stone below a base's pool (dry: no water above it)
+        final Long2ObjectOpenHashMap<BlockState> buried = column(Blocks.STONE.defaultBlockState(), PotentSulfurState.DRY, 1);
+        buried.put(BlockPos.asLong(0, 1, 0), Blocks.STONE.defaultBlockState());
+        for (int y = 2; y < 5; y++) {
+            buried.put(BlockPos.asLong(0, y, 0), Blocks.WATER.defaultBlockState());
+        }
+        assertFalse(geyser(buried, 2.0), "a pool over buried sulfur");
+        // ... and an active one in its own pocket, a stone layer between it and the pool
+        final Long2ObjectOpenHashMap<BlockState> pocket = column(Blocks.LAVA.defaultBlockState(), PotentSulfurState.CONTINUOUS, 2);
+        pocket.put(BlockPos.asLong(0, 2, 0), Blocks.STONE.defaultBlockState());
+        for (int y = 3; y < 6; y++) {
+            pocket.put(BlockPos.asLong(0, y, 0), Blocks.WATER.defaultBlockState());
+        }
+        assertFalse(geyser(pocket, 3.0), "a pool over a geyser's sealed pocket");
     }
 
     @Test

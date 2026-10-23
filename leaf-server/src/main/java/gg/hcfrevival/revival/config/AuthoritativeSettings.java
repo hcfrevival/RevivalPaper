@@ -80,8 +80,6 @@ import net.minecraft.resources.Identifier;
  * @param seedMaxMove the most a claimed move or a seeded velocity may be on one axis, in blocks per tick: a seed from
  *                    two claims further apart than this uses the server's known movement (vanilla's moved-too-quickly
  *                    bound is 10 blocks)
- * @param honorDeniedPredictions whether the truth keeps blocks the client predicted but the server denied (false stops
- *                               block glitching)
  * @param maxAttacksPerClientTick attack packets past this many in one client tick are dropped
  * @param heartbeatPing send a ping every server tick that sent the player nothing else, so the tick clock keeps an ack
  * @param bypassAudit watch each authoritative player's channel for physics packets written around the netcode (§15.1)
@@ -167,7 +165,9 @@ import net.minecraft.resources.Identifier;
  *                                 near one move as vanilla allows
  * @param externalMoverMaxMove in an exempt mover tick, vanilla takes a claim only this close to where the server holds
  *                             the player on every axis
- * @param externalMoverGeyserDepth how far below a player in water a potent sulfur geyser is looked for; 0 turns it off
+ * @param externalMoverGeyserDepth how far below a player in water a potent sulfur geyser is looked for (a launching one:
+ *                                 erupting or continuous, unbroken water to the feet, vanilla's 4 water blocks at most);
+ *                                 0 turns it off
  * @param debugHud playtest HUD: every player under authority sees an action-bar line with mode, RTT, exact ticks,
  *                 corrections, timer bank and the last attack's verdict
  * @param debugHudIntervalTicks server ticks between HUD refreshes
@@ -207,7 +207,6 @@ public record AuthoritativeSettings(
     int teleportChunkSendTicks,
     int teleportHoldMaxTicks,
     double seedMaxMove,
-    boolean honorDeniedPredictions,
     int maxAttacksPerClientTick,
     boolean heartbeatPing,
     boolean bypassAudit,
@@ -356,7 +355,6 @@ public record AuthoritativeSettings(
             Math.max(0, reader.getInt(PATH + "teleport-chunk-send-ticks", 2)),
             Math.max(0, reader.getInt(PATH + "teleport-hold-max-ticks", 100)),
             Math.max(0.1, reader.getDouble(PATH + "seed-max-move", 10.0)),
-            reader.getBoolean(PATH + "honor-denied-predictions", false),
             Math.max(1, reader.getInt(PATH + "max-attacks-per-client-tick", 1)),
             reader.getBoolean(PATH + "heartbeat-ping", true),
             reader.getBoolean(PATH + "bypass-audit", true),

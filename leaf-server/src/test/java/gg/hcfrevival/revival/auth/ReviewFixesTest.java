@@ -1,10 +1,13 @@
 package gg.hcfrevival.revival.auth;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import gg.hcfrevival.revival.RevivalTest;
 import gg.hcfrevival.revival.auth.view.ClientProfile;
+import net.minecraft.network.protocol.game.ServerboundMovePlayerPacket;
+import net.minecraft.world.phys.Vec3;
 import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
@@ -46,6 +49,16 @@ class ReviewFixesTest {
         assertTrue(Authority.deniesVehicles(AuthMode.ENFORCE, "deny"));
         assertFalse(Authority.deniesVehicles(AuthMode.OBSERVE, "deny"));
         assertFalse(Authority.deniesVehicles(AuthMode.ENFORCE, "vanilla"));
+    }
+
+    @Test
+    void theWindowsClaimIsItsLastPosition() {
+        // Review 3 #5: a stray rotation before or after the tick's move is no claim
+        final ServerboundMovePlayerPacket rot = new ServerboundMovePlayerPacket.Rot(90.0F, 0.0F, false, false);
+        final ServerboundMovePlayerPacket pos = new ServerboundMovePlayerPacket.Pos(new Vec3(1.0, 2.0, 3.0), true, false);
+        assertSame(pos, AuthPlayer.laterClaim(AuthPlayer.laterClaim(null, rot), pos));
+        assertSame(pos, AuthPlayer.laterClaim(pos, rot));
+        assertSame(rot, AuthPlayer.laterClaim(null, rot), "a tick that only turned");
     }
 
     @Test

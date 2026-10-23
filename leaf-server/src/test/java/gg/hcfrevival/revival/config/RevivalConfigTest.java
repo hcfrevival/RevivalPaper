@@ -146,6 +146,20 @@ class RevivalConfigTest {
     }
 
     @Test
+    void version6DropsTheKeyThatDidNothing() throws Exception {
+        // Version 7 (review 3 #8): honor-denied-predictions was read by nothing
+        Files.writeString(this.file.toPath(), """
+            config-version: 6
+            authoritative:
+              honor-denied-predictions: true
+            """);
+        RevivalConfig.init(this.file);
+        final YamlConfiguration saved = YamlConfiguration.loadConfiguration(this.file);
+        assertFalse(saved.contains("authoritative.honor-denied-predictions"));
+        assertEquals(RevivalConfig.CURRENT_VERSION, saved.getInt("config-version"));
+    }
+
+    @Test
     void malformedFileStopsStartupAndIsNotOverwritten() throws Exception {
         Files.writeString(this.file.toPath(), BROKEN);
 

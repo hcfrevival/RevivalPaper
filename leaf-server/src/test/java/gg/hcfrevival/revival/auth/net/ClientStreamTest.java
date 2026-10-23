@@ -146,10 +146,21 @@ class ClientStreamTest {
     }
 
     @Test
+    void onlyASecondPositionIsASecondClaim() {
+        // Review 3 #5: vanilla kicks a second position in one tick (receivedPositionThisTick) and nothing else; a Rot that
+        // lost its place as a rotation reply, then the tick's own move, is counted
+        final ClientStream stream = new ClientStream();
+        assertEquals(ClientStream.RECORDED, stream.recordChecked(new ServerboundMovePlayerPacket.Rot(90.0F, 0.0F, false, false)));
+        assertEquals(ClientStream.EXTRA_INPUT, stream.recordChecked(new ServerboundMovePlayerPacket.Pos(new Vec3(1.0, 2.0, 3.0), true, false)));
+        assertEquals(ClientStream.EXTRA_INPUT, stream.recordChecked(new ServerboundMovePlayerPacket.StatusOnly(true, false)));
+        assertEquals(ClientStream.SECOND_CLAIM, stream.recordChecked(new ServerboundMovePlayerPacket.PosRot(new Vec3(1.0, 2.0, 3.5), 0.0F, 0.0F, true, false)));
+    }
+
+    @Test
     void aSecondMoveClaimAndAnOverflowAreProtocolViolations() {
         final ClientStream stream = new ClientStream();
-        assertEquals(ClientStream.RECORDED, stream.recordChecked(new ServerboundMovePlayerPacket.StatusOnly(true, false)));
-        assertEquals(ClientStream.SECOND_CLAIM, stream.recordChecked(new ServerboundMovePlayerPacket.StatusOnly(true, false)));
+        assertEquals(ClientStream.RECORDED, stream.recordChecked(new ServerboundMovePlayerPacket.Pos(new Vec3(1.0, 2.0, 3.0), true, false)));
+        assertEquals(ClientStream.SECOND_CLAIM, stream.recordChecked(new ServerboundMovePlayerPacket.Pos(new Vec3(1.0, 2.0, 3.0), true, false)));
         stream.close(ServerboundClientTickEndPacket.INSTANCE, 0L);
         // A client that never ends its tick: the window stops growing at the cap
         int overflow = 0;
@@ -279,7 +290,7 @@ class ClientStreamTest {
 
     @Test
     void aSecondInputIsCountedNotASecondClaim() {
-        // Design §15.8: a frame-time key press on a modded client; only a second move claim stays a protocol violation
+        // Design §15.8: a frame-time key press on a modded client; only a second position claim stays a protocol violation
         final ClientStream stream = new ClientStream();
         assertEquals(ClientStream.RECORDED, stream.recordChecked(new ServerboundPlayerInputPacket(Input.EMPTY)));
         assertEquals(ClientStream.EXTRA_INPUT, stream.recordChecked(new ServerboundPlayerInputPacket(FORWARD)));

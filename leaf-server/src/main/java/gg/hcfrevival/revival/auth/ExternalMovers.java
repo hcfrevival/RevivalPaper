@@ -1,16 +1,20 @@
 package gg.hcfrevival.revival.auth;
 
 import gg.hcfrevival.revival.auth.view.WorldView;
+import gg.hcfrevival.revival.combat.ProjectileBlocks;
 import gg.hcfrevival.revival.config.AuthoritativeSettings;
 import java.util.ArrayList;
 import java.util.function.Predicate;
 import net.minecraft.core.BlockPos;
 import net.minecraft.server.level.ServerPlayer;
-import net.minecraft.tags.FluidTags;
 import net.minecraft.util.Mth;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.block.PotentSulfurBlock;
+import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.block.state.properties.PotentSulfurState;
 import net.minecraft.world.level.entity.EntityTypeTest;
+import net.minecraft.world.level.material.Fluids;
 import net.minecraft.world.phys.AABB;
 
 /**
@@ -28,8 +32,9 @@ import net.minecraft.world.phys.AABB;
  *       piston or shulker box was adopted, a self-made claim-wall climb);</li>
  *   <li>{@link #SOLID}: a boat, shulker or happy ghast touching the player's box whose client copy the port does not
  *       collide with exactly (a placeholder until a logged spawn, a copy that went inexact, a vehicle this client drove,
- *       a passenger), and a potent sulfur geyser under a player in water: the port's {@code EXTERNAL_MOVER} exemption,
- *       vanilla taking the claim only within {@code external-movers.max-move} of where the server holds the player.
+ *       a passenger), and a launching potent sulfur geyser under a player in its water: the port's
+ *       {@code EXTERNAL_MOVER} exemption, vanilla taking the claim only within {@code external-movers.max-move} of where
+ *       the server holds the player.
  *       Exact copies are the port's own colliders ({@code WorldView.collectEntityColliders}), no exemption.</li>
  * </ul>
  * A fishing rod pull is no mover: the client adds {@code (owner - hook) * 0.1} to its own velocity in the drain
@@ -186,7 +191,7 @@ final class ExternalMovers {
             }
             this.found.clear();
         }
-        if (this.geyserBelow(box, world, settings.externalMoverGeyserDepth())) {
+        if (geyserBelow(box, world, settings.externalMoverGeyserDepth())) {
             return SOLID;
         }
         this.pushing = -2;
@@ -221,28 +226,51 @@ final class ExternalMovers {
         return false;
     }
 
-    // LAUNCH_ENTITY_TICKER launches entities in the water column above potent sulfur (PotentSulfurBlockEntity)
-    private boolean geyserBelow(final AABB box, final WorldView world, final int depth) {
-        if (depth <= 0) {
-            return false;
-        }
+    /**
+     * Whether the feet are in a launching geyser's water column. {@code PotentSulfurBlockEntity.LAUNCH_ENTITY_TICKER} runs
+     * only for an ERUPTING or CONTINUOUS sulfur ({@code PotentSulfurBlock.getTicker}) and lifts what is in its column only
+     * while that column is unbroken water reaching air within {@code ALLOWED_WATER_BLOCKS_ABOVE} blocks
+     * ({@code findNoxiousGasSourceBlock}). Review 3 #6: any pool over any sulfur up to {@code depth} below was exempt, and
+     * potent sulfur has a recipe: a base could bury one under its pool for a client-trusted zone.
+     */
+    static boolean geyserBelow(final AABB box, final ProjectileBlocks world, final int depth) {
         final int feetY = Mth.floor(box.minY);
-        final int minX = Mth.floor(box.minX);
-        final int maxX = Mth.floor(box.maxX);
-        final int minZ = Mth.floor(box.minZ);
-        final int maxZ = Mth.floor(box.maxZ);
-        if (!world.fluidState(Mth.floor((box.minX + box.maxX) * 0.5), feetY, Mth.floor((box.minZ + box.maxZ) * 0.5)).is(FluidTags.WATER)) {
-            return false;
-        }
-        for (int bx = minX; bx <= maxX; bx++) {
-            for (int bz = minZ; bz <= maxZ; bz++) {
-                for (int by = feetY; by >= feetY - depth; by--) {
-                    if (world.blockState(bx, by, bz).is(Blocks.POTENT_SULFUR)) {
-                        return true;
-                    }
+        final int bottom = feetY - Math.min(depth, PotentSulfurBlock.ALLOWED_WATER_BLOCKS_ABOVE);
+        for (int bx = Mth.floor(box.minX); bx <= Mth.floor(box.maxX); bx++) {
+            for (int bz = Mth.floor(box.minZ); bz <= Mth.floor(box.maxZ); bz++) {
+                int y = feetY;
+                while (y >= bottom && geyserWater(world, bx, y, bz)) {
+                    y--;
+                }
+                if (y == feetY || y < bottom) {
+                    continue; // no water at the feet, or deeper than a launch reaches
+                }
+                final BlockState sulfur = world.blockState(bx, y, bz);
+                final PotentSulfurState state = sulfur.is(Blocks.POTENT_SULFUR) ? sulfur.getValue(PotentSulfurBlock.STATE) : PotentSulfurState.DRY;
+                if (state != PotentSulfurState.ERUPTING && state != PotentSulfurState.CONTINUOUS) {
+                    continue;
+                }
+                final int last = y + PotentSulfurBlock.ALLOWED_WATER_BLOCKS_ABOVE + 1;
+                int top = feetY + 1;
+                while (top <= last && geyserWater(world, bx, top, bz)) {
+                    top++;
+                }
+                if (top <= last && geyserPassable(world, world.blockState(bx, top, bz), bx, top, bz)) {
+                    return true;
                 }
             }
         }
         return false;
+    }
+
+    // findNoxiousGasSourceBlock: a column block is a water source that is water or has no collision
+    private static boolean geyserWater(final ProjectileBlocks world, final int x, final int y, final int z) {
+        final BlockState state = world.blockState(x, y, z);
+        return state.getFluidState().isSourceOfType(Fluids.WATER) && geyserPassable(world, state, x, y, z);
+    }
+
+    // PotentSulfurBlockEntity.isGeyserPassableBlock
+    private static boolean geyserPassable(final ProjectileBlocks world, final BlockState state, final int x, final int y, final int z) {
+        return state.isAir() || state.is(Blocks.WATER) || world.collisionShape(state, new BlockPos(x, y, z)).isEmpty();
     }
 }

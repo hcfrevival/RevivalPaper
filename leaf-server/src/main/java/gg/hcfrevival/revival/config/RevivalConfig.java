@@ -24,7 +24,7 @@ import org.jspecify.annotations.Nullable;
  */
 public final class RevivalConfig {
 
-    public static final int CURRENT_VERSION = 6;
+    public static final int CURRENT_VERSION = 7;
 
     static final List<String> HEADER = List.of(
         "This is the main configuration file for RevivalPaper.",
@@ -205,6 +205,10 @@ public final class RevivalConfig {
             if (version < 6) {
                 // 6: the double-click alert flagged honest butterfly clickers (classic audit #12)
                 migrateDefault(reader, "authoritative.stats.double-click-ratio", AuthoritativeSettings.DOUBLE_CLICK_RATIO, 0.3);
+            }
+            if (version < 7) {
+                // 7: honor-denied-predictions never did anything (review 3 #8); out of the file, so no owner sets it in vain
+                yaml.set("authoritative.honor-denied-predictions", null);
             }
             reader.set("config-version", CURRENT_VERSION);
         }
