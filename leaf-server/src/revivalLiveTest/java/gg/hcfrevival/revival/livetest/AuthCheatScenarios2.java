@@ -1660,7 +1660,9 @@ final class AuthCheatScenarios2 {
             this.c.pitch = -45.0F;
             this.c.use();
         });
-        this.judge(80, id, () -> {
+        // A 45-degree pearl flies about 75 ticks: judged at 100, the truth has settled from the landing point (a pearl
+        // lands its thrower a hair above the floor; judged at 80 one run caught it 3e-4 up, a tick before it settled)
+        this.judge(100, id, () -> {
             final Snap d = this.delta(this.c);
             final Simulation s = this.c.auth.simulation();
             final double ground = this.level.getHeight(Heightmap.Types.MOTION_BLOCKING, net.minecraft.util.Mth.floor(s.x()), net.minecraft.util.Mth.floor(s.z()));
