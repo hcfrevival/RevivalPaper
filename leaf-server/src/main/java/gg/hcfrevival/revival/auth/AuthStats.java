@@ -109,6 +109,7 @@ public final class AuthStats {
     long correctionsMistimed;
     long backstopsLimited;
     long correctionsWaited;
+    long correctionsSettling;
     long subMicronClaims;
     long holeClaims;
     long holeSnaps;
@@ -383,6 +384,14 @@ public final class AuthStats {
     /** Corrections left to the next claim while the client's windows were queued behind the running one (a catch-up). */
     public long correctionsWaited() {
         return this.correctionsWaited;
+    }
+
+    /**
+     * Corrections left to the next claim while the gap between truth and client still moved: a knock on its way (it
+     * replaces both velocities where it lands), or a velocity gap dying out with the client's drag (pvp-issues NW-1).
+     */
+    public long correctionsSettling() {
+        return this.correctionsSettling;
     }
 
     /** Accept backstops not sent: the second's corrections were spent (max-corrections-per-second). */

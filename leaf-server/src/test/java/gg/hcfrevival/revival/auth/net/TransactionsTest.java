@@ -388,6 +388,11 @@ class TransactionsTest {
     // NAS glitch 2026-10-22: a correction is forecast to where pings of its flush kind land, measured from the window the
     // client was in at the flush to the window the pong comes in
 
+    // Landings of the client's windows so far (every sample here is from a window under 1000)
+    private int landing(final int kind) {
+        return this.transactions.landingWindows(kind, 1000, 1000);
+    }
+
     private int newestPing() {
         final Packet<?> last = this.connection.sent.getLast();
         return last instanceof ClientboundPingPacket ping ? ping.getId() : pingId(contents(last).get(0));
@@ -399,8 +404,20 @@ class TransactionsTest {
         this.send(this.selfMotion(0.1)); // not coalesced: flushed at once
         final Transactions.Acked out = new Transactions.Acked();
         assertEquals(Transactions.ACKED, this.transactions.ack(this.newestPing(), 0, 12, out));
-        assertEquals(2, this.transactions.landingWindows(LandingLag.SCOPE, System.nanoTime(), 1_000_000_000L));
-        assertEquals(-1, this.transactions.landingWindows(LandingLag.TICK, System.nanoTime(), 1_000_000_000L));
+        assertEquals(2, this.landing(LandingLag.SCOPE));
+        assertEquals(-1, this.landing(LandingLag.TICK));
+    }
+
+    @Test
+    void aFlushInABurstCountsFromTheWindowsWaitingBehindIt() {
+        // NW-1: a 2 s freeze's burst runs window by window; the first one's flush went out with nine more TickEnds off the
+        // wire behind it, and stamped with its own window it read as a landing of 11 at RTT 80
+        this.context.window = 228;
+        this.context.landing = 237; // nine TickEnds wait for the main thread
+        this.send(this.selfMotion(0.1));
+        final Transactions.Acked out = new Transactions.Acked();
+        assertEquals(Transactions.ACKED, this.transactions.ack(this.newestPing(), 0, 239, out));
+        assertEquals(2, this.landing(LandingLag.SCOPE));
     }
 
     @Test
@@ -412,8 +429,8 @@ class TransactionsTest {
         this.transactions.endOfTick(this.connection, this.context, true);
         final Transactions.Acked out = new Transactions.Acked();
         assertEquals(Transactions.ACKED, this.transactions.ack(this.newestPing(), 0, 7, out));
-        assertEquals(1, this.transactions.landingWindows(LandingLag.TICK, System.nanoTime(), 1_000_000_000L));
-        assertEquals(-1, this.transactions.landingWindows(LandingLag.SCOPE, System.nanoTime(), 1_000_000_000L));
+        assertEquals(1, this.landing(LandingLag.TICK));
+        assertEquals(-1, this.landing(LandingLag.SCOPE));
     }
 
     @Test
@@ -422,7 +439,7 @@ class TransactionsTest {
         this.send(this.selfMotion(0.1));
         final Transactions.Acked out = new Transactions.Acked();
         assertEquals(Transactions.ACKED, this.transactions.ack(this.newestPing(), 0, 9, out));
-        assertEquals(-1, this.transactions.landingWindows(LandingLag.SCOPE, System.nanoTime(), 1_000_000_000L));
+        assertEquals(-1, this.landing(LandingLag.SCOPE));
     }
 
     @Test
@@ -434,7 +451,7 @@ class TransactionsTest {
         assertEquals(1, this.transactions.probes());
         final Transactions.Acked out = new Transactions.Acked();
         assertEquals(Transactions.ACKED, this.transactions.ack(this.newestPing(), 0, 3, out), "back within the window it went out in");
-        assertEquals(0, this.transactions.landingWindows(LandingLag.SCOPE, System.nanoTime(), 1_000_000_000L));
+        assertEquals(0, this.landing(LandingLag.SCOPE));
         // A scope that gathered a bundle flushes it, its own ping measuring the landing
         this.context.coalesce = true;
         this.transactions.send(this.connection, this.selfMotion(0.2), null, false, this.context);
@@ -450,7 +467,7 @@ class TransactionsTest {
         this.send(this.selfMotion(0.1));
         final Transactions.Acked out = new Transactions.Acked();
         assertEquals(Transactions.ACKED, this.transactions.ack(this.newestPing(), 0, 9, out));
-        assertEquals(-1, this.transactions.landingWindows(LandingLag.SCOPE, System.nanoTime(), 1_000_000_000L));
+        assertEquals(-1, this.landing(LandingLag.SCOPE));
     }
 
     @Test
@@ -459,7 +476,7 @@ class TransactionsTest {
         this.send(this.selfMotion(0.2));
         final Transactions.Acked out = new Transactions.Acked();
         assertEquals(Transactions.SKIPPED, this.transactions.ack(this.newestPing(), 0, 4, out));
-        assertEquals(-1, this.transactions.landingWindows(LandingLag.SCOPE, System.nanoTime(), 1_000_000_000L));
+        assertEquals(-1, this.landing(LandingLag.SCOPE));
     }
 
     @Test

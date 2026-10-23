@@ -201,6 +201,10 @@ public final class PortSimulation implements Simulation {
         this.sim.completeUsingItem(this.player);
     }
 
+    // shortcut: attribute syncs and the self echoes below (flags, pose, use) reach the truth only; the belief takes them by
+    // re-basing on an exact claim. A correction forecast while the client is off the truth across one of them (a speed
+    // effect's sync, a sprint echo) misses by it. Give the belief its own copy, forced entries excepted as for knocks
+    // (beliefVelocity), if a correction after one shows a residual
     @Override
     public void attributes(final List<ClientboundUpdateAttributesPacket.AttributeSnapshot> snapshots) {
         for (final ClientboundUpdateAttributesPacket.AttributeSnapshot snapshot : snapshots) {
@@ -325,11 +329,17 @@ public final class PortSimulation implements Simulation {
         if (before != this.player.sprinting) {
             view.attributes.setSprinting(this.player.sprinting);
         }
+        if (this.beliefOn && this.beliefValid) {
+            this.sim.clientAttack(this.belief, targetIsPlayer); // the client slowed itself wherever it is, on the truth or off it
+        }
     }
 
     @Override
     public void startUsingItem(final InteractionHand hand) {
         this.sim.startUsingItem(this.player, hand, this.useDuration(hand));
+        if (this.beliefOn && this.beliefValid) {
+            this.sim.startUsingItem(this.belief, hand, this.useDuration(hand));
+        }
     }
 
     @Override
@@ -346,6 +356,9 @@ public final class PortSimulation implements Simulation {
     @Override
     public void releaseUsingItem() {
         this.sim.releaseUsingItem(this.player);
+        if (this.beliefOn && this.beliefValid) {
+            this.sim.releaseUsingItem(this.belief);
+        }
     }
 
     @Override
@@ -399,6 +412,39 @@ public final class PortSimulation implements Simulation {
     public void beliefCorrected(final PositionMoveRotation change, final Set<Relative> relatives) {
         if (this.beliefOn && this.beliefValid) {
             this.sim.teleport(this.belief, change, relatives);
+        }
+    }
+
+    @Override
+    public void beliefVelocity(final double x, final double y, final double z, final boolean add) {
+        if (this.beliefOn && this.beliefValid) {
+            if (add) {
+                this.sim.addVelocity(this.belief, x, y, z);
+            } else {
+                this.sim.setVelocity(this.belief, x, y, z);
+            }
+        }
+    }
+
+    @Override
+    public void tickBelief(final Input keys, final float yRot, final float xRot, final ClientView view, final WorldView world) {
+        this.beliefHole = false;
+        if (this.beliefOn && this.beliefValid) {
+            this.stepBelief(keys, yRot, xRot, view, world);
+        }
+    }
+
+    // The client's own state moves with its own inputs too (§15.5), in its own world (denied breaks it still has)
+    private void stepBelief(final Input keys, final float yRot, final float xRot, final ClientView view, final WorldView world) {
+        this.sync(this.belief, view);
+        this.input.set(keys, yRot, xRot);
+        world.takeHoleRead();
+        world.readAsClient(true);
+        try {
+            this.tickWithRockets(this.belief, world);
+        } finally {
+            world.readAsClient(false);
+            this.beliefHole = world.takeHoleRead();
         }
     }
 
@@ -506,6 +552,52 @@ public final class PortSimulation implements Simulation {
         return true;
     }
 
+    @Override
+    public double velocityGap(final gg.hcfrevival.revival.auth.net.Transactions.@Nullable Acked knocks) {
+        if (!this.beliefOn || !this.beliefValid) {
+            return Double.NaN;
+        }
+        double tx = this.player.vx;
+        double ty = this.player.vy;
+        double tz = this.player.vz;
+        double cx = this.belief.vx;
+        double cy = this.belief.vy;
+        double cz = this.belief.vz;
+        if (knocks != null) {
+            for (int i = 0; i < knocks.size(); i++) {
+                final boolean truthToo = !knocks.upperBound(i);
+                if (knocks.packet(i) instanceof final net.minecraft.network.protocol.game.ClientboundSetEntityMotionPacket motion) {
+                    gg.hcfrevival.revival.auth.net.Wire.lpVec3(motion.movement().x, motion.movement().y, motion.movement().z, this.knockDecoded);
+                    cx = this.knockDecoded[0];
+                    cy = this.knockDecoded[1];
+                    cz = this.knockDecoded[2];
+                    if (truthToo) {
+                        tx = cx;
+                        ty = cy;
+                        tz = cz;
+                    }
+                } else if (knocks.packet(i) instanceof final net.minecraft.network.protocol.game.ClientboundExplodePacket explode
+                    && explode.playerKnockback().isPresent()) {
+                    final net.minecraft.world.phys.Vec3 k = explode.playerKnockback().get();
+                    if (Double.isFinite(k.x) && Double.isFinite(k.y) && Double.isFinite(k.z)) {
+                        cx += k.x;
+                        cy += k.y;
+                        cz += k.z;
+                        if (truthToo) {
+                            tx += k.x;
+                            ty += k.y;
+                            tz += k.z;
+                        }
+                    }
+                }
+            }
+        }
+        final double dx = tx - cx;
+        final double dy = ty - cy;
+        final double dz = tz - cz;
+        return Math.sqrt(dx * dx + dy * dy + dz * dz);
+    }
+
     private final double[] knockDecoded = new double[3];
 
     // A knock as the client applies it: SetEntityMotion replaces the velocity (LpVec3-decoded), Explode adds
@@ -571,17 +663,7 @@ public final class PortSimulation implements Simulation {
         final SimPlayer p = this.player;
         this.beliefHole = false;
         if (this.beliefOn && this.beliefValid) {
-            // The client's own state moves with its own inputs too (§15.5), in its own world (denied breaks it still has)
-            this.sync(this.belief, view);
-            this.input.set(keys, yRot, xRot);
-            world.takeHoleRead();
-            world.readAsClient(true);
-            try {
-                this.tickWithRockets(this.belief, world);
-            } finally {
-                world.readAsClient(false);
-                this.beliefHole = world.takeHoleRead();
-            }
+            this.stepBelief(keys, yRot, xRot, view, world);
         }
         this.sync(view);
         if (this.beliefOn) {

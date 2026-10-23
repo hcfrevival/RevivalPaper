@@ -173,8 +173,9 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
     private double deferredY;
     private double deferredZ;
     private volatile int windowTick = 1;
-    // The last TickEnd closed a catch-up window (ClientStream pacing)
+    // The last TickEnd closed a catch-up window (ClientStream pacing); it came more than two ticks after the one before
     private volatile boolean catchingUp;
+    private volatile boolean resumed;
     // For ping stamps on any thread: the paced window count (+1, as windowTick), the last TickEnd's arrival, the period
     private volatile int pacedTick = 1;
     private volatile long windowArrivalNanos;
@@ -202,8 +203,10 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
     private boolean hasPrevClaim;
     // The window's claim was recorded; at the window's end it stays a seed candidate only if the server holds it
     private boolean claimToConfirm;
-    // A refused window since the last exact claim: the next correction goes absolute
+    // The client did something the belief may not have followed (a refused tick, forced entries that landed) and no claim
+    // has shown the belief right since: the next correction goes absolute. The window whose claim last did
     private boolean beliefStale;
+    private int beliefProven = Integer.MIN_VALUE;
     // The onGround of the client's last move packet
     private boolean clientOnGround;
     // This tick a piston or shulker box may push the client: claims within the band are adopted
@@ -396,6 +399,16 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
         return Math.min(this.ticksSinceArrival(), this.arrivals.creditBound(Revival.settings().authoritative().maxBankedTicks()));
     }
 
+    /**
+     * The window the client is in for a landing or a forecast: {@link #windowTick}, or past it every {@code TickEnd} that
+     * came off the wire and waits for the main thread (a catch-up burst runs window by window as its packets are handled,
+     * so while its first windows run the rest are only there; pvp-issues NW-1). Ack deadlines keep {@link #windowTick}.
+     */
+    @Override
+    public int landingWindow() {
+        return this.windowTick + Math.max(this.extrapolatedTicks(), this.arrivals.pending());
+    }
+
     // Torture F3: a ping sent while no TickEnd arrives (an upstream stall) is stamped with the window the client is in
     // by now, not the one the stall left: the client ticks on. One window of grace for ordinary jitter
     private int ticksSinceArrival() {
@@ -418,7 +431,7 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
 
     @Override
     public boolean ticking() {
-        return this.ticksSinceArrival() == 0 && !this.catchingUp;
+        return this.ticksSinceArrival() == 0 && !this.catchingUp && !this.resumed;
     }
 
     /**
@@ -432,8 +445,9 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
 
     /** For the debug log: the last forecast's ticks ahead as queued windows + trip, and its flush kind. */
     String forecastParts() {
-        return this.forecastAhead < 0 ? "-" : this.forecastQueued + "+" + (this.forecastAhead - this.forecastQueued)
-            + (this.forecastKind == gg.hcfrevival.revival.auth.net.LandingLag.TICK ? " tick" : " scope");
+        return (this.forecastAhead < 0 ? "-" : this.forecastQueued + "+" + (this.forecastAhead - this.forecastQueued)
+            + (this.forecastKind == gg.hcfrevival.revival.auth.net.LandingLag.TICK ? " tick" : " scope"))
+            + (this.forecastBackstop ? ", backstop" : "") + (this.forecastKnocks > 0 ? ", knocks " + this.forecastKnocks : "");
     }
 
     @Override
@@ -784,6 +798,7 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
         this.windowTick = this.stream.currentTick();
         this.pacedTick = this.stream.pacedTicks() + 1;
         this.catchingUp = false;
+        this.resumed = false;
         this.clock.start(System.nanoTime(), this.view.tickPeriodNanos(), this.settings().maxBankedTicks());
         this.warm = false;
         this.clearTeleportBookkeeping();
@@ -1122,6 +1137,10 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
         this.stream.setPacing(settings.catchUpGapMs() * 1_000_000L, settings.maxBankedTicks());
         this.stream.close(packet, now, arrival);
         this.windowPeriodNanos = this.view.tickPeriodNanos();
+        // NW-1: a TickEnd after a gap of more than two ticks ends a client freeze (or an upstream stall), and a freeze's
+        // catch-up ticks follow it from the same client frame: until they arrive the client is up to ten windows past the
+        // last one handled, so no landing is measured from it
+        this.resumed = this.windowArrivalNanos != 0L && arrival - this.windowArrivalNanos > 2L * this.windowPeriodNanos;
         this.windowArrivalNanos = arrival;
         final int unpaced = this.windowTick - this.pacedTick;
         this.pacedTick = this.stream.pacedTicks() + 1;
@@ -1556,7 +1575,9 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
         this.player.revivalSprintLedger.simulated(this.mode == AuthMode.ENFORCE);
         this.profile.maybeRefresh(this.player, tick, settings.apolloRules().equals("follow"));
         if (refused) {
-            this.beliefStale = true; // the client moved in a tick the truth refused: its velocity is not the belief's
+            // The client moved in a tick the truth refused: the belief runs it too (refusedTick), and is stale until a claim
+            // shows it right
+            this.beliefStale = true;
             this.gapCaused = true;
         }
         if (this.transactions.takeLostSync()) {
@@ -1589,6 +1610,9 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
                 }
             } finally {
                 this.applyingForced = false;
+            }
+            if (settings.debugLog()) {
+                DebugHud.forced(this, tick, this.forced);
             }
             this.forced.clear();
             this.forcedSinceCatchUp = true;
@@ -1663,7 +1687,7 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
                 }
                 case ClientStream.ACCEPT -> {
                     try {
-                        this.checkAccept((ServerboundAcceptTeleportationPacket) window.ref(i), settings);
+                        this.checkAccept((ServerboundAcceptTeleportationPacket) window.ref(i), window, i, settings);
                     } catch (final RuntimeException e) {
                         this.simulationError(e);
                     }
@@ -1767,9 +1791,14 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
         if (this.forcedSinceCatchUp && !this.holdForForced()) {
             // Load P0 (the N=100 cascade): the client has every forced entry now. A divergence they left is fixed by one
             // absolute resync (the next correction), never a relative chain, and the mirrors re-paired once, now that
-            // this viewer's acks are current (a re-pair while they lag is forced too, and loops)
+            // this viewer's acks are current (a re-pair while they lag is forced too, and loops). Unless this window's claim,
+            // after the drain that landed them, was where the belief put it: then they left nothing the belief doesn't know
+            // (NW-1: after a 2 s freeze, whose forced entries are other players' moves, chunks and block acks, the absolute
+            // carried the forecast's inputs across the catch-up burst and missed by a block at 250 ms)
             this.forcedSinceCatchUp = false;
-            this.beliefStale = true;
+            if (this.transactions.forcedOutstanding() || this.beliefProven != this.runningTick) {
+                this.beliefStale = true;
+            }
             this.repairMirrors(false, settings);
         }
         this.repairSolids();
@@ -2525,6 +2554,12 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
             this.stats.simulated++;
             if (hasPos) {
                 unexplained = sim.beliefDistance(cx, cy, cz);
+                if (unexplained <= settings.correctionPersistMin()) {
+                    // The belief, run on the client's own inputs from where it last stood, put it where it says: its velocity
+                    // is the client's, whatever left it stale (a refused tick it ran, forced entries that landed in this drain)
+                    this.beliefProven = this.runningTick;
+                    this.beliefStale = false;
+                }
             }
             this.combatSprinting = sim.sprinting();
             if (this.mode == AuthMode.ENFORCE) {
@@ -2589,9 +2624,10 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
         } else {
             this.stats.countExempt(exempt);
             switch (exempt) {
-                case AuthStats.EXEMPT_NOT_LOADED, AuthStats.EXEMPT_REFUSED -> {
+                case AuthStats.EXEMPT_NOT_LOADED -> {
                     // Frozen: no physics, claims ignored
                 }
+                case AuthStats.EXEMPT_REFUSED -> this.refusedTick(keys, hasPos, cx, cy, cz);
                 case AuthStats.EXEMPT_NO_SIMULATION, AuthStats.EXEMPT_WARMUP -> {
                     // No port yet (or the first acks still outstanding): the claim is all there is
                     if (hasPos) {
@@ -2672,6 +2708,28 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
         final TraceRecorder recorder = this.trace;
         if (recorder != null) {
             recorder.sim(sim.x(), sim.y(), sim.z(), sim.vx(), sim.vy(), sim.vz(), (sim.onGround() ? 1 : 0) | (sim.horizontalCollision() ? 2 : 0) | (exempt != 0 ? 4 : 0));
+        }
+    }
+
+    /**
+     * A tick the truth refused (a freeze, the timer): no physics and the claim ignored, but the client ran it. Its own
+     * state, the belief, runs it with the tick's inputs and stands where the claim says; the next claim it explains shows
+     * it right (simulateUnguarded), and the correction after the refusal is relative from a velocity it knows
+     * (pvp-issues NW-1: the absolute one carried the forecast's inputs across the catch-up burst and missed by a block at
+     * 250 ms, starting a chain).
+     */
+    private void refusedTick(final Input keys, final boolean hasPos, final double cx, final double cy, final double cz) {
+        final Simulation sim = this.simulation;
+        if (this.mode != AuthMode.ENFORCE || !sim.seeded() || !sim.beliefValid()) {
+            return;
+        }
+        try {
+            sim.tickBelief(keys, this.tickYRot, this.tickXRot, this.view, this.world);
+            if (hasPos) {
+                sim.belief(false, cx, cy, cz);
+            }
+        } catch (final RuntimeException e) {
+            this.simulationError(e);
         }
     }
 
@@ -2931,25 +2989,41 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
         if (this.waitsForQueue()) {
             return; // the next claim decides again
         }
-        // Torture F5: knocks already sent reach the client before this correction does; the forecast includes them
+        // Torture F5: knocks already sent reach the client before this correction does; the forecast includes them. So do
+        // the knocks in this window's drain: their pongs are in, so they are no longer on their way, but the drain that
+        // applies them runs after this (NW-1, torture freeze2 r80j10: a knock held the correction until its pong, which
+        // then went out without it and took the knock back off the client)
         this.inFlight.clear();
+        drainKnocks(window, 0, this.inFlight);
+        final int drained = this.inFlight.size();
+        final double velocityGap = sim.velocityGap(this.inFlight);
         this.transactions.inFlightKnocks(this.inFlight);
-        final boolean forecast = sim.correction(this.correctionAhead(), this.stream.input(), this.tickYRot, this.tickXRot, this.view, this.world, this.delta,
+        final int ahead = this.correctionAhead();
+        final double gapX = sim.x() - this.deferredX;
+        final double gapY = sim.y() - this.deferredY;
+        final double gapZ = sim.z() - this.deferredZ;
+        if (this.waitsToSettle(velocityGap, ahead, Math.sqrt(gapX * gapX + gapY * gapY + gapZ * gapZ), this.inFlight.size() > drained)) {
+            this.inFlight.clear();
+            return; // the next claim decides again
+        }
+        this.forecastBackstop = false;
+        this.forecastKnocks = this.inFlight.size();
+        final boolean forecast = sim.correction(ahead, this.stream.input(), this.tickYRot, this.tickXRot, this.view, this.world, this.delta,
             this.inFlight);
         if (!forecast) {
             this.forecastAhead = -1; // no belief: relative position and absolute velocity, not forecast to a window
         }
-        if (this.inFlight.size() > 0 && (this.beliefStale || !forecast || this.delta[6] != 0.0)) {
+        if (this.inFlight.size() > drained && (this.beliefStale || !forecast || this.delta[6] != 0.0)) {
             // An absolute velocity would overwrite a knock the client applies before it: held until the knocks are acked
-            // (load P0); the next claim still off the truth decides again
+            // (load P0); the next claim still off the truth decides again. The drain's own are applied before any of it
             this.stats.correctionsHeld++;
             this.inFlight.clear();
             return;
         }
         this.inFlight.clear();
         if (this.beliefStale) {
-            // After refused ticks (a stall, a timer refusal) the client's velocity is unknown: land it absolutely,
-            // position and velocity, where the truth will be (pvp-issues NW-2: recover with one correction)
+            // The client's velocity is unknown (a refused tick with no belief to run it, forced entries that landed): land
+            // it absolutely, position and velocity, where the truth will be (pvp-issues NW-2: recover with one correction)
             this.beliefStale = false;
             if (forecast) {
                 this.sendAbsolute(this.delta[7], this.delta[8], this.delta[9], this.delta[10], this.delta[11], this.delta[12]);
@@ -2960,6 +3034,26 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
             this.sendForecast();
         } else {
             this.sendFallback(sim.x() - this.deferredX, sim.y() - this.deferredY, sim.z() - this.deferredZ);
+        }
+    }
+
+    /**
+     * The knocks in {@code window}'s drain from item {@code fromItem} on, in drain order, into {@code out}: the client
+     * applied them before the window's tick. A forced one landing there ({@code LANDED}) goes in as forced
+     * ({@code upperBound}: the truth has it already).
+     */
+    static void drainKnocks(final ClientStream.Window window, final int fromItem, final Transactions.Acked out) {
+        for (int i = fromItem; i < window.items(); i++) {
+            if (window.kind(i) != ClientStream.ACK) {
+                continue;
+            }
+            for (int e = window.a(i); e < window.b(i); e++) {
+                final int kind = window.acked.kind(e);
+                final int plain = kind & ~OutboundClassifier.LANDED;
+                if (plain == OutboundClassifier.SELF_MOTION || plain == OutboundClassifier.EXPLODE) {
+                    out.add(window.acked.packet(e), plain, (kind & OutboundClassifier.LANDED) != 0, window.acked.sentMillis(e));
+                }
+            }
         }
     }
 
@@ -2991,7 +3085,10 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
      * windows in a row, so a client always one window ahead is still corrected.
      */
     private boolean waitsForQueue() {
-        if (this.stream.queued() > 0 && this.correctionWaits < this.settings().maxBankedTicks()) {
+        // NW-1: a burst's windows run one by one as their packets are handled, so the ones behind are TickEnds off the wire
+        // (pending), not queued yet; and a burst split by the link may have more on the way while its last arrival was a
+        // catch-up tick. A correction forecast from the burst's first windows was 10 to 15 windows short after a 2 s freeze
+        if ((this.stream.queued() > 0 || this.arrivals.pending() > 0 || this.catchingUp) && this.correctionWaits < this.settings().maxBankedTicks()) {
             this.correctionWaits++;
             this.stats.correctionsWaited++;
             return true;
@@ -3001,22 +3098,58 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
     }
 
     /**
+     * Whether to leave the correction to the next claim while the gap between truth and client still moves (pvp-issues
+     * NW-1). A relative correction lands the client on the truth whenever it arrives only once the gap is a position
+     * alone; before that, one that lands a window off its forecast misses by the drift, and a knock landing on the miss
+     * freezes it there (after a 2 s freeze: 0.2 to 2.4 mm, then a second correction for it). Settled: the gap's velocity
+     * moves it less than {@code correction-persist-min} over the forecast. A knock on its way settles it where it lands,
+     * replacing both velocities: wait for it, at most an ack deadline of windows (by then it has landed or been forced).
+     * With none, the gap's velocity dies out with the client's own drag: wait while the gap is small enough that the
+     * client's attacks are still cast from its own eye ({@code attack-eye-offset-cap}), at most
+     * {@code correction-persist-ticks} windows, after which a gap that small is corrected anyway. Only while the belief
+     * explained the last claim: a forecast from a belief that doesn't is no better for waiting.
+     */
+    private boolean waitsToSettle(final double velocityGap, final int ahead, final double gap, final boolean knockOnItsWay) {
+        final AuthoritativeSettings settings = this.settings();
+        final int limit = this.beliefProven < this.runningTick - 1 ? 0
+            : knockOnItsWay ? (int) Math.ceil(this.slackRttNanos() / 50_000_000.0) + settings.ackJitterTicks()
+            : gap <= settings.attackEyeOffsetCap() ? settings.correctionPersistTicks() : 0;
+        if (velocityGap * ahead > settings.correctionPersistMin() && this.settleWaits < limit) {
+            this.settleWaits++;
+            this.stats.correctionsSettling++;
+            return true;
+        }
+        this.settleWaits = 0;
+        return false;
+    }
+
+    /**
+     * The measured landing of a flush kind ({@code LandingLag}) over the client's last {@code landing-sample-ms} of ticks,
+     * not of wall time: a freeze doesn't age the landings measured before it (pvp-issues NW-1). -1 when none.
+     */
+    public int landingWindows(final int kind) {
+        final int sampleWindows = (int) Math.ceil(this.settings().landingSampleMs() * 1_000_000.0 / this.view.tickPeriodNanos());
+        return this.transactions.landingWindows(kind, this.stream.currentTick(), sampleWindows);
+    }
+
+    /**
      * Client ticks between the truth's last tick and the window that applies a correction sent now (§15.5): the windows
-     * the client is past the one being run (queued, or in flight by real time), then the trip measured for this scope's
-     * flushes ({@code LandingLag}: a window run between server ticks flushes as it ends, one run in the server tick with
-     * the tick's bundle), else {@code ceil(rttBase / 50) - 1}; at least one, since the window being run already ended its
-     * tick. NAS glitch 2026-10-22: {@code round(rtt / 50)} put every correction at 60 ms (or at 30 ms behind a slow tick)
-     * one tick short, and the accept backstop chased the client every other tick.
+     * the client is past the one being run (queued, waiting for the main thread, or in flight by real time:
+     * {@link #landingWindow}), then the trip measured for this scope's flushes ({@code LandingLag}: a window run between
+     * server ticks flushes as it ends, one run in the server tick with the tick's bundle), else
+     * {@code ceil(rttBase / 50) - 1}; at least one, since the window being run already ended its tick. NAS glitch
+     * 2026-10-22: {@code round(rtt / 50)} put every correction at 60 ms (or at 30 ms behind a slow tick) one tick short,
+     * and the accept backstop chased the client every other tick.
      */
     private int correctionAhead() {
         final AuthoritativeSettings settings = this.settings();
         final int kind = this.betweenTicks || !this.coalescing ? gg.hcfrevival.revival.auth.net.LandingLag.SCOPE : gg.hcfrevival.revival.auth.net.LandingLag.TICK;
-        int trip = this.transactions.landingWindows(kind, System.nanoTime(), settings.landingSampleMs() * 1_000_000L);
+        int trip = this.landingWindows(kind);
         if (trip < 0) {
             this.stats.landingFallbacks++;
             trip = Math.max(0, (int) Math.ceil(this.slackRttNanos() / 50_000_000.0) - 1);
         }
-        final int queued = Math.max(1, this.windowTick() - this.runningTick);
+        final int queued = Math.max(1, this.landingWindow() - this.runningTick);
         final int ahead = Math.clamp((long) queued + trip, 1, (int) Math.ceil(settings.rttCeilingMs() / 50.0) + settings.maxBankedTicks());
         this.forecastAhead = ahead;
         this.forecastQueued = queued;
@@ -3079,17 +3212,32 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
     // The last judged claim was on the truth; the gap now open started in a tick whose belief touched a hole
     private boolean lastClaimExact;
     private boolean holeDivergence;
-    // Accepts in a row whose residual needed another correction (reset by an accept that lands)
+    // Accepts in a row whose residual needed another correction and didn't halve the one before (reset by an accept that
+    // lands), and the last such residual
     private int backstopStreak;
+    private double lastBackstopResidual = Double.POSITIVE_INFINITY;
+    // shortcut: a fixed halving, not a key; a gap closing slower than that is treated as a miss. Make it a key if a
+    // client with a slower (air-borne) decay shows chains of absolutes
+    static final double BACKSTOP_CLOSING = 0.5;
+
+    private void restartBackstops() {
+        this.backstopStreak = 0;
+        this.lastBackstopResidual = Double.POSITIVE_INFINITY;
+    }
     // The forecast's ticks ahead (-1: not forecast), and for the correction in flight the window it was made in and the
     // ticks it was forecast: its accept shows the window it really landed in (correctionsMistimed)
     private int forecastAhead = -1;
     private int forecastQueued;
     private int forecastKind;
+    // For the debug log: the last forecast was an accept's backstop; the knocks it carried
+    private boolean forecastBackstop;
+    private int forecastKnocks;
     private int sentWindow;
     private int sentAhead = -1;
-    // Corrections passed over in a row because windows were queued behind the running one (waitsForQueue)
+    // Corrections passed over in a row because windows were queued behind the running one (waitsForQueue), and because the
+    // gap still moved (waitsToSettle)
     private int correctionWaits;
+    private int settleWaits;
     // Review X2-04 / R2C-02: when the current forcing began, and the ack deadline it is held for
     private int forcedSinceTick = Integer.MIN_VALUE;
     private int forcedHoldWindows = 1;
@@ -3251,8 +3399,9 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
         }
     }
 
-    // A teleport accept, in the drain: checked as a claim, never a seed (§15.3)
-    private void checkAccept(final ServerboundAcceptTeleportationPacket accept, final AuthoritativeSettings settings) {
+    // A teleport accept, item {@code item} of the window's drain: checked as a claim, never a seed (§15.3)
+    private void checkAccept(final ServerboundAcceptTeleportationPacket accept, final ClientStream.Window window, final int item,
+                             final AuthoritativeSettings settings) {
         if (!Double.isFinite(accept.x()) || !Double.isFinite(accept.y()) || !Double.isFinite(accept.z())
             || !Float.isFinite(accept.yRot()) || !Float.isFinite(accept.xRot())) {
             this.violation("non-finite teleport accept");
@@ -3272,17 +3421,20 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
                 final double dy = sim.y() - accept.y();
                 final double dz = sim.z() - accept.z();
                 final double residual = Math.sqrt(dx * dx + dy * dy + dz * dz);
+                if (settings.debugLog()) {
+                    DebugHud.accepted(this, this.runningTick, residual, this.runningTick - this.sentWindow, this.sentAhead);
+                }
                 if (residual > settings.correctionThreshold() && this.mode == AuthMode.ENFORCE && this.teleportsPending == 0
                     && !this.reconciler.mayCorrect(2 * settings.maxCorrectionsPerSecond(), System.nanoTime())) {
                     // The backstop may go past max-corrections-per-second (it finishes a correction already decided), but not
                     // past twice it (NAS glitch: a mistimed forecast made it chase the client every other tick, 10-20 a second);
                     // the next claim decides once the second is up
                     this.stats.backstopsLimited++;
-                    this.backstopStreak = 0;
+                    this.restartBackstops();
                     sim.belief(false, accept.x(), accept.y(), accept.z());
                 } else if (residual > settings.correctionThreshold() && this.mode == AuthMode.ENFORCE && this.teleportsPending == 0
                     && this.waitsForQueue()) {
-                    this.backstopStreak = 0;
+                    this.restartBackstops();
                     sim.belief(false, accept.x(), accept.y(), accept.z()); // the queued windows' claims decide
                 } else if (residual > settings.correctionThreshold() && this.mode == AuthMode.ENFORCE && this.teleportsPending == 0) {
                     // The backstop: the client is where it says now; forecast both to the tick it applies the next one,
@@ -3292,15 +3444,38 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
                     } else {
                         sim.rebaseBelief(accept.x(), accept.y(), accept.z(), this.lastSentVx, this.lastSentVy, this.lastSentVz);
                     }
-                    final boolean forecast = sim.correction(this.correctionAhead(), this.stream.input(), this.tickYRot, this.tickXRot, this.view,
-                        this.world, this.delta);
+                    // The knocks the client applies before the next one: the rest of this drain (pongs that came after the
+                    // accept), then those on their way, as for a deferred correction (pvp-issues NW-1: a knock whose pong
+                    // followed the accept went out as the correction's own flight, 1.9 blocks, to a client on the truth)
+                    this.inFlight.clear();
+                    drainKnocks(window, item + 1, this.inFlight);
+                    final int drained = this.inFlight.size();
+                    final double velocityGap = sim.velocityGap(this.inFlight);
+                    this.transactions.inFlightKnocks(this.inFlight);
+                    final int ahead = this.correctionAhead();
+                    if (this.waitsToSettle(velocityGap, ahead, residual, this.inFlight.size() > drained)) {
+                        this.inFlight.clear();
+                        this.restartBackstops();
+                        return; // the next claim decides, once the gap stopped moving; the belief stands at the accept
+                    }
+                    this.forecastBackstop = true;
+                    this.forecastKnocks = this.inFlight.size();
+                    final boolean forecast = sim.correction(ahead, this.stream.input(), this.tickYRot, this.tickXRot, this.view, this.world,
+                        this.delta, this.inFlight);
+                    this.inFlight.clear();
                     if (!forecast) {
                         this.forecastAhead = -1;
                     }
-                    if (++this.backstopStreak >= settings.correctionRepeatLimit()) {
+                    // Only a backstop that didn't halve the last one's gap counts toward going absolute: a relative one that
+                    // missed by a tick of a decaying velocity gap lands closer each time, while an absolute one carries the
+                    // forecast's inputs and yaw and misses by whatever the player did meanwhile (NW-1, torture freeze2
+                    // r250j30: every second backstop went absolute, 10 of 19 corrections after a 2 s freeze)
+                    this.backstopStreak = residual < BACKSTOP_CLOSING * this.lastBackstopResidual ? 1 : this.backstopStreak + 1;
+                    this.lastBackstopResidual = residual;
+                    if (this.backstopStreak >= settings.correctionRepeatLimit()) {
                         // Corrections keep missing: the client's own state isn't what the belief says (its velocity, its
                         // ground), so land it absolutely, position and velocity, where the truth will be
-                        this.backstopStreak = 0;
+                        this.restartBackstops();
                         if (forecast) {
                             this.sendAbsolute(this.delta[7], this.delta[8], this.delta[9], this.delta[10], this.delta[11], this.delta[12]);
                         } else {
@@ -3312,7 +3487,7 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
                         this.sendFallback(dx, dy, dz);
                     }
                 } else {
-                    this.backstopStreak = 0;
+                    this.restartBackstops();
                     sim.belief(residual <= settings.rebaseEpsilon(), accept.x(), accept.y(), accept.z());
                 }
             } else if (this.reconciler.sentLately(accept.id())) {
@@ -3381,6 +3556,11 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
                 final Vec3 movement = ((ClientboundSetEntityMotionPacket) packet).movement();
                 Wire.lpVec3(movement.x, movement.y, movement.z, this.decoded);
                 sim.setVelocity(this.decoded[0], this.decoded[1], this.decoded[2]);
+                if (!this.applyingForced) {
+                    // The client takes it in this drain too, on the truth or off it (NW-1: a belief without the knock sent
+                    // its flight as the next correction); a forced one reaches the belief when it lands
+                    sim.beliefVelocity(this.decoded[0], this.decoded[1], this.decoded[2], false);
+                }
             }
             case OutboundClassifier.SELF_POSITION -> {
                 final ClientboundPlayerPositionPacket position = (ClientboundPlayerPositionPacket) packet;
@@ -3422,6 +3602,9 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
                 final Vec3 knockback = ((ClientboundExplodePacket) packet).playerKnockback().orElse(Vec3.ZERO);
                 if (Double.isFinite(knockback.x) && Double.isFinite(knockback.y) && Double.isFinite(knockback.z)) {
                     sim.addVelocity(knockback.x, knockback.y, knockback.z);
+                    if (!this.applyingForced) {
+                        sim.beliefVelocity(knockback.x, knockback.y, knockback.z, true);
+                    }
                 }
             }
             case OutboundClassifier.ABILITIES -> this.view.abilities((ClientboundPlayerAbilitiesPacket) packet);
@@ -3595,6 +3778,14 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
             if (kind == OutboundClassifier.SELF_MOTION) {
                 // Review R2C-07: the parry recoil's T_s is when the client applies it, not when it was forced
                 gg.hcfrevival.revival.combat.NeueCombat.applied(this.player, packet, tick);
+                final Vec3 movement = ((ClientboundSetEntityMotionPacket) packet).movement();
+                Wire.lpVec3(movement.x, movement.y, movement.z, this.decoded);
+                this.simulation.beliefVelocity(this.decoded[0], this.decoded[1], this.decoded[2], false); // the client takes it now
+            } else if (kind == OutboundClassifier.EXPLODE) {
+                final Vec3 knockback = ((ClientboundExplodePacket) packet).playerKnockback().orElse(Vec3.ZERO);
+                if (Double.isFinite(knockback.x) && Double.isFinite(knockback.y) && Double.isFinite(knockback.z)) {
+                    this.simulation.beliefVelocity(knockback.x, knockback.y, knockback.z, true);
+                }
             }
             this.beliefStale = true;
         }
@@ -3616,6 +3807,11 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
         final double hookY = sim.y() + sim.box().getYsize() * 0.8;
         try {
             sim.addVelocity((ox - sim.x()) * 0.1, (oy - hookY) * 0.1, (oz - sim.z()) * 0.1);
+            if (!this.applyingForced) {
+                // The client pulls itself from where it is: the belief's place while the client is off the truth
+                final double beliefHookY = sim.beliefPos(1) + sim.box().getYsize() * 0.8;
+                sim.beliefVelocity((ox - sim.beliefPos(0)) * 0.1, (oy - beliefHookY) * 0.1, (oz - sim.beliefPos(2)) * 0.1, true);
+            }
         } catch (final RuntimeException e) {
             this.simulationError(e);
         }

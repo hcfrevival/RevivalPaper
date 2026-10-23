@@ -83,6 +83,15 @@ public final class ArrivalStamps {
     }
 
     /**
+     * {@code TickEnd}s that came off the wire and wait for the main thread: windows the client has already closed. A
+     * catch-up burst after a client freeze arrives in one read and runs window by window, so while the first ones run
+     * the rest are counted here, not yet in the stream (pvp-issues NW-1). Any thread.
+     */
+    public synchronized int pending() {
+        return this.count;
+    }
+
+    /**
      * Puts the handler in front of the connection's own; false when the channel has no game pipeline, or the pipeline
      * refused it (a channel closing under us): the main thread's own time stands in, authority still starts.
      */

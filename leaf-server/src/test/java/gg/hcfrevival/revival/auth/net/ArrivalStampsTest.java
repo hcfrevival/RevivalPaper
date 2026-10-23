@@ -46,6 +46,22 @@ class ArrivalStampsTest {
     }
 
     @Test
+    void aBurstWaitingBehindTheWindowRunningIsCounted() {
+        // NW-1: a 2 s freeze's ten catch-up ticks arrive in one read; while the first runs, nine are only off the wire
+        final ArrivalStamps stamps = new ArrivalStamps();
+        assertEquals(0, stamps.pending());
+        for (int i = 0; i < 10; i++) {
+            stamps.stamp(i);
+        }
+        stamps.take(Long.MAX_VALUE);
+        assertEquals(9, stamps.pending(), "the burst's first window is handled");
+        for (int i = 0; i < 9; i++) {
+            stamps.take(Long.MAX_VALUE);
+        }
+        assertEquals(0, stamps.pending());
+    }
+
+    @Test
     void installsAgainAfterAnUninstall() {
         // Review PT2-01 / R2C-01: authority off then on again re-adds the same handler; a non-sharable one threw
         final io.netty.channel.embedded.EmbeddedChannel channel = new io.netty.channel.embedded.EmbeddedChannel();

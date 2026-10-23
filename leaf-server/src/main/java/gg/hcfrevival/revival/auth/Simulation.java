@@ -155,13 +155,23 @@ public interface Simulation {
     }
 
     /**
-     * As above, with the knocks sent to the client that it hasn't applied yet ({@code Transactions.inFlightKnocks},
-     * torture F5): they reach the client before the correction, so its forecast takes every one of them at its start,
-     * and the truth's those that aren't force-applied already ({@code upperBound} false).
+     * As above, with the knocks the client applies before the correction that neither the truth nor the belief holds
+     * yet: those later in the drain being run, then those still on their way ({@code Transactions.inFlightKnocks},
+     * torture F5). The client's forecast takes every one of them at its start, the truth's those that aren't
+     * force-applied already ({@code upperBound} false).
      */
     default boolean correction(final int ticksAhead, final Input keys, final float yRot, final float xRot, final ClientView view, final WorldView world,
                                final double[] out, final gg.hcfrevival.revival.auth.net.Transactions.Acked knocks) {
         return this.correction(ticksAhead, keys, yRot, xRot, view, world, out);
+    }
+
+    /**
+     * How fast the gap between truth and client still moves: {@code |truth velocity - belief velocity|} once both have
+     * taken {@code knocks} (the truth those that aren't force-applied already, as in {@link #correction}). NaN without a
+     * belief. A knock that replaces the velocity makes it 0 for both: from then on the gap is only a position.
+     */
+    default double velocityGap(final gg.hcfrevival.revival.auth.net.Transactions.@Nullable Acked knocks) {
+        return Double.NaN;
     }
 
     /**
@@ -191,6 +201,22 @@ public interface Simulation {
 
     /** Our correction reached the client: its own state (the belief) takes it as the client does ({@code handleMovePlayer}). */
     default void beliefCorrected(final PositionMoveRotation change, final Set<Relative> relatives) {
+    }
+
+    /**
+     * A velocity write reached the client in its drain (a knock, an explosion, a rod's pull; not a forced entry, which the
+     * client doesn't have yet): its own state (the belief) takes it as the truth does. {@code add}: added, else replaced.
+     * A belief left without it while the client was off the truth sent the knock's flight as the next correction
+     * (pvp-issues NW-1).
+     */
+    default void beliefVelocity(final double x, final double y, final double z, final boolean add) {
+    }
+
+    /**
+     * A tick the client ran and the truth refused (a freeze, the timer): only the belief runs it, with the tick's inputs.
+     * The client's velocity stays known through a refusal, so the correction after it can be relative.
+     */
+    default void tickBelief(final Input keys, final float yRot, final float xRot, final ClientView view, final WorldView world) {
     }
 
     /** Whether the belief's last tick read a block the client broke and the server kept ({@code WorldView} holes). */

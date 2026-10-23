@@ -97,11 +97,23 @@ public final class Transactions {
         }
 
         /**
-         * Whether the client's {@code TickEnd}s are coming in (one within the last two ticks): a ping flushed during a stall
-         * or a client freeze is stamped with a guessed window, so its landing is not measured.
+         * Whether the client's {@code TickEnd}s are coming in (one within the last two ticks, not the first after a longer
+         * gap): a ping flushed during a stall or a client freeze is stamped with a guessed window, and one flushed right
+         * after a freeze, or answered in the drain that ends it, measures the freeze (pvp-issues NW-1: forecasts 10 windows
+         * long at RTT 150 and 3 short at RTT 250), so their landings are not measured.
          */
         default boolean ticking() {
             return true;
+        }
+
+        /**
+         * The window the client is in for a landing sample ({@link LandingLag}): {@link #windowTick}, or past it every
+         * {@code TickEnd} that came off the wire and waits for the main thread. A burst's first window flushes while the
+         * rest of the burst waits behind it, and stamped with its own window it read as a landing of 11 windows at RTT 80
+         * (pvp-issues NW-1: the first corrections after a 2 s freeze were forecast that far ahead).
+         */
+        default int landingWindow() {
+            return this.windowTick();
         }
 
         /** Whether this send happens on the main thread while the server tick holds this connection's flushes. */
@@ -555,7 +567,7 @@ public final class Transactions {
         if (this.firstUnstamped == Long.MAX_VALUE) {
             return;
         }
-        final int window = context.windowTick();
+        final int window = context.landingWindow();
         final byte stamp = context.ticking() ? (byte) kind : NOT_SAMPLED;
         final int mask = this.pingIds.length - 1;
         for (int i = this.pingCount - 1; i >= 0; i--) {
@@ -573,12 +585,12 @@ public final class Transactions {
 
     /**
      * The median landing of recent pings flushed by {@code kind} ({@link LandingLag#SCOPE} or {@link LandingLag#TICK}):
-     * a packet flushed now is applied before the tick of the window that many after the one the client is in. -1 when not
-     * measured.
+     * a packet flushed now is applied before the tick of the window that many after the one the client is in. Only the
+     * landings of the client's last {@code maxAgeWindows} windows before {@code nowWindow} count. -1 when not measured.
      */
-    public int landingWindows(final int kind, final long nowNanos, final long maxAgeNanos) {
+    public int landingWindows(final int kind, final int nowWindow, final int maxAgeWindows) {
         synchronized (this) {
-            return this.landing.estimate(kind, nowNanos, maxAgeNanos);
+            return this.landing.estimate(kind, nowWindow, maxAgeWindows);
         }
     }
 
@@ -949,7 +961,7 @@ public final class Transactions {
             this.lastRttTicks = serverTick - sentTick;
             this.rtt.sample(this.lastRttNanos); // rttBase: never the latest pong (§15.1)
             if (found == 0 && flushKind >= 0 && pongWindow != Integer.MIN_VALUE) {
-                this.landing.sample(flushKind, pongWindow - flushWindow, now);
+                this.landing.sample(flushKind, pongWindow - flushWindow, pongWindow, now);
             }
             if (found > 0) {
                 this.skipped += found;

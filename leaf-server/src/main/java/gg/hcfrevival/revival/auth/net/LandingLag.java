@@ -2,9 +2,10 @@ package gg.hcfrevival.revival.auth.net;
 
 /**
  * Where a packet sent now lands on the client, in client windows: {@code pong window - the window the client was in when
- * the ping went out} (by real time, {@code Transactions.Context.windowTick}), measured per flush kind (NAS glitch
- * 2026-10-22, torture r60j0). A correction made while the server runs window {@code w} lands in
- * {@code (window the client is in - w) + this}: the windows already queued, then the trip (§15.5).
+ * the ping went out} (by real time and the {@code TickEnd}s waiting for the main thread,
+ * {@code Transactions.Context.landingWindow}), measured per flush kind (NAS glitch 2026-10-22, torture r60j0). A
+ * correction made while the server runs window {@code w} lands in {@code (window the client is in - w) + this}: the
+ * windows already queued, then the trip (§15.5).
  * <p>
  * Why measured: the client applies a packet before the first tick that starts after it arrives, so the trip is
  * {@code ceil((client tick to TickEnd + round trip + server wait to the flush) / 50) - 1} windows past the current one,
@@ -29,34 +30,42 @@ public final class LandingLag {
     static final int MAX_LAG = 64;
 
     private final int[][] lags = new int[KINDS][SAMPLES];
-    private final long[][] at = new long[KINDS][SAMPLES];
+    private final int[][] windows = new int[KINDS][SAMPLES];
     private final int[] next = new int[KINDS];
     private final int[] count = new int[KINDS];
     private final long[] last = new long[KINDS];
     private final int[] scratch = new int[SAMPLES];
 
-    /** A ping flushed by {@code kind} came back {@code lag} windows after the one the client was in at its flush. */
-    public void sample(final int kind, final int lag, final long nowNanos) {
+    /**
+     * A ping flushed by {@code kind} came back in client window {@code window}, {@code lag} windows after the one the client
+     * was in at its flush.
+     */
+    public void sample(final int kind, final int lag, final int window, final long nowNanos) {
         if (kind < 0 || kind >= KINDS || lag < 0 || lag > MAX_LAG) {
             return; // not before the window it was sent in; one past MAX_LAG waited out a stall
         }
         final int slot = this.next[kind];
         this.lags[kind][slot] = lag;
-        this.at[kind][slot] = nowNanos;
+        this.windows[kind][slot] = window;
         this.next[kind] = (slot + 1) % SAMPLES;
         this.count[kind] = Math.min(SAMPLES, this.count[kind] + 1);
         this.last[kind] = nowNanos;
     }
 
-    /** The (lower) median of {@code kind}'s samples taken within {@code maxAgeNanos}, or -1 when there are none. */
-    public int estimate(final int kind, final long nowNanos, final long maxAgeNanos) {
+    /**
+     * The (lower) median of {@code kind}'s samples taken within the client's last {@code maxAgeWindows} windows before
+     * {@code nowWindow}, or -1 when there are none. Aged in the client's windows, not wall time: a client freeze of 2 s
+     * otherwise left no landing at all, and the first correction after it fell back to an RTT the freeze's own pongs had
+     * inflated (pvp-issues NW-1); the link it measures didn't change while the client stood still.
+     */
+    public int estimate(final int kind, final int nowWindow, final int maxAgeWindows) {
         if (kind < 0 || kind >= KINDS) {
             return -1;
         }
         final int[] values = this.scratch;
         int n = 0;
         for (int i = 0; i < this.count[kind]; i++) {
-            if (nowNanos - this.at[kind][i] > maxAgeNanos) {
+            if (nowWindow - this.windows[kind][i] > maxAgeWindows) {
                 continue;
             }
             // Insertion sort into scratch: at most 16 values, no allocation on the correction path

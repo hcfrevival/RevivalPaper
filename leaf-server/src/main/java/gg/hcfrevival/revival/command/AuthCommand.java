@@ -170,11 +170,9 @@ final class AuthCommand {
             stats.serverTeleports(), stats.teleportAcceptMismatches(), stats.reverts(), stats.externalMovers(), stats.mountsRefused()));
         lines.add(String.format(Locale.ROOT, "solid entities held %d (any untrusted %b), re-paired %d",
             auth.world().solids.size(), auth.world().solids.anyUntrusted(), stats.solidRepairs()));
-        final long now = System.nanoTime();
-        final long sampleAge = Revival.settings().authoritative().landingSampleMs() * 1_000_000L;
-        lines.add(String.format(Locale.ROOT, "landing: between ticks %d, server tick %d windows (probes %d); corrections mistimed %d, forecast without a landing %d, waited for a queue %d, backstops limited %d; sub-µm claims %d; denied-break holes open %d, claims in them %d, restores that snapped back %d",
-            tx.landingWindows(gg.hcfrevival.revival.auth.net.LandingLag.SCOPE, now, sampleAge), tx.landingWindows(gg.hcfrevival.revival.auth.net.LandingLag.TICK, now, sampleAge),
-            tx.probes(), stats.correctionsMistimed(), stats.landingFallbacks(), stats.correctionsWaited(), stats.backstopsLimited(), stats.subMicronClaims(), auth.world().holes(),
+        lines.add(String.format(Locale.ROOT, "landing: between ticks %d, server tick %d windows (probes %d); corrections mistimed %d, forecast without a landing %d, waited for a queue %d, for the gap to settle %d, backstops limited %d; sub-µm claims %d; denied-break holes open %d, claims in them %d, restores that snapped back %d",
+            auth.landingWindows(gg.hcfrevival.revival.auth.net.LandingLag.SCOPE), auth.landingWindows(gg.hcfrevival.revival.auth.net.LandingLag.TICK),
+            tx.probes(), stats.correctionsMistimed(), stats.landingFallbacks(), stats.correctionsWaited(), stats.correctionsSettling(), stats.backstopsLimited(), stats.subMicronClaims(), auth.world().holes(),
             stats.holeClaims(), stats.holeSnaps()));
         lines.add(String.format(Locale.ROOT, "attacks %d: accepted %d, rejected %d, over cap %d, over cps %d; eye offsets refused %d; knocks on the ground %d, jumped in their window %d; one-click streak %d (longest %d), fixed-rate lock %d (longest %d); w-tap lock %d (longest %d, %d taps), block-hit lock %d (longest %d, %d); rewind past rtt and display: median %d ms (highest %d, %d valid hits); double clicks %.1f%%, yaw gcd %.4f / %.4f (%d turns, %d misses, %d smoothed skipped)",
             stats.attacksQueued(), stats.attacksAccepted(), stats.attacksRejected(), stats.attacksOverCap(), stats.attacksOverCps(), stats.eyeOffsetsRefused(), stats.groundedKnocks(), stats.knockJumps(),

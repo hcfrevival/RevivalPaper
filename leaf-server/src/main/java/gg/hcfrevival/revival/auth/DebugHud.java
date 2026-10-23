@@ -68,6 +68,30 @@ public final class DebugHud {
             auth.player().getScoreboardName(), tick, x, y, z, vx, vy, vz, auth.transactions().rttBaseNanos() / 1_000_000L, ahead, auth.forecastParts()));
     }
 
+    /** A correction's accept: how far the client landed from the truth, and in which window against the forecast. */
+    static void accepted(final AuthPlayer auth, final int tick, final double residual, final int landedAfter, final int forecast) {
+        LOGGER.info(String.format(Locale.ROOT, "[auth] accept %s tick %d residual %.9f landed after %d (forecast %d)", auth.player().getScoreboardName(),
+            tick, residual, landedAfter, forecast));
+    }
+
+    /** Entries force-applied at their deadline in this window, by kind ({@code OutboundClassifier}: count). */
+    static void forced(final AuthPlayer auth, final int tick, final gg.hcfrevival.revival.auth.net.Transactions.Acked forced) {
+        final int[] counts = new int[gg.hcfrevival.revival.auth.net.OutboundClassifier.KINDS];
+        for (int i = 0; i < forced.size(); i++) {
+            final int kind = forced.kind(i);
+            if (kind >= 0 && kind < counts.length) {
+                counts[kind]++;
+            }
+        }
+        final StringBuilder kinds = new StringBuilder();
+        for (int kind = 0; kind < counts.length; kind++) {
+            if (counts[kind] > 0) {
+                kinds.append(' ').append(kind).append(':').append(counts[kind]);
+            }
+        }
+        LOGGER.info(String.format(Locale.ROOT, "[auth] forced %s tick %d entries %d kinds%s", auth.player().getScoreboardName(), tick, forced.size(), kinds));
+    }
+
     static void grammar(final AuthPlayer auth, final int tick, final String rule, final net.minecraft.network.protocol.Packet<?> packet, final boolean dropped) {
         LOGGER.info(String.format(Locale.ROOT, "[auth] input grammar %s tick %d %s: %s%s", auth.player().getScoreboardName(), tick, rule,
             packet.getClass().getSimpleName(), dropped ? " (dropped)" : ""));
