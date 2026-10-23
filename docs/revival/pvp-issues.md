@@ -51,8 +51,8 @@ policy in `revival.yml` and server configs), **core** (the HCFR plugins, outside
 
 | | Count |
 |---|---|
-| Solved | 34 |
-| Partial | 27 (1 of them [limit]) |
+| Solved | 35 |
+| Partial | 26 (1 of them [limit]) |
 | Open | 8 (4 of them [limit]) |
 | Items | 69 |
 
@@ -83,11 +83,11 @@ Solved today, in short:
 - Paper's movement checks fighting the truth.
 
 The biggest open risks are now scale and clients, not one player's exactness. A real 26.3 client is exact up to 300 ms
-with ±30 ms of jitter, and 300 ms Wi-Fi stalls cost it no correction. 100 players now recover from a 2.3 s server
-stall in 7 s (SV-1). Not shown yet: 200 players, Lunar with HCFR's Apollo combat options against the exact input
-grammar (CL-1), and a bigger sample of rod hits at real ping (15 casts held from localhost to 300 ms, PR-1). Two
-attackers on one victim, and lethal ties, still go to the lower uplink (HR-10). The user decided the two 1.7-parity
-switches on 2026-10-22: `stop-sprint-on-block` on in the NAS world (BL-3), `hide-cooldown-on-items` off (SP-5).
+with ±30 ms of jitter, and 300 ms Wi-Fi stalls cost it no correction. 200 players spread over a map run exact at MSPT
+p99 8.6 ms, and 100 recover from a 2.3 s server stall in 7 s (SV-1). Not shown yet: 200 in one fight, Lunar with
+HCFR's Apollo combat options against the exact input grammar (CL-1). Two attackers on one victim, and lethal ties,
+still go to the lower uplink (HR-10). The user decided the two 1.7-parity switches on 2026-10-22:
+`stop-sprint-on-block` on in the NAS world (BL-3), `hide-cooldown-on-items` off (SP-5).
 
 ## 0. Ranked open and partial items
 
@@ -96,41 +96,40 @@ Solved items are left out.
 
 | # | Item | Status | Owner | In one line |
 |---|---|---|---|---|
-| 1 | [SV-1](#sv-1) | Partial | netcode, config | 20 and 50 bots are exact, 50 at 125 ms too; at 100 a 2.3 s server hitch heals in 7 s with no loops (MSPT p99 7 ms). 200 players need a second machine to measure. |
+| 1 | [SV-1](#sv-1) | Partial | netcode, config | 200 players on one map run exact at MSPT p99 8.6 ms, 50 at 125 ms are exact, and 100 heal from a 2.3 s stall in 7 s. 200 in one fight needs a second machine to measure. |
 | 2 | [HR-10](#hr-10) | Open | combat, netcode | Two attackers on one victim, or a lethal tie: the lower uplink lands first. A 1v1 trade lands both hits, each judged on what its attacker saw. |
 | 3 | [CL-1](#cl-1) | Partial | netcode, config, core | Most HCF players use Lunar. Frame-time packets no longer kick, but no rule reads HCFR's Apollo combat options and no recorded Lunar session has checked them against the grammar. |
-| 4 | [PR-1](#pr-1) | Partial | combat, netcode | Rods, snowballs and eggs hit where the shooter saw the target; a real client's rod hit rate holds from localhost to 300 ms (15 casts), but the sample is small and arrows stay on server boxes. |
-| 5 | [HR-8](#hr-8) | Open | netcode, combat | Crouching shrinks the 26.x hitbox to 1.5 (swimming and crawling to 0.6), and 1.7 never did. |
-| 6 | [NW-1](#nw-1) | Partial | netcode | Steady links and Wi-Fi hiccups are clean on a real client; a 2 s freeze recovers with 4 corrections, and real packet loss is untested. |
-| 7 | [SV-2](#sv-2) | Partial | combat | A server hitch no longer refuses hits, but damage windows count server ticks, so a stall shuts windows real time had opened. |
-| 8 | [KB-3](#kb-3) | Open [limit] | combat (metrics) | A high-ping victim's client applies the knock late, so they are harder to combo and feel "glued to the floor". |
-| 9 | [PR-7](#pr-7) | Partial | combat, core | Pearls land only where a standing box fits and stop at fake walls; no running-server glitch suite, and core isn't told of a refund. |
-| 10 | [HR-3](#hr-3) | Partial | netcode | A low-ping cheater has about the 150 ms slack plus its jitter of free backtrack inside its cap; no `rewind-stretch` flag. |
-| 11 | [SP-5](#sp-5) | Partial | config | After a rod, pot or pearl, the first sword hits skip 1.7's ×0.6 attacker slowdown and sprint stop; the switch is off. |
-| 12 | [KB-4](#kb-4) | Partial | combat, netcode | The base knock points between server positions, not along what the attacker saw; unmeasured at ping. |
-| 13 | [VI-1](#vi-1) | Partial | netcode | Paths are exact within 24 blocks; beyond, the 26.3 stutter shows on 1.6-4% of moving ticks, at bow, rod and pearl range. |
-| 14 | [IN-4](#in-4) | Partial | netcode | Aim assist is measured (yaw GCD), with thresholds never tuned on real mouse data. |
-| 15 | [WD-4](#wd-4) | Partial | netcode | Ghost hand: doors, chests and digs are not ray-checked against walls (only predicted block changes are). |
-| 16 | [KB-10](#kb-10) | Partial | netcode | Jump-reset macros raise an alert, on thresholds from simulated players only. |
-| 17 | [IN-3](#in-3) | Partial | netcode | Autoclickers are capped at 12 CPS and a 20 CPS lock is flagged; the fixed-rate detector (`click-lock`) isn't built. |
-| 18 | [PR-4](#pr-4) | Partial | combat, core | 1.7's splash falloff is on; core's own pot precision may stack on it, and no pot drill compares them. |
-| 19 | [MV-5](#mv-5) | Partial | sim, netcode | Geysers, riptide, `vehicles: vanilla` and solid copies that went inexact still trust the client, within 1 block. |
-| 20 | [CL-2](#cl-2) | Partial | config | ViaVersion and Geyser players play client-trusted unless `ineligible: deny`; hcfr-core runs neither today. |
-| 21 | [CL-3](#cl-3) | Partial | config | GrimAC false flags on legit 1.7 play; the GrimAC checklist was never run with a real client. |
-| 22 | [PR-6](#pr-6) | Partial | config | Split damage windows are built and live-tested but off by default, so fire ticks and arrows still eat sword hits. |
-| 23 | [VI-4](#vi-4) | Partial | config, netcode | Anti-ESP is built but off by default, and pop-in when it is on is unmeasured. |
-| 24 | [SV-5](#sv-5) | Partial | netcode | Plugins that write velocity or teleports around the choke point get upper-bound timing and corrections. |
-| 25 | [SV-3](#sv-3) | Partial | config | Leaf options that drop or delay knockback are documented but not refused. |
-| 26 | [SV-4](#sv-4) | Partial | netcode | An exception in authority code falls back to the claim, but no fault-injection test proves it never kicks. |
-| 27 | [VI-3](#vi-3) | Partial | netcode | Invisible or teleporting opponents after a desync are re-paired and counted, with no playtest budget yet. |
-| 28 | [HR-7](#hr-7) | Partial | combat, netcode | The 26.3 client picks the bare box, without 1.7's +0.1 margin; spear hits on players never land under enforce. |
-| 29 | [SP-4](#sp-4) | Open | netcode | W-tap and block-hit macros are not measured. |
-| 30 | [KB-9](#kb-9) | Partial | combat | Classic keeps 1.7's combo lock by design; DI is built in `neue`, which is parked. |
-| 31 | [NW-3](#nw-3) | Open | netcode | Tab ping is keep-alive based, not the RTT authority judges with. |
-| 32 | [PR-5](#pr-5) | Partial [limit] | none server-side | On high ping the heal lands late; the throw is exact. |
-| 33 | [VI-2](#vi-2) | Open [limit] | none server-side | Remote players are drawn RTT + 135-170 ms behind (K1: 50-70 ms less); lag compensation hides it for hits. |
-| 34 | [HR-9](#hr-9) | Open [limit] | none server-side | The vanilla miss penalty and the dropped first click after closing the inventory. |
-| 35 | [IN-6](#in-6) | Open [limit] | none server-side | Clicks count per 20 Hz client tick, and low FPS or 4-8 kHz polling delays them. |
+| 4 | [HR-8](#hr-8) | Open | netcode, combat | Crouching shrinks the 26.x hitbox to 1.5 (swimming and crawling to 0.6), and 1.7 never did. |
+| 5 | [NW-1](#nw-1) | Partial | netcode | Steady links and Wi-Fi hiccups are clean on a real client; a 2 s freeze recovers with 4 corrections, and real packet loss is untested. |
+| 6 | [SV-2](#sv-2) | Partial | combat | A server hitch no longer refuses hits, but damage windows count server ticks, so a stall shuts windows real time had opened. |
+| 7 | [KB-3](#kb-3) | Open [limit] | combat (metrics) | A high-ping victim's client applies the knock late, so they are harder to combo and feel "glued to the floor". |
+| 8 | [PR-7](#pr-7) | Partial | combat, core | Pearls land only where a standing box fits and stop at fake walls; no running-server glitch suite, and core isn't told of a refund. |
+| 9 | [HR-3](#hr-3) | Partial | netcode | A low-ping cheater has about the 150 ms slack plus its jitter of free backtrack inside its cap; no `rewind-stretch` flag. |
+| 10 | [SP-5](#sp-5) | Partial | config | After a rod, pot or pearl, the first sword hits skip 1.7's ×0.6 attacker slowdown and sprint stop; the switch is off. |
+| 11 | [KB-4](#kb-4) | Partial | combat, netcode | The base knock points between server positions, not along what the attacker saw; unmeasured at ping. |
+| 12 | [VI-1](#vi-1) | Partial | netcode | Paths are exact within 24 blocks; beyond, the 26.3 stutter shows on 1.6-4% of moving ticks, at bow, rod and pearl range. |
+| 13 | [IN-4](#in-4) | Partial | netcode | Aim assist is measured (yaw GCD), with thresholds never tuned on real mouse data. |
+| 14 | [WD-4](#wd-4) | Partial | netcode | Ghost hand: doors, chests and digs are not ray-checked against walls (only predicted block changes are). |
+| 15 | [KB-10](#kb-10) | Partial | netcode | Jump-reset macros raise an alert, on thresholds from simulated players only. |
+| 16 | [IN-3](#in-3) | Partial | netcode | Autoclickers are capped at 12 CPS and a 20 CPS lock is flagged; the fixed-rate detector (`click-lock`) isn't built. |
+| 17 | [PR-4](#pr-4) | Partial | combat, core | 1.7's splash falloff is on; core's own pot precision may stack on it, and no pot drill compares them. |
+| 18 | [MV-5](#mv-5) | Partial | sim, netcode | Geysers, riptide, `vehicles: vanilla` and solid copies that went inexact still trust the client, within 1 block. |
+| 19 | [CL-2](#cl-2) | Partial | config | ViaVersion and Geyser players play client-trusted unless `ineligible: deny`; hcfr-core runs neither today. |
+| 20 | [CL-3](#cl-3) | Partial | config | GrimAC false flags on legit 1.7 play; the GrimAC checklist was never run with a real client. |
+| 21 | [PR-6](#pr-6) | Partial | config | Split damage windows are built and live-tested but off by default, so fire ticks and arrows still eat sword hits. |
+| 22 | [VI-4](#vi-4) | Partial | config, netcode | Anti-ESP is built but off by default, and pop-in when it is on is unmeasured. |
+| 23 | [SV-5](#sv-5) | Partial | netcode | Plugins that write velocity or teleports around the choke point get upper-bound timing and corrections. |
+| 24 | [SV-3](#sv-3) | Partial | config | Leaf options that drop or delay knockback are documented but not refused. |
+| 25 | [SV-4](#sv-4) | Partial | netcode | An exception in authority code falls back to the claim, but no fault-injection test proves it never kicks. |
+| 26 | [VI-3](#vi-3) | Partial | netcode | Invisible or teleporting opponents after a desync are re-paired and counted, with no playtest budget yet. |
+| 27 | [HR-7](#hr-7) | Partial | combat, netcode | The 26.3 client picks the bare box, without 1.7's +0.1 margin; spear hits on players never land under enforce. |
+| 28 | [SP-4](#sp-4) | Open | netcode | W-tap and block-hit macros are not measured. |
+| 29 | [KB-9](#kb-9) | Partial | combat | Classic keeps 1.7's combo lock by design; DI is built in `neue`, which is parked. |
+| 30 | [NW-3](#nw-3) | Open | netcode | Tab ping is keep-alive based, not the RTT authority judges with. |
+| 31 | [PR-5](#pr-5) | Partial [limit] | none server-side | On high ping the heal lands late; the throw is exact. |
+| 32 | [VI-2](#vi-2) | Open [limit] | none server-side | Remote players are drawn RTT + 135-170 ms behind (K1: 50-70 ms less); lag compensation hides it for hits. |
+| 33 | [HR-9](#hr-9) | Open [limit] | none server-side | The vanilla miss penalty and the dropped first click after closing the inventory. |
+| 34 | [IN-6](#in-6) | Open [limit] | none server-side | Clicks count per 20 Hz client tick, and low FPS or 4-8 kHz polling delays them. |
 
 ---
 
@@ -846,7 +845,7 @@ Solved items are left out.
 
 ## 6. Projectiles, rods, potions, pearls
 
-### PR-1 Rod, bow and snowball hits depend on ping — Partial {#pr-1}
+### PR-1 Rod, bow and snowball hits depend on ping — Solved (rods, snowballs, eggs; arrows by choice) {#pr-1}
 
 - **Players:** "rod didn't hit", "rod hitbox", bow shots that pass through on ping ([16]-adjacent forum threads;
   "fixing ghost hits breaks rods in many forks", [3]).
@@ -871,11 +870,11 @@ Solved items are left out.
     honest rod at 6 blocks (control)" (still targets), "projectiles: a snowball at a target backtracked 500 ms (pongs
     held)" and "projectiles: a rod at a target backtracked 500 ms (pongs held)" (both miss: the view is used only
     within the cap).
-  - Exists: real client, 2026-10-22, run `classic6`, scenario `c_rod_cadence` (15 casts at a target strafing 4.5 blocks
-    off): 3 hits at localhost, 3 at r150j30, 3 at r250j30, 3 at r300j10, 0 corrections. Judged on server boxes at
-    300 ms the shooter would aim about 400 ms behind a moving target.
-  - To add: a bigger sample (the scenario is 15 casts), a snowball, and a check that no hit lands where the victim's
-    own truth was farther than the cap allows.
+  - Exists: real client, 2026-10-22, runs `classic6` and `classic9-projectiles`, a target strafing 4.5 blocks off:
+    rods 6 of 45 casts hit at localhost, at r150j30 and at r300j10 (the same casts: the scenario is scripted, so a hit
+    judged on what the shooter saw doesn't depend on ping; on server boxes the shooter would aim about 400 ms behind at
+    300 ms), snowballs 4, 3 and 7 of 40 (knocked targets make each run's later throws differ); 0 corrections, every
+    claim exact. The over-hit bound is the cap: cheat suite 2's 500 ms backtrack rows miss.
 
 ### PR-2 1.7 rod and projectile mechanics — Solved {#pr-2}
 
@@ -1331,8 +1330,10 @@ Solved items are left out.
     700 a second, from the in-JVM bots' ack RTT.
   - 50 bots at about 125 ms RTT (run `audit7-n50-125ms`): every claim exact, 0 corrections, 0 forced entries, 18,426
     hits accepted, 0 `REWIND`; MSPT p99 3.3 ms.
-  - 200 bots overwhelm the single-machine harness (the in-JVM bots ack 400+ ms late on localhost), so 200 is
-    unmeasured; it needs the bots on another machine (`auth-load.md`, run `audit7-n200-nolocator`).
+  - 200 bots spread over a 320×320 map, fighting locally (each seeing 46 players on average, 87 at most; run
+    `audit8f-n200-spread`): every claim exact (600,713), 0 corrections, 0 forced entries, all 46,103 hits accepted;
+    TPS 20, MSPT p99 8.6 ms. 200 in one 64×64 box overwhelms the single-machine harness (the in-JVM bots ack 400+ ms
+    late on localhost: run `audit7-n200-nolocator`), so that case needs the bots on another machine.
   - The vanilla locator bar is the largest O(N²) cost: `gamerule locator_bar false` cut bandwidth by 55% at 50.
   - Memory: no leak; players who quit are released (review 2 PT2-02).
 - **Fix (netcode, config):**

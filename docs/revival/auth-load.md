@@ -724,7 +724,20 @@ Same build (audit7), same harness, no JFR.
   entries at their deadlines, and 37,162 corrections and 66,190 `MISSED` hits follow from that. MSPT mean 30.9 ms,
   p99 191 ms on a machine with no headroom left. Measuring 200 needs the bots on another machine.
 
-Still not run: 100 bots with the locator bar off, and 200 with the bots on a second machine.
+### 200 bots spread over a map (2026-10-22, 23:55)
+
+`runs/audit8f-n200-spread` (build audit8f = fa179ece): 200 bots on a 320×320 arena (`--set arenaSize=320`), locator bar
+off, no JFR. The bots spawn at random and fight whoever is nearest, so fights form locally, as on a populated HCF map:
+each bot tracked 45.8 players on average, 87 at most. The harness kept up (the bots' ack RTT about 15 ms).
+
+- **Exact**: 600,713 of 600,713 claims bit-exact, 0 corrections, 0 forced entries, 46,103 hits, all accepted.
+- **TPS 20.00, MSPT mean 7.16 ms, p99 8.60 ms, max 19.5 ms.**
+- 30.2 KiB/s down and 1,782 packets/s in per player.
+
+This is 200 players on one server. What it isn't is 200 in one fight within 24 blocks of each other: that case needs
+the bots on a second machine (the 64×64 run above).
+
+Still not run: 100 bots with the locator bar off, and 200 in one box with the bots on a second machine.
 
 ## Reproduce
 
