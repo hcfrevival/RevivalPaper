@@ -221,6 +221,7 @@ final class AuthCheatScenarios {
         this.withholdPongs();
         this.stall(90, true);
         this.stall(240, false);
+        this.stall(600, false, FORWARD); // review 3 #4: the pings it answers on its way back no longer fill the tick's cap
         this.stallTeleport(20);
         this.delayedPongs(3, true);
         this.delayedPongs(9, false);
@@ -275,6 +276,11 @@ final class AuthCheatScenarios {
         this.combatForcedPoison();
         this.combatLatePongPoison();
         this.hitStoppedTarget(); // review X2-01: a target that stopped sending stays hittable where it stopped
+        // Review 3 #3: a player outside authority standing still stays hittable at every ping, and a stale view of it still misses
+        this.standingOutsideAuthority(0);
+        this.standingOutsideAuthority(3);
+        this.standingOutsideAuthority(5);
+        this.steppedAsideOutsideAuthority();
         this.heldTeleportPong(); // review X2-03: a server teleport whose pong misses the deadline
         this.heldKnockPong(0); // torture r80down300w: a knock whose pong comes just past its deadline
         this.heldKnockPong(1);
@@ -322,6 +328,7 @@ final class AuthCheatScenarios {
         this.consume("honest: a Speed potion drunk under enforce, then a sprint (control)", true);
         this.inventoryMove();
         this.mountDenied();
+        this.loginOnBoat(); // review 3 #2: vanilla's login re-mount came before authority
         this.vehiclesStep("vanilla");
         this.combatRiding();
         this.vehiclesStep("deny");
@@ -339,6 +346,8 @@ final class AuthCheatScenarios {
         this.blockGlitch("world: a block a plugin cancels, its ghost climbed over a 2-high wall (block glitch)", true);
         this.unsentChunkWalk();
         this.neverLoaded();
+        this.warmUpFlight(); // review 3 #1: claims before the first pong went to vanilla's checks
+        this.warmUpWalking();
         // pvp-issues WD-4: ghost hand, a chest opened and a block dug through a wall, each against its in-sight control
         this.ghostChest("honest: opens a chest in sight (control)", false);
         this.ghostChest("ghost hand: opens a chest behind a wall", true);
@@ -857,7 +866,14 @@ final class AuthCheatScenarios {
 
     // pvp-issues NW-2: an honest network stall freezes the player and it recovers
     private void stall(final int ticks, final boolean walking) {
-        final String id = "stall: " + (ticks / 20.0) + " s with nothing in or out" + (walking ? ", walking" : ", standing");
+        this.stall(ticks, walking, NONE);
+    }
+
+    // Review 3 #4: back from a stall, the client answers every ping queued in it (20 a second) in the first window, before
+    // that tick's packets; past 512 they counted as the tick's packets and its first key press was an overflow kick
+    private void stall(final int ticks, final boolean walking, final Input back) {
+        final String id = "stall: " + (ticks / 20.0) + " s with nothing in or out" + (walking ? ", walking" : ", standing")
+            + (back == NONE ? "" : ", then walks on as it comes back (review 3 #4)");
         this.begin(id, () -> {
         });
         final boolean[] frozen = {false};
@@ -873,10 +889,13 @@ final class AuthCheatScenarios {
             };
         });
         this.step(ticks, id + ": the network comes back", () -> {
-            this.c.keys = NONE;
+            this.c.keys = back;
             this.c.releaseHeld();
             this.c.flush();
         });
+        if (back != NONE) {
+            this.step(20, id + ": stops", () -> this.c.keys = NONE);
+        }
         this.judge(60, id, () -> {
             final Snap d = this.delta(this.c);
             this.honestExpect(!this.c.kicked, "not kicked (" + this.kicks.getOrDefault(this.c.player.getUUID(), "") + ")");
@@ -1754,6 +1773,86 @@ final class AuthCheatScenarios {
         this.step(1, id + ": done", this::leaveAll);
     }
 
+    // A player-type NPC at (x, z): a fake player that never sends a client tick, so authority never starts for it (as for
+    // HCFR's bots module), invulnerable so a hit judged on it doesn't knock it off its spot
+    private FakeClient npc(final double x, final double z) {
+        final FakeClient npc = new FakeClient(this.server, this.level, this.next("Npc"));
+        npc.player.setPermanentlyInvulnerable(true);
+        npc.player.connection.teleport(x, this.gy, z, 180.0F, 0.0F);
+        npc.drain(); // the teleports' accepts, as a client sends them
+        return npc;
+    }
+
+    // Review 3 #3 (review 1's stale-stamp-stationary-targets): a player outside authority standing still is sent nothing
+    // but a resync every 60 ticks, so once its box aged past the attacker's cap every hit on it was INVALID REWIND
+    private void standingOutsideAuthority(final int latencyTicks) {
+        final String id = "combat: honest hits on a player outside authority standing still (an NPC), at " + latencyTicks * 50
+            + " ms (review 3 #3, control)";
+        final FakeClient[] npc = {null};
+        this.begin(id, () -> {
+        });
+        this.step(1, id + ": the NPC joins", () -> {
+            npc[0] = this.npc(this.ox + 0.5, this.oz + 0.5 + 2.8);
+            this.c.latencyTicks = latencyTicks;
+        });
+        this.step(60, id + ": it has stood still past every cap", () -> {
+            this.label = "CONTROL";
+            this.tests.check(CombatWiring.book(this.c.auth).knows(npc[0].player.getId()) && npc[0].player.revivalAuth.mode() == AuthMode.OFF,
+                this.scenario + ": the attacker's client has the NPC, outside authority");
+            this.base = this.snap(this.c);
+            this.attacksBase = this.attacksOf(this.c);
+            this.c.yaw = 0.0F;
+            this.c.pitch = 0.0F;
+        });
+        for (int i = 0; i < 6; i++) {
+            this.step(15, id + ": attack " + i, () -> {
+                this.c.actions.add(new ServerboundAttackPacket(npc[0].player.getId()));
+                this.c.actions.add(net.minecraft.network.protocol.game.ServerboundPunchPacket.INSTANCE);
+            });
+        }
+        this.judge(5, id, () -> {
+            final Snap d = this.delta(this.c);
+            final int landed = this.attacksOf(this.c) - this.attacksBase;
+            this.honestExpect(landed == 6 && d.attacksAccepted() == 6, "every hit lands: " + landed + " of 6 (judged valid " + d.attacksAccepted()
+                + ", invalid " + d.attacksRejected() + "; the last " + this.c.auth.lastHitVerdict() + ", rewind " + this.c.auth.lastHitRewindMillis()
+                + " ms past the cap " + this.c.auth.lastRewindCap() + " ms)");
+            final net.minecraft.server.level.ChunkMap.TrackedEntity tracked = npc[0].player.moonrise$getTrackedEntity();
+            this.note("the NPC at " + npc[0].player.position() + ", its tracker's last send " + (tracked == null ? "none" : tracked.serverEntity.getPositionBase()));
+            npc[0].disconnect();
+        });
+        this.finish(id);
+    }
+
+    // Review 3 #3's other side: judged at where it stands, a player outside authority that moved can't be hit where a
+    // held view still shows it
+    private void steppedAsideOutsideAuthority() {
+        final String id = "combat: a player outside authority (an NPC) stepped 2 aside, pongs held 500 ms, the swing goes where it stood (review 3 #3)";
+        final FakeClient[] npc = {null};
+        this.begin(id, () -> {
+        });
+        this.step(1, id + ": the NPC joins", () -> npc[0] = this.npc(this.ox + 0.5, this.oz + 0.5 + 2.8));
+        this.step(40, id + ": hold pongs, the NPC steps 2 aside", () -> {
+            this.base = this.snap(this.c);
+            this.c.holdPongs = true;
+            npc[0].player.connection.teleport(this.ox + 2.5, this.gy, this.oz + 0.5 + 2.8, 180.0F, 0.0F);
+            npc[0].drain();
+        });
+        this.step(10, id + ": attack where the client still shows it", () -> {
+            this.attacksBase = this.attacksOf(this.c);
+            this.c.yaw = 0.0F;
+            this.c.pitch = 0.0F;
+            this.c.actions.add(new ServerboundAttackPacket(npc[0].player.getId()));
+            this.c.actions.add(net.minecraft.network.protocol.game.ServerboundPunchPacket.INSTANCE);
+        });
+        this.step(2, id + ": release", () -> this.c.releaseHeld());
+        this.judge(3, id, () -> {
+            final int landed = this.attacksOf(this.c) - this.attacksBase;
+            this.expect(landed == 0, "refused: landed " + landed + " (verdict " + this.c.auth.lastHitVerdict() + ")");
+            npc[0].disconnect();
+        });
+        this.finish(id);
+    }
+
     // Review X2-03 / X2-05: a server teleport reaches a client that holds its pongs past the deadline while walking. The
     // truth takes it at the force and walks on from there (written, replicated); the late landing re-applies nothing
     private void heldTeleportPong() {
@@ -2171,6 +2270,49 @@ final class AuthCheatScenarios {
                 cart[0].discard();
             }
         });
+        this.finish(id);
+    }
+
+    // Review 3 #2: vanilla puts a player back on the vehicle it logged out on (PrepareSpawnTask, after placeNewPlayer)
+    // before its first TickEnd, so the mount check never ran, and riding is exempt: the boat went where the client said
+    private void loginOnBoat() {
+        final String id = "vehicles: logs in on a boat (vanilla re-mounts it before authority starts), drives it 1.5 blocks a tick (review 3 #2)";
+        final Entity[] boat = {null};
+        final double[] far = {0.0};
+        this.step(1, id + ": arena and join, riding", () -> {
+            this.open(id);
+            this.track = new Track();
+            this.resetMoves();
+            this.clearArena();
+            this.c = new Cheater(this.next("Cheat"), this.ox + 0.5, this.gy, this.oz + 0.5, 0.0F);
+            final Entity spawned = EntityTypes.OAK_BOAT.create(this.level, EntitySpawnReason.LOAD);
+            if (spawned != null) {
+                spawned.snapTo(this.ox + 0.5, this.gy, this.oz + 0.5, 0.0F, 0.0F);
+                this.level.addFreshEntity(spawned);
+                this.c.player.startRiding(spawned, true, false); // ServerPlayer.loadAndSpawnParentVehicle
+                boat[0] = spawned;
+            }
+            this.probe = () -> far[0] = Math.max(far[0], Math.abs(this.c.player.getZ() - (this.oz + 0.5)));
+        });
+        this.step(WARM, id + ": drives", () -> {
+            this.note("riding at login " + (boat[0] != null) + ", under " + this.c.auth.mode());
+            final double[] z = {this.oz + 0.5};
+            this.c.cheat = x -> {
+                z[0] += 1.5;
+                x.extraMoves.add(new net.minecraft.network.protocol.game.ServerboundMoveVehiclePacket(
+                    net.minecraft.core.PositionAndRotation.of(new Vec3(this.ox + 0.5, this.gy, z[0]), 0.0F, 0.0F), true));
+            };
+        });
+        this.judge(10, id, () -> {
+            this.c.cheat = null;
+            this.expect(far[0] < 3.0, "the player stayed (z moved at most " + f(far[0]) + ")");
+            this.expect(!this.c.player.isPassenger(), "not riding under enforce (passenger " + this.c.player.isPassenger() + ")");
+            this.c.player.stopRiding();
+            if (boat[0] != null) {
+                boat[0].discard();
+            }
+        });
+        this.honestAfter(id, NONE, 0);
         this.finish(id);
     }
 
@@ -3018,6 +3160,80 @@ final class AuthCheatScenarios {
             this.expect(top[0] - y0[0] < 1.0, "the server never took the flight (y +" + f(top[0] - y0[0]) + " in 20 ticks)");
             this.c.cheat = null;
         });
+        this.finish(id);
+    }
+
+    // Review 3 #1: until its first pong after authority starts a client is warming up, and its claims went to vanilla's
+    // handler (10 blocks a tick); a client that holds its pongs after PlayerLoaded flew until the freeze at max-unacked-ms,
+    // then seeded the truth mid-air
+    private void warmUpFlight() {
+        final String id = "warm-up: holds its first pongs after PlayerLoaded, claims a flight of 0.5 a tick (review 3 #1)";
+        final double[] top = {Double.NEGATIVE_INFINITY};
+        this.step(1, id + ": arena and join", () -> {
+            this.open(id);
+            this.track = new Track();
+            this.resetMoves();
+            this.clearArena();
+            this.c = new Cheater(this.next("Cheat"), this.ox + 0.5, this.gy, this.oz + 0.5, 0.0F);
+            this.c.holdPongs = true;
+            final double[] claim = {this.gy};
+            this.c.cheat = x -> {
+                if (x.auth.view().loaded()) {
+                    claim[0] += 0.5;
+                    x.moveOverride = new ServerboundMovePlayerPacket.Pos(new Vec3(this.ox + 0.5, claim[0], this.oz + 0.5), false, false);
+                }
+            };
+            this.probe = () -> top[0] = Math.max(top[0], this.c.player.getY());
+        });
+        this.step(24, id + ": answers its pongs mid-air", () -> {
+            this.note("warm-up ticks " + this.c.auth.stats().exempt(AuthStats.EXEMPT_WARMUP) + ", frozen " + this.c.auth.frozen());
+            this.c.cheat = null;
+            this.c.releaseHeld();
+        });
+        this.judge(20, id, () -> {
+            final Simulation s = this.c.auth.simulation();
+            this.expect(this.c.auth.stats().exempt(AuthStats.EXEMPT_WARMUP) >= 10, "claimed through the warm-up ("
+                + this.c.auth.stats().exempt(AuthStats.EXEMPT_WARMUP) + " ticks)");
+            this.expect(top[0] - this.gy < 1.0 && this.moveMaxY - this.gy < 1.0, "the server never took the flight (y +" + f(top[0] - this.gy)
+                + (this.moveMaxY == Double.NEGATIVE_INFINITY ? ", no PlayerMoveEvent)" : ", PlayerMoveEvent +" + f(this.moveMaxY - this.gy) + ")"));
+            this.expect(Math.abs(s.y() - this.gy) <= EPS && s.onGround(), "the truth starts on the floor (y +" + f(s.y() - this.gy) + ")");
+        });
+        this.honestAfter(id, NONE, 0);
+        this.finish(id);
+    }
+
+    // Review 3 #1's cost: a player walking when authority starts mid-session; its claims before the first pong no longer
+    // move the server player, so the truth starts where authority found it
+    private void warmUpWalking() {
+        final String id = "honest: walking at 150 ms when authority starts mid-session (review 3 #1, control)";
+        this.step(1, id + ": arena and join, authority off", () -> {
+            this.open(id);
+            this.label = "CONTROL";
+            this.probe = () -> {
+            };
+            this.track = new Track();
+            this.resetMoves();
+            this.clearArena();
+            this.c = new Cheater(this.next("Cheat"), this.ox + 0.5, this.gy, this.oz + 0.5, 0.0F);
+            this.c.auth.setOverride(AuthMode.OFF);
+            this.c.latencyTicks = 3;
+        });
+        this.step(WARM + 5, id + ": walks", () -> this.c.keys = FORWARD);
+        this.step(8, id + ": authority starts", () -> {
+            this.base = this.snap(this.c);
+            this.c.auth.setOverride(AuthMode.ENFORCE);
+        });
+        this.step(30, id + ": stops", () -> this.c.keys = NONE);
+        this.judge(20, id, () -> {
+            final Snap d = this.delta(this.c);
+            this.honestExpect(this.c.auth.mode() == AuthMode.ENFORCE && !this.c.kicked, "under enforce (" + this.c.auth.mode() + "), not kicked");
+            this.honestExpect(this.c.auth.stats().exempt(AuthStats.EXEMPT_WARMUP) > 0, "warm-up ticks " + this.c.auth.stats().exempt(AuthStats.EXEMPT_WARMUP));
+            // The fix's cost is none: the same with or without it (3 on 316a191f, 4 on d020b2e2, whose corrections wait for a
+            // gap that keeps moving): authority starts the truth at rest under a walker (the activation seed)
+            this.honestExpect(d.corrections() <= 4, "back on the truth within 4 corrections: " + d.corrections() + " (exact " + d.exact() + "/"
+                + d.compared() + ")");
+        });
+        this.honestAfter(id, NONE, 0);
         this.finish(id);
     }
 

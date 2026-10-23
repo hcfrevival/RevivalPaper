@@ -31,6 +31,24 @@ class ReviewFixesTest {
     }
 
     @Test
+    void aWarmUpClaimNeverReachesVanillaUnderEnforce() {
+        // Review 3 #1: a client holding its first pongs flew on vanilla's 10-blocks-a-tick check until the freeze
+        assertFalse(AuthPlayer.exemptClaimRuns(AuthMode.ENFORCE, AuthStats.EXEMPT_WARMUP));
+        assertTrue(AuthPlayer.exemptClaimRuns(AuthMode.OBSERVE, AuthStats.EXEMPT_WARMUP), "observe trusts every claim");
+        assertFalse(AuthPlayer.exemptClaimRuns(AuthMode.ENFORCE, AuthStats.EXEMPT_NOT_LOADED));
+        assertFalse(AuthPlayer.exemptClaimRuns(AuthMode.OBSERVE, AuthStats.EXEMPT_REFUSED));
+        assertTrue(AuthPlayer.exemptClaimRuns(AuthMode.ENFORCE, AuthStats.EXEMPT_RIDING), "riding stays vanilla's");
+    }
+
+    @Test
+    void enforceNeverRidesWithVehiclesDenied() {
+        // Review 3 #2: the mount check and the dismount when enforce starts (a login re-mount) share the rule
+        assertTrue(Authority.deniesVehicles(AuthMode.ENFORCE, "deny"));
+        assertFalse(Authority.deniesVehicles(AuthMode.OBSERVE, "deny"));
+        assertFalse(Authority.deniesVehicles(AuthMode.ENFORCE, "vanilla"));
+    }
+
+    @Test
     void brandsAreClassed() {
         // Design §15.8 client profiles
         assertEquals(ClientProfile.Brand.VANILLA, ClientProfile.classify("vanilla"));

@@ -264,8 +264,13 @@ public final class OutboundClassifier {
                 if (packet instanceof ClientboundSetEntityDataPacket && trackedRockets.contains(id)) {
                     yield ROCKET;
                 }
-                yield trackedSolids.contains(id) || packet instanceof final ClientboundSetPassengersPacket passengers && carriesAny(passengers, trackedSolids)
-                    ? SOLID_ENTITY : NONE;
+                if (packet instanceof ClientboundSetPassengersPacket) {
+                    // Any vehicle's: the client ejects its player from a vehicle whose new list leaves it out
+                    // (handleSetEntityPassengersPacket), so a dismount's must reach the view, which stayed riding (exempt)
+                    // after every dismount (review 3 #2); the solids get it from there as before
+                    yield SELF_PASSENGERS;
+                }
+                yield trackedSolids.contains(id) ? SOLID_ENTITY : NONE;
             }
             case F_REMOTE -> remote(packet, trackedPlayers, trackedRockets, trackedSolids);
             case F_ADD -> {
@@ -356,18 +361,6 @@ public final class OutboundClassifier {
         }
         for (final net.minecraft.network.protocol.game.ClientboundPlayerInfoUpdatePacket.Entry entry : packet.entries()) {
             if (self.equals(entry.profileId())) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    private static boolean carriesAny(final ClientboundSetPassengersPacket packet, final IntSet ids) {
-        if (ids.isEmpty()) {
-            return false;
-        }
-        for (final int passenger : packet.getPassengers()) {
-            if (ids.contains(passenger)) {
                 return true;
             }
         }

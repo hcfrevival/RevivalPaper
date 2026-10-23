@@ -68,7 +68,10 @@ public final class ClientStream {
     public static final int SPRINT_START = 1;
     public static final int SPRINT_STOP = 2;
 
-    /** More items than any vanilla client can put in one tick: a violation, and the window is cut. */
+    /**
+     * More gameplay packets than any vanilla client can put in one tick: a violation, and the window is cut. Drain
+     * replies don't count (review 3 #4): a client back from a long stall answers every ping it queued in one frame.
+     */
     public static final int MAX_ITEMS = 512;
     /**
      * Drain items (pongs, accepts) and the entries they released that one window may hold (review E7, PT-15): a client
@@ -88,6 +91,7 @@ public final class ClientStream {
         int[] argA = new int[16];
         int[] argB = new int[16];
         int items;
+        int packets;
         public final Transactions.Acked acked = new Transactions.Acked();
         int lastCategory = GUI;
         boolean tickGroupStarted;
@@ -182,6 +186,7 @@ public final class ClientStream {
         void clear() {
             Arrays.fill(this.refs, 0, this.items, null);
             this.items = 0;
+            this.packets = 0;
             this.openedNanos = 0L;
             this.acked.clear();
             this.lastCategory = GUI;
@@ -287,7 +292,7 @@ public final class ClientStream {
     /** {@link #record}, saying how a packet broke the grammar ({@link #RECORDED} when it didn't). */
     public int recordChecked(final Packet<?> packet) {
         final Window window = this.current;
-        if (window.items >= MAX_ITEMS) {
+        if (window.packets >= MAX_ITEMS) {
             window.violations++;
             this.violations++;
             return OVERFLOW;
@@ -333,6 +338,7 @@ public final class ClientStream {
             legal = false; // use after release in one window: a vanilla client discards every click of the release tick
         }
         window.lastCategory = Math.max(window.lastCategory, category);
+        window.packets++;
         window.add(PACKET, packet, category, 0);
         if (!legal) {
             window.violations++;

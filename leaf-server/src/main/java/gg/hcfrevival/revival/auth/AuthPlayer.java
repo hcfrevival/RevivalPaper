@@ -522,6 +522,12 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
         this.mode = wanted;
         this.reconciler.reset();
         this.simulation.trackBelief(wanted == AuthMode.ENFORCE);
+        if (this.player.isPassenger() && Authority.deniesVehicles(wanted, this.settings().vehicles())) {
+            // Review 3 #2: vanilla re-mounts the vehicle a player logged out on before authority starts (and a mount made
+            // under observe stays), riding is exempt, and a ridden vehicle moves where the client says. Forced: a plugin
+            // cancelling the dismount would keep it
+            this.player.stopRiding(true);
+        }
     }
 
     // HR-2: the newest acked position of each player this client sees, by the server time it was produced
@@ -1958,11 +1964,8 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
                 this.replay(packet);
             }
             case final ServerboundMovePlayerPacket move -> {
-                // Not loaded: a vanilla client runs no physics until it reports PlayerLoaded (LocalPlayer.tick returns at
-                // once), so its claims are nobody's. Replayed, they'd reach vanilla's checks for good once Paper's client-load
-                // timeout takes the client as loaded, for a client that never reports it
                 if (!refused && (this.mode == AuthMode.OBSERVE
-                    || this.lastExempt != AuthStats.EXEMPT_NONE && this.lastExempt != AuthStats.EXEMPT_NOT_LOADED)) {
+                    || this.lastExempt != AuthStats.EXEMPT_NONE && exemptClaimRuns(this.mode, this.lastExempt))) {
                     if (this.mode == AuthMode.ENFORCE && this.lastExempt == EXEMPT_EXTERNAL_MOVER && move.hasPosition()
                         && !withinMove(move.getX(0.0) - this.player.getX(), move.getY(0.0) - this.player.getY(), move.getZ(0.0) - this.player.getZ(),
                         settings.externalMoverMaxMove())) {
@@ -2689,7 +2692,7 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
         if (claim != null) {
             this.clientOnGround = claim.isOnGround(); // every move packet carries it; none means it didn't change
         }
-        if (exempt == AuthStats.EXEMPT_NOT_LOADED || exempt == AuthStats.EXEMPT_REFUSED) {
+        if (!exemptClaimRuns(this.mode, exempt)) {
             // Review E1: claims nobody ran are never a seed's pair
             this.hasLastClaim = false;
             this.hasPrevClaim = false;
@@ -2809,6 +2812,19 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
     // view-based ones (warmup, not loaded, refused, riding, dead...) are judged from the tick itself
     private static boolean portExempt(final int exempt) {
         return exempt >= AuthStats.EXEMPT_SIMULATION_BASE;
+    }
+
+    /**
+     * Whether an exempt tick's claim goes to vanilla's handler (and may be a seed's pair). Not while frozen: a vanilla client
+     * runs no physics until it reports PlayerLoaded (LocalPlayer.tick returns at once), and replayed, its claims would reach
+     * vanilla's checks for good once Paper's client-load timeout took a client that never reports it as loaded. Not in
+     * warm-up under enforce (review 3 #1): a client holding its first pongs flew on vanilla's 10-blocks-a-tick check until
+     * the freeze at max-unacked-ms; an honest one is warm a round trip after authority starts (at a join, before it reports
+     * PlayerLoaded).
+     */
+    static boolean exemptClaimRuns(final AuthMode mode, final int exempt) {
+        return exempt != AuthStats.EXEMPT_NOT_LOADED && exempt != AuthStats.EXEMPT_REFUSED
+            && (exempt != AuthStats.EXEMPT_WARMUP || mode != AuthMode.ENFORCE);
     }
 
     /** Whether a claimed move fits on every axis within {@code bound} blocks (review E1: the port sweeps the whole move). */

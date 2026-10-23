@@ -109,7 +109,10 @@ class OutboundClassifierTest {
         assertEquals(OutboundClassifier.SOLID_ENTITY, OutboundClassifier.classify(teleport, 7, SELF, players, rockets, solids));
         assertEquals(OutboundClassifier.SOLID_ENTITY, OutboundClassifier.classify(new net.minecraft.network.protocol.game.ClientboundMoveEntityPacket.Pos(50,
             new net.minecraft.network.protocol.game.VecDelta.Linear((short) 1, (short) 0, (short) 0), true), 7, SELF, players, rockets, solids));
-        assertEquals(OutboundClassifier.SOLID_ENTITY, OutboundClassifier.classify(gg.hcfrevival.revival.auth.combat.SolidStreams.passengers(60, 50), 7, SELF, players, rockets, solids), "riding something: its vehicle places it");
+        assertEquals(OutboundClassifier.SELF_PASSENGERS, OutboundClassifier.classify(gg.hcfrevival.revival.auth.combat.SolidStreams.passengers(60, 50), 7, SELF, players, rockets, solids),
+            "riding something: its vehicle places it (the passengers kind hands it to the solids)");
+        assertEquals(OutboundClassifier.SELF_PASSENGERS, OutboundClassifier.classify(gg.hcfrevival.revival.auth.combat.SolidStreams.passengers(70), 7, SELF, players, rockets, solids),
+            "a horse's empty list: the client ejects its player if it rode it (review 3 #2: the view stayed riding after a dismount)");
         assertEquals(OutboundClassifier.SOLID_ENTITY, OutboundClassifier.classify(new net.minecraft.network.protocol.game.ClientboundRemoveEntitiesPacket(50), 7, SELF, players, rockets, solids));
         rockets.add(40);
         assertEquals(OutboundClassifier.ROCKET, OutboundClassifier.classify(new net.minecraft.network.protocol.game.ClientboundRemoveEntitiesPacket(50, 40), 7, SELF, players, rockets, solids),

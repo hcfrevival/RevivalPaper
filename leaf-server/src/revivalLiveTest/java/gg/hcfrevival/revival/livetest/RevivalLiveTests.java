@@ -127,6 +127,9 @@ public final class RevivalLiveTests extends JavaPlugin implements Listener {
         try {
             this.server = ((CraftServer) this.getServer()).getServer();
             this.level = ((CraftWorld) this.getServer().getWorlds().getFirst()).getHandle();
+            // 26.3 reads no spawn-monsters from server.properties (it is a game rule now): mobs spawned by the cheat arena
+            // on some seeds (y -60, where a slime chunk spawns slimes at any light) and knocked test players about mid-row
+            this.level.getGameRules().set(net.minecraft.world.level.gamerules.GameRules.SPAWN_MOBS, false, this.level);
             this.spawn = this.level.getWorld().getSpawnLocation();
             final RecordingConnection attackerConnection = new RecordingConnection();
             this.victimConnection = new RecordingConnection();

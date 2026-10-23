@@ -135,6 +135,17 @@ class ClientStreamTest {
     }
 
     @Test
+    void repliesAfterALongStallDontCountTowardTheTicksPacketCap() {
+        // Review 3 #4: a client back from a 30 s stall answers its 600 queued pings in one frame, then runs its tick
+        final ClientStream stream = new ClientStream();
+        for (int i = 0; i < 600; i++) {
+            assertTrue(stream.recordAck(0, 0, 0, 0));
+        }
+        assertEquals(ClientStream.RECORDED, stream.recordChecked(new ServerboundMovePlayerPacket.Pos(new Vec3(1.0, 2.0, 3.0), true, false)));
+        assertFalse(stream.overflowing(), "replies have their own cap");
+    }
+
+    @Test
     void aSecondMoveClaimAndAnOverflowAreProtocolViolations() {
         final ClientStream stream = new ClientStream();
         assertEquals(ClientStream.RECORDED, stream.recordChecked(new ServerboundMovePlayerPacket.StatusOnly(true, false)));

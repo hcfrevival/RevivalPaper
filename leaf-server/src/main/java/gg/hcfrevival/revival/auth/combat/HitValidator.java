@@ -16,7 +16,8 @@ import net.minecraft.world.phys.AABB;
  * tested against the target's truth at the capped age ({@link TruthHistory}: the oldest step of its path stamped at or
  * after {@code now - cap}, never older), in the drawn box's size. The client never drew it there, so a high-ping
  * attacker has to lead; a backtrack or a held view gains nothing past the cap. Only a target with no truth that new
- * (no path: outside authority) is INVALID {@code REWIND}. Other players stay where the client drew them.
+ * (outside authority and moved since its tracker last sent it) is INVALID {@code REWIND}. Other players stay where the
+ * client drew them.
  * <p>
  * One instance per thread (it reuses a {@link PickRay}); {@link #validate} allocates only its result.
  */

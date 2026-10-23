@@ -11,7 +11,8 @@ REVIVAL_LIVE_DONE <nonce> appears and no failure does. The Mojang server jar and
 unpacks are cached in leaf-server/build/revival-live/ so later runs start offline.
 
 REVIVAL_LIVE_RULES=<rule set> runs both cheat suites on that rule set (classic when unset; classic-capped is the
-NAS world's).
+NAS world's). REVIVAL_LIVE_ONLY=<token>,<token> keeps only the steps whose names hold one of them, and the cheat suite's
+own "cheat suite:" steps (for "cheat suite 2", name it).
 """
 
 import os
@@ -64,6 +65,7 @@ def run(name: str, async_tracker: bool, server_jar: pathlib.Path, plugin: pathli
         try:
             subprocess.run(
                 ["java", f"-Drevival.livetest.nonce={nonce}", f"-Drevival.livetest.rules={os.environ.get('REVIVAL_LIVE_RULES', '')}",
+                 f"-Drevival.livetest.only={os.environ.get('REVIVAL_LIVE_ONLY', '')}",
                  "-Dpaper.disableMigrationDelay=true",
                  "-Dterminal.jline=false", "-Dterminal.ansi=false", "-Xms512M", "-Xmx2G",
                  "-jar", str(server_jar), "--nogui"],

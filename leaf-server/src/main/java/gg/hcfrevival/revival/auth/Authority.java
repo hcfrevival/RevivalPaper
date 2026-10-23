@@ -294,12 +294,17 @@ public final class Authority {
      * since a ridden vehicle's movement comes from the client.
      */
     public static boolean refusesMount(final net.minecraft.world.entity.Entity entity) {
-        if (entity instanceof final ServerPlayer player && player.revivalAuth.mode() == AuthMode.ENFORCE
-            && "deny".equals(gg.hcfrevival.revival.Revival.settings().authoritative().vehicles())) {
+        if (entity instanceof final ServerPlayer player
+            && deniesVehicles(player.revivalAuth.mode(), gg.hcfrevival.revival.Revival.settings().authoritative().vehicles())) {
             player.revivalAuth.stats().mountsRefused++;
             return true;
         }
         return false;
+    }
+
+    /** Whether a player in {@code mode} may not ride under {@code authoritative.vehicles}: the mount check and enforce's start. */
+    static boolean deniesVehicles(final AuthMode mode, final String vehicles) {
+        return mode == AuthMode.ENFORCE && "deny".equals(vehicles);
     }
 
     /**
