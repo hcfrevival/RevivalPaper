@@ -1353,9 +1353,11 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
     // SV-2: right after a server stall, the windows this client sent through it still wait for the main thread. Their
     // clicks reached the server before now, each with its own time, the one at the window's opening too; landing the
     // held click, an older one, first would start the next window at the stall's end instead. So it waits a tick for
-    // them (the next tick's packets run first), and lands after them if none of them did. Never two ticks in a row: a
-    // server that stays behind has windows waiting at every tick. Only with the clicks' clock: off, a stall plays as it
-    // always has
+    // them (the next tick's packets run first), and lands after them if none of them did. A stall, not a long tick:
+    // this tick has run two periods past its own (Authority.behindNow). A tick 50 ms over holds back a client tick of
+    // windows, and landing the held click before them starts the next window a tick late at most; a loaded host has
+    // such ticks all the time. Never two ticks in a row: a server that stays behind has windows waiting at every tick.
+    // Only with the clicks' clock: off, a stall plays as it always has
     private boolean landingWaited;
 
     private boolean landingWaits(final long nowNanos) {

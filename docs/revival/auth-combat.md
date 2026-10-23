@@ -339,15 +339,33 @@ stall (`combat.DamageWindows`):
   on the Netty thread, so a stall delays the window but not the stamp), passed through the replay
   (`AuthPlayer.clickNanos()`). A held click (the click buffer, pvp-issues HR-6) takes its landing time: it lands when
   the window opens. A fresh hit's click starts the clock (`DamageWindows.settle`).
-- **When the clock rules.** Before the damage of a legacy melee click on a player that authority delivered, while
-  the server is or was a tick period behind its schedule since the window's fresh hit (`Authority.behindSince`: a
-  tick measured that far behind at or after the hit's tick, or the server that far behind now). The counter is then set
-  to what is left of the window between the two clicks' arrivals, rounded to whole ticks (`DamageWindows.catchUp`).
-  The clicks are whole client ticks apart, so rounding takes out up to half a tick of the two arrivals' network
-  jitter together. A window real time opened is open, and one the catch-up ticks counted down early stays shut.
+- **When the clock rules.** Before the damage of a legacy melee click on a player that authority delivered, once a
+  stall touched the window since its fresh hit (`Authority.behindSince`). A stall is the ticks two periods or more off
+  real time, read from the tick starts `Authority` keeps for the last 64 ticks (the first player's `suspendFlushing`,
+  top of `tickChildren`): the server is in one now (the latest tick has run two periods past its own,
+  `Authority.behindNow`), or a tick since the hit's started two periods or more off the period grid counted from the
+  hit's tick. Late: a stall the catch-up ticks haven't made up yet, or ticks the server skipped. Early: the hit came in
+  a stall's burst or catch-up, and the ticks after it ran back to back. A window a stall touched stays on the clock to
+  its end: the clock already gave its counter the stall's time, which the catch-up ticks would count again. The counter
+  is then set to what is left of the window between the two clicks' arrivals, rounded to whole ticks
+  (`DamageWindows.catchUp`). The clicks are whole client ticks apart, so rounding takes out up to half a tick of the two
+  arrivals' network jitter together. A window real time opened is open, and one the catch-up ticks counted down early
+  stays shut.
+- **Relative, and two periods.** The first version read "behind" off the lag-compensation clock (F6), which measures
+  each tick's connection phase against a schedule anchored once and moved only when a tick comes early. Two things
+  made that read behind with no stall. A skip: Paper gives up the ticks past `catchup-ticks` (vanilla past 2 s), the
+  counter never gets them back, and the lag clock keeps them for the session (harmless for F6, which compares stamps,
+  but every later window read behind). And a loaded host: a tick that reached its connection phase a period later than
+  the quickest tick seen. A window the clock rules with no stall in it can land a held click a tick late. The Neue
+  landing row ("a click into the window lands on the tick it opens") deals its hit in a tick's scheduler phase and
+  lands the held click in the connection phase nine ticks on: 9.x periods apart, which the clock rounds to 9 while the
+  counter, which counted the hit's own tick, reads 10. It read one tick late in two full-suite build runs on a loaded
+  laptop on 2026-10-23 and passed alone on the same jars. (Not the landing wait below: the row's clients aren't on
+  `wire`, so none of their TickEnds wait.) Now a window looks only at the ticks of its own span, so a stall long gone
+  or a skip leaves later windows on the counter, and a single long tick (a reload, a chunk burst: up to a period over)
+  is no stall: the counter is a tick off at most then, which the clock, rounding to whole ticks, doesn't better.
 - **When vanilla's counter wins.**
-  - On schedule. Per-tick jitter keeps the server within a period of its schedule, and then nothing changes, bit for
-    bit: the window is the counter's, as before.
+  - On schedule, and through single long ticks: nothing changes, bit for bit; the window is the counter's, as before.
   - When something else wrote the counter. The windows count the victim's level ticks
     (`DamageWindows.levelTick`, from `LegacyHitRegistration.tick`, first in the same `ServerPlayer.tick` as the
     decrement; server ticks would not do, since clicks run both before a tick's level phase and after it) and keep
@@ -357,19 +375,20 @@ stall (`combat.DamageWindows`):
   - Every other damage: projectiles, mobs, fire and the rest keep vanilla's ticks.
 - **The click buffer** reads the same counter: the landing pass asks `DamageWindows.meleeCounter` at the landing's
   time (`NeueCombat.windowOpen`), so a held click lands when its replay will find the window open. Right after a stall
-  the pass waits a tick while windows the attacker sent through the stall still wait for the main thread
-  (`AuthPlayer.landingWaits`): their clicks reached the server before the landing, the one at the window's opening
-  with its own time. Landing the held click first would start the next window at the stall's end. The wait asks
-  `Authority.behindNow`, so a test host that is itself a tick behind (two builds and a live suite at once, 2026-10-23)
-  trips it with no stall injected: the Neue landing row then reads one tick late (`revivalpaper-auth-20261023-1606`'s
-  build) and passes alone on the same jar. On a server at 20 TPS the wait fires only in a hitch.
+  (`Authority.behindNow`: the tick has run two periods past its own) the pass waits a tick while windows the attacker
+  sent through the stall still wait for the main thread (`AuthPlayer.landingWaits`, `ArrivalStamps.pending`): their
+  clicks reached the server before the landing, the one at the window's opening with its own time. Landing the held
+  click first would start the next window at the stall's end. A tick 50 ms over holds back a client tick of windows at
+  most, and landing the held click before them costs the next window a tick at most, so it doesn't wait for one; never
+  two ticks in a row either, as a server that stays behind has windows waiting at every tick.
 - The counter is still vanilla's field. The clock writes it only at a tracked click's damage, so the hurt animation
   (`hurtTime`), the Bukkit no-damage-ticks API and `EntityDamageEvent` see one window.
 
 Proof: unit `DamageWindowsTest` (a stall doesn't keep the window shut; catch-up ticks don't open it early; jitter
 rounds to the client's spacing; a plugin's write and another fresh window win; only a fresh hit restarts the clock; on
-schedule the counter is vanilla's bit for bit over 2,000 jittered clicks), `PauseClockTest` (behind from a hitch on,
-never on per-tick jitter), and cheat suite 2's "server lag" row (`auth-cheat-suite-2.md`, "Server lag").
+schedule the counter is vanilla's bit for bit over 2,000 jittered clicks), `PauseClockTest` (a skipped 3 s stall
+leaves no lag behind; a 200 ms stall reads behind through its catch-up and in the windows it touched; a long tick is no
+stall), and cheat suite 2's "server lag" row (`auth-cheat-suite-2.md`, "Server lag").
 
 ## 7. Not covered
 

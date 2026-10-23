@@ -1518,22 +1518,27 @@ Solved items are left out.
     (`Authority.clockMillis`, torture F6), and a stall's burst drains at once (F4). On the torture rig, server hitches
     of 0.3-1.2 s cost 0 corrections and every hit stayed `VALID` (`stallfix4-hitch`).
   - The melee window follows the clicks' clock around a stall (2026-10-23, `damage-windows.melee-wall-clock`, on by
-    default; `auth-combat.md` §6). While the server is or was a tick behind its schedule since the window's fresh hit
-    (`Authority.behindSince`), a legacy melee click on a player that authority delivers sets the victim's counter,
-    before its damage, to what is left of the window between its arrival (its window's `TickEnd` off the wire) and the
-    arrival of the click that opened the window, rounded to whole ticks (`DamageWindows.catchUp`). A window real time
-    opened is open; one the catch-up ticks counted down early stays shut. A plugin's `setNoDamageTicks`, or a window
-    another damage or an untracked hit opened, stands. The click buffer reads the same counter, and right after a stall
-    a held click waits a tick for the clicks the client sent through it (`AuthPlayer.landingWaits`).
-  - On schedule nothing changes: the window is vanilla's counter, which still drives the hurt animation, plugins and
-    every other damage.
+    default; `auth-combat.md` §6). Once a stall touched the window since its fresh hit (`Authority.behindSince`: the
+    ticks two periods or more off real time, read from the tick starts of the window's own span), a legacy melee click
+    on a player that authority delivers sets the victim's counter, before its damage, to what is left of the window
+    between its arrival (its window's `TickEnd` off the wire) and the arrival of the click that opened the window,
+    rounded to whole ticks (`DamageWindows.catchUp`). A window real time opened is open; one the catch-up ticks counted
+    down early stays shut. A plugin's `setNoDamageTicks`, or a window another damage or an untracked hit opened,
+    stands. The click buffer reads the same counter, and right after a stall a held click waits a tick for the clicks
+    the client sent through it (`AuthPlayer.landingWaits`).
+  - On schedule, and through a single long tick (up to a period over), nothing changes: the window is vanilla's
+    counter, which still drives the hurt animation, plugins and every other damage. Measured on the window's own ticks
+    since 2026-10-23 (evening): the first version read a fixed schedule, which a skipped stall left reading behind for
+    the session and a single slow tick on a loaded host marked behind for every window open across it. That put windows
+    with no stall in them on the clock, and made the Neue landing row read a tick late in two build runs.
 - **Fix:** none left for player melee under authority. Projectiles, mobs and other damage, and players outside
   authority, still count server ticks.
 - **Proof (exists):**
   - unit `DamageWindowsTest` (a stall doesn't keep the window shut; catch-up ticks don't open it early; jitter rounds to
     the client's spacing; a plugin's write and another fresh window win; only a fresh hit restarts the clock; on
-    schedule the counter is vanilla's bit for bit over 2,000 jittered clicks), `PauseClockTest` (behind from a hitch on,
-    never on per-tick jitter);
+    schedule the counter is vanilla's bit for bit over 2,000 jittered clicks), `PauseClockTest` (a skipped 3 s stall
+    leaves no lag behind; a 200 ms stall reads behind through its catch-up and in the windows it touched; a long tick
+    is no stall);
   - cheat suite 2 "server lag: a still target clicked at 12 CPS through a 200 ms stall every 40 ticks"
     (`auth-cheat-suite-2.md`, "Server lag"): a plugin sleeps the main thread 200 ms every 35-45 ticks while a fake
     client on its own thread, its TickEnds stamped as they arrive, clicks a still target 2, 2, 1 ticks apart. Fresh hits

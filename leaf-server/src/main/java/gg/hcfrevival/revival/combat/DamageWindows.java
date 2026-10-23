@@ -104,16 +104,16 @@ public final class DamageWindows {
     }
 
     /**
-     * SV-2: before a tracked click's damage, the melee window as the clicks' clock has it. The window counts the victim's
-     * level ticks ({@code damageCooldownTime}, one off a tick), and a server stall parts those from the players' time both
-     * ways: the clients click on in real time through the stall, and their windows, queued behind it, meet a counter the
-     * stall held, so a window real time had opened turns the click away ("server lag eats hits"); then Paper's catch-up
-     * ticks run back to back and count a window down in a few milliseconds (a hit dealt in the stall's burst gets its
-     * next window early). So when the server is or was a tick behind its schedule since the window's hit
-     * ({@code behind}), the counter is set to what is left of that window between the two clicks' arrivals, below or
-     * above what the ticks counted. Only when ticks alone made the counter what it is: a plugin's
-     * {@code setNoDamageTicks}, or a fresh window from another damage or an untracked hit, stands, and the clock stays
-     * out of that window. On schedule nothing changes.
+     * SV-2: before a tracked click's damage, the melee window as the clicks' clock has it. The window counts the
+     * victim's level ticks ({@code damageCooldownTime}, one off a tick), and a server stall parts those from the
+     * players' time both ways: the clients click on in real time through the stall, and their windows, queued behind
+     * it, meet a counter the stall held, so a window real time had opened turns the click away ("server lag eats
+     * hits"); then Paper's catch-up ticks run back to back and count a window down in a few milliseconds (a hit dealt
+     * in the stall's burst gets its next window early). So when the ticks parted from real time by a stall since the
+     * window's hit ({@code behind}, {@code Authority.behindSince}), the counter is set to what is left of that window
+     * between the two clicks' arrivals, below or above what the ticks counted. Only when ticks alone made the counter
+     * what it is: a plugin's {@code setNoDamageTicks}, or a fresh window from another damage or an untracked hit,
+     * stands, and the clock stays out of that window. On schedule nothing changes.
      */
     void catchUp(final LivingEntity victim, final long clickNanos, final long periodNanos, final boolean behind) {
         if (victim.damageCooldownTime != this.ticksAlone()) {
@@ -137,8 +137,8 @@ public final class DamageWindows {
         this.leftLevelTicks = this.levelTicks;
     }
 
-    // The counter a tracked click meets: the clicks' clock's when the server is or was behind and the window is the
-    // tracked hit's, else the counter as it is
+    // The counter a tracked click meets: the clicks' clock's when a stall parted the ticks from real time and the window
+    // is the tracked hit's, else the counter as it is
     private int met(final LivingEntity victim, final long clickNanos, final long periodNanos, final boolean behind) {
         if (!behind || this.hitClickNanos == 0L || victim.damageCooldownTime != this.ticksAlone()) {
             return victim.damageCooldownTime;

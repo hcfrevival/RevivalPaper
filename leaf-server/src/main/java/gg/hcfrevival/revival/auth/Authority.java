@@ -227,6 +227,7 @@ public final class Authority {
             // Once a server tick, whoever is online (review PT2-02: no quit hook deactivates a player under authority)
             pruneTick = MinecraftServer.currentTick;
             pruneDisconnected();
+            noteTickStart(MinecraftServer.currentTick, System.nanoTime(), MinecraftServer.getServer().tickRateManager().nanosecondsPerTick());
         }
         if (listener instanceof final ServerGamePacketListenerImpl game) {
             game.player.revivalAuth.onSuspendFlushing();
@@ -383,8 +384,6 @@ public final class Authority {
     private static long clockBaseNanos;
     private static long clockPeriodNanos;
     private static int clockLastTick = Integer.MIN_VALUE;
-    // SV-2: the last tick whose measurement found the server a tick period or more behind its schedule
-    private static int behindTick = Integer.MIN_VALUE;
 
     /** Main thread, from every player's connection tick: where the server stands against its tick schedule. */
     static void noteServerTick(final int tick, final long nowNanos, final long periodNanos) {
@@ -406,29 +405,82 @@ public final class Authority {
                 lagNanos = lag;
             }
         }
-        if (lagNanos >= periodNanos) {
-            behindTick = tick;
-        }
         nextDueNanos = clockBaseNanos + (tick + 1 - clockBaseTick) * periodNanos;
     }
 
+    // SV-2: when each of the last STARTS server ticks started (tickChildren, at the first player's suspendFlushing), so
+    // a melee window measures how far the ticks parted from real time over its own span. Never against a fixed anchor:
+    // the lag clock above keeps the ticks a skip left out (Paper and vanilla give up ticks they can't catch up, and the
+    // counter never gets them back), which would read as behind for the rest of the session
+    private static final int STARTS = 64; // a melee window lasts 20 ticks and opens at 10
+    private static final long[] startNanos = new long[STARTS];
+    private static final int[] startTicks = new int[STARTS];
+    private static long startPeriodNanos;
+    private static int startLatest = Integer.MIN_VALUE;
+    // A stall: the ticks two periods or more off real time. One period is a single long tick (a reload, a chunk burst):
+    // the counter is off by at most a tick then, which the clicks' clock, rounding to whole ticks, can't better, and on
+    // a loaded host such ticks come often
+    static final int STALL_PERIODS = 2;
+
+    static {
+        java.util.Arrays.fill(startTicks, Integer.MIN_VALUE);
+    }
+
+    /** Main thread, once a server tick, as it starts (the first player's {@code suspendFlushing}, top of tickChildren). */
+    static void noteTickStart(final int tick, final long nowNanos, final long periodNanos) {
+        if (periodNanos != startPeriodNanos || tick < startLatest) {
+            java.util.Arrays.fill(startTicks, Integer.MIN_VALUE); // a new tick rate, or a new count: the old starts mean nothing
+            startPeriodNanos = periodNanos;
+        }
+        final int slot = Math.floorMod(tick, STARTS);
+        startTicks[slot] = tick;
+        startNanos[slot] = nowNanos;
+        startLatest = tick;
+    }
+
     /**
-     * Whether the server fell a tick period or more behind its tick schedule in or after server tick {@code tick}, or is
-     * that far behind now (a hitch in progress, or the packets handled right after one). Only then do its ticks part from
-     * the players' time: within a period the ticks still count one a period, which the per-tick jitter of an ordinary
-     * server stays under (combat.DamageWindows, SV-2). Main thread.
+     * Whether a stall touched the span from server tick {@code tick} to now (combat.DamageWindows, SV-2): the server is
+     * in one now ({@link #behindNow}), or a tick since started two periods or more off the period grid the ticks
+     * from {@code tick} on should have kept, either way. Late: a stall, until its catch-up ticks make it up, and for good
+     * if the server skipped the ticks it couldn't. Early: {@code tick} itself came late, in a stall's burst or its
+     * catch-up, and the ticks after it ran back to back. Kept for the whole span, not just while the ticks are off: a
+     * window the clicks' clock ruled through a stall already counts the stall's time, which the catch-up ticks would
+     * count again. Ticks before {@code tick} never count, so a stall long gone, or a skip, leaves later windows on
+     * schedule; a tick older than the last 64 reads as on schedule too (its melee window is over). Main thread.
      */
     public static boolean behindSince(final int tick) {
         return behindSince(tick, System.nanoTime());
     }
 
     static boolean behindSince(final int tick, final long nowNanos) {
-        return behindTick >= tick || behindNow(nowNanos);
+        if (behindNow(nowNanos)) {
+            return true;
+        }
+        final int slot = Math.floorMod(tick, STARTS);
+        if (tick > startLatest || startTicks[slot] != tick) {
+            return false;
+        }
+        final long from = startNanos[slot];
+        final long stall = STALL_PERIODS * startPeriodNanos;
+        for (int k = tick + 1; k <= startLatest; k++) {
+            final int at = Math.floorMod(k, STARTS);
+            if (startTicks[at] == k && Math.abs(startNanos[at] - from - (long) (k - tick) * startPeriodNanos) >= stall) {
+                return true;
+            }
+        }
+        return false;
     }
 
-    /** Whether the server is a tick period or more behind its schedule at {@code nowNanos} (SV-2). Main thread. */
+    /**
+     * Whether the server is in a stall at {@code nowNanos}: the latest tick has run two periods or more past its own (a
+     * stall in progress, or the packets handled right after one, before the next tick starts). Relative to that tick's
+     * start, so it reads false again from the next tick on schedule, whatever came before (SV-2). Main thread.
+     */
     static boolean behindNow(final long nowNanos) {
-        return clockBaseTick != Integer.MIN_VALUE && Math.max(lagNanos, nowNanos - nextDueNanos) >= clockPeriodNanos;
+        if (startLatest == Integer.MIN_VALUE) {
+            return false;
+        }
+        return nowNanos - startNanos[Math.floorMod(startLatest, STARTS)] - startPeriodNanos >= STALL_PERIODS * startPeriodNanos;
     }
 
     /** {@code System.currentTimeMillis()} less how far the server is behind its tick schedule, now: any thread. */

@@ -325,10 +325,10 @@ latest tick.
 phase. The attacker's own later clicks are judged after it.
 
 **Around a server stall** (pvp-issues SV-2, `damage-windows.melee-wall-clock`), step 4 reads the counter the landing's
-replay will meet, which follows the clicks' clock while the server is or was behind its schedule (`auth-combat.md` §6).
-Right after a stall the pass also waits a tick while windows the attacker sent through the stall still wait for the
-main thread: their clicks reached the server before the landing, and the one at the window's opening lands with its
-own time.
+replay will meet, which follows the clicks' clock once a stall (the ticks two periods or more off real time) touched
+the window (`auth-combat.md` §6). Right after a stall the pass also waits a tick while windows the attacker sent through
+the stall still wait for the main thread: their clicks reached the server before the landing, and the one at the
+window's opening lands with its own time.
 
 When two attackers have clicks held on the same victim, connection order decides who lands fresh. The other click
 is turned away and is not held again. Combo's roster order behaves the same way. A fairer option (p2): land the
