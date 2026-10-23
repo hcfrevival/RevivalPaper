@@ -1214,6 +1214,12 @@ Solved items are left out.
 - **Today:** visibility culling (`auth/visibility/*`, patch 1015). Players with no line of sight beyond 8 blocks are
   not sent, with RTT-expanded boxes. It is off by default (`visibility.enabled: false`). It costs up to 81 rays per
   hidden pair. Sounds and particles still leak positions.
+- **Measured 2026-10-23, inconclusive:** the rig's peek scenario (`t_peek`, torture runs `peek-off` and `peek-on`, the
+  NW-1 jar, `visibility.enabled` on) never hid the target: the rig's `RigTarget` is a NoAI player NPC, which is never
+  under authority, and `Authority.visibleTo` judges only players under authority (everyone else is shown as vanilla
+  shows it), so the client had it present and moving through all 200 ticks behind the wall. The reference is in hand
+  (line of sight opens at client ticks 17, 105 and 193 at r80j10 and r150j30, `scratch-20261023/peek_table.py` in the
+  rig); the peek test needs a target under authority, a load bot or a second real client.
 - **Fix (config, netcode):** decide per mode. Measure pop-in (the extra time before a peeking player appears, against
   culling off) before turning it on for HCF.
 - **Proof:**
