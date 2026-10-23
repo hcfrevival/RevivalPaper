@@ -275,6 +275,10 @@ Lunar session.
   - Keep the instant kick for pongs after the move claim (impossible for any client that writes from the main
     thread), skipped or unknown pongs, overflow and forged accepts.
   - This changes design §15.1 and needs the maintainer's sign-off.
+- **NAS test setup (2026-10-23):** Apollo-Bukkit 1.3.0 on the NAS test server (`/volume2/docker/authoritative`), set as
+  HCFR runs it: `disable-miss-penalty: true`, `disable-block-miss-penalty: false`, `allow-dig-and-use: true` (MCStats
+  uploads off; the generated file kept as `config.yml.default`), and a NoAI husk "Dummy" at the arena centre (0, 65,
+  -1000) to hit, for the user's recorded Lunar session (S3-S6).
 - **N5. `InputRules` reads the profile.**
   - `ATTACK_AFTER_CLOSE` is off when `missPenaltyDisabled` (built 2026-10-22, `InputRules.screenEatsClick`, read each
     window from the profile; unit `InputRulesTest.anAttackAfterACloseIsFineWhenTheServerTurnedTheMissPenaltyOff`).

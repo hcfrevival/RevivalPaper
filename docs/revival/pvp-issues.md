@@ -42,6 +42,7 @@ Status:
 - **Partial**: some of it is built, or it is built and the proof is missing, or it only works in some conditions.
 - **Open**: nothing addresses it yet.
 - **[limit]**: a vanilla 26.3 client makes a full fix impossible. §13 says what a light client mod would change.
+- **Accepted**: the user chose to keep it (1.7's own behaviour, or a client limit with the light mod declined).
 
 Owners: **netcode** (`auth`, `auth.net`, `auth.view`, `auth.combat`, `auth.replicate`), **combat**
 (`combat`, the knockback and damage rules), **sim** (`auth.sim`, the movement port), **config** (defaults and
@@ -52,8 +53,9 @@ policy in `revival.yml` and server configs), **core** (the HCFR plugins, outside
 | | Count |
 |---|---|
 | Solved | 35 |
-| Partial | 26 (1 of them [limit]) |
-| Open | 8 (4 of them [limit]) |
+| Partial | 24 |
+| Accepted | 8 (5 of them [limit]) |
+| Open | 2 |
 | Items | 69 |
 
 Since the last refresh (2026-10-21, `a7a84a06`): 12 items moved to Solved (HR-2, HR-6, IN-1, IN-2, IN-5, PR-3, NW-2,
@@ -97,39 +99,31 @@ Solved items are left out.
 | # | Item | Status | Owner | In one line |
 |---|---|---|---|---|
 | 1 | [SV-1](#sv-1) | Partial | netcode, config | 200 players on one map run exact at MSPT p99 8.6 ms, 50 at 125 ms are exact, and 100 heal from a 2.3 s stall in 7 s. 200 in one fight needs a second machine to measure. |
-| 2 | [HR-10](#hr-10) | Open | combat, netcode | Two attackers on one victim, or a lethal tie: the lower uplink lands first. A 1v1 trade lands both hits, each judged on what its attacker saw. |
-| 3 | [CL-1](#cl-1) | Partial | netcode, config, core | Most HCF players use Lunar. Frame-time packets no longer kick, but no rule reads HCFR's Apollo combat options and no recorded Lunar session has checked them against the grammar. |
-| 4 | [HR-8](#hr-8) | Open | netcode, combat | Crouching shrinks the 26.x hitbox to 1.5 (swimming and crawling to 0.6), and 1.7 never did. |
-| 5 | [NW-1](#nw-1) | Partial | netcode | Steady links and Wi-Fi hiccups are clean on a real client; a 2 s freeze recovers with 4 corrections, and real packet loss is untested. |
-| 6 | [SV-2](#sv-2) | Partial | combat | A server hitch no longer refuses hits, but damage windows count server ticks, so a stall shuts windows real time had opened. |
-| 7 | [KB-3](#kb-3) | Open [limit] | combat (metrics) | A high-ping victim's client applies the knock late, so they are harder to combo and feel "glued to the floor". |
-| 8 | [PR-7](#pr-7) | Partial | combat, core | Pearls land only where a standing box fits and stop at fake walls; no running-server glitch suite, and core isn't told of a refund. |
-| 9 | [HR-3](#hr-3) | Partial | netcode | A low-ping cheater has about the 150 ms slack plus its jitter of free backtrack inside its cap; no `rewind-stretch` flag. |
-| 10 | [SP-5](#sp-5) | Partial | config | After a rod, pot or pearl, the first sword hits skip 1.7's ×0.6 attacker slowdown and sprint stop; the switch is off. |
-| 11 | [KB-4](#kb-4) | Partial | combat, netcode | The base knock points between server positions, not along what the attacker saw; unmeasured at ping. |
-| 12 | [VI-1](#vi-1) | Partial | netcode | Paths are exact within 24 blocks; beyond, the 26.3 stutter shows on 1.6-4% of moving ticks, at bow, rod and pearl range. |
-| 13 | [IN-4](#in-4) | Partial | netcode | Aim assist is measured (yaw GCD), with thresholds never tuned on real mouse data. |
-| 14 | [WD-4](#wd-4) | Partial | netcode | Ghost hand: doors, chests and digs are not ray-checked against walls (only predicted block changes are). |
-| 15 | [KB-10](#kb-10) | Partial | netcode | Jump-reset macros raise an alert, on thresholds from simulated players only. |
-| 16 | [IN-3](#in-3) | Partial | netcode | Autoclickers are capped at 12 CPS and a 20 CPS lock is flagged; the fixed-rate detector (`click-lock`) isn't built. |
-| 17 | [PR-4](#pr-4) | Partial | combat, core | 1.7's splash falloff is on; core's own pot precision may stack on it, and no pot drill compares them. |
-| 18 | [MV-5](#mv-5) | Partial | sim, netcode | Geysers, riptide, `vehicles: vanilla` and solid copies that went inexact still trust the client, within 1 block. |
-| 19 | [CL-2](#cl-2) | Partial | config | ViaVersion and Geyser players play client-trusted unless `ineligible: deny`; hcfr-core runs neither today. |
-| 20 | [CL-3](#cl-3) | Partial | config | GrimAC false flags on legit 1.7 play; the GrimAC checklist was never run with a real client. |
-| 21 | [PR-6](#pr-6) | Partial | config | Split damage windows are built and live-tested but off by default, so fire ticks and arrows still eat sword hits. |
-| 22 | [VI-4](#vi-4) | Partial | config, netcode | Anti-ESP is built but off by default, and pop-in when it is on is unmeasured. |
-| 23 | [SV-5](#sv-5) | Partial | netcode | Plugins that write velocity or teleports around the choke point get upper-bound timing and corrections. |
-| 24 | [SV-3](#sv-3) | Partial | config | Leaf options that drop or delay knockback are documented but not refused. |
-| 25 | [SV-4](#sv-4) | Partial | netcode | An exception in authority code falls back to the claim, but no fault-injection test proves it never kicks. |
-| 26 | [VI-3](#vi-3) | Partial | netcode | Invisible or teleporting opponents after a desync are re-paired and counted, with no playtest budget yet. |
-| 27 | [HR-7](#hr-7) | Partial | combat, netcode | The 26.3 client picks the bare box, without 1.7's +0.1 margin; spear hits on players never land under enforce. |
-| 28 | [SP-4](#sp-4) | Open | netcode | W-tap and block-hit macros are not measured. |
-| 29 | [KB-9](#kb-9) | Partial | combat | Classic keeps 1.7's combo lock by design; DI is built in `neue`, which is parked. |
-| 30 | [NW-3](#nw-3) | Open | netcode | Tab ping is keep-alive based, not the RTT authority judges with. |
-| 31 | [PR-5](#pr-5) | Partial [limit] | none server-side | On high ping the heal lands late; the throw is exact. |
-| 32 | [VI-2](#vi-2) | Open [limit] | none server-side | Remote players are drawn RTT + 135-170 ms behind (K1: 50-70 ms less); lag compensation hides it for hits. |
-| 33 | [HR-9](#hr-9) | Open [limit] | none server-side | The vanilla miss penalty and the dropped first click after closing the inventory. |
-| 34 | [IN-6](#in-6) | Open [limit] | none server-side | Clicks count per 20 Hz client tick, and low FPS or 4-8 kHz polling delays them. |
+| 2 | [CL-1](#cl-1) | Partial | netcode, config, core | Most HCF players use Lunar. Frame-time packets no longer kick, but no rule reads HCFR's Apollo combat options and no recorded Lunar session has checked them against the grammar. |
+| 3 | [NW-1](#nw-1) | Partial | netcode | Steady links and Wi-Fi hiccups are clean on a real client; a 2 s freeze recovers with 4 corrections, and real packet loss is untested. |
+| 4 | [SV-2](#sv-2) | Partial | combat | A server hitch no longer refuses hits, but damage windows count server ticks, so a stall shuts windows real time had opened. |
+| 5 | [PR-7](#pr-7) | Partial | combat, core | Pearls land only where a standing box fits and stop at fake walls; no running-server glitch suite, and core isn't told of a refund. |
+| 6 | [HR-3](#hr-3) | Partial | netcode | A low-ping cheater has about the 150 ms slack plus its jitter of free backtrack inside its cap; no `rewind-stretch` flag. |
+| 7 | [KB-4](#kb-4) | Partial | combat, netcode | The base knock points between server positions, not along what the attacker saw; unmeasured at ping. |
+| 8 | [VI-1](#vi-1) | Partial | netcode | Paths are exact within 24 blocks; beyond, the 26.3 stutter shows on 1.6-4% of moving ticks, at bow, rod and pearl range. |
+| 9 | [IN-4](#in-4) | Partial | netcode | Aim assist is measured (yaw GCD), with thresholds never tuned on real mouse data. |
+| 10 | [WD-4](#wd-4) | Partial | netcode | Ghost hand: doors, chests and digs are not ray-checked against walls (only predicted block changes are). |
+| 11 | [KB-10](#kb-10) | Partial | netcode | Jump-reset macros raise an alert, on thresholds from simulated players only. |
+| 12 | [IN-3](#in-3) | Partial | netcode | Autoclickers are capped at 12 CPS and a 20 CPS lock is flagged; the fixed-rate detector (`click-lock`) isn't built. |
+| 13 | [PR-4](#pr-4) | Partial | combat, core | 1.7's splash falloff is on; core's own pot precision may stack on it, and no pot drill compares them. |
+| 14 | [MV-5](#mv-5) | Partial | sim, netcode | Geysers, riptide, `vehicles: vanilla` and solid copies that went inexact still trust the client, within 1 block. |
+| 15 | [CL-2](#cl-2) | Partial | config | ViaVersion and Geyser players play client-trusted unless `ineligible: deny`; hcfr-core runs neither today. |
+| 16 | [CL-3](#cl-3) | Partial | config | GrimAC false flags on legit 1.7 play; the GrimAC checklist was never run with a real client. |
+| 17 | [PR-6](#pr-6) | Partial | config | Split damage windows are built and live-tested but off by default, so fire ticks and arrows still eat sword hits. |
+| 18 | [VI-4](#vi-4) | Partial | config, netcode | Anti-ESP is built but off by default, and pop-in when it is on is unmeasured. |
+| 19 | [SV-5](#sv-5) | Partial | netcode | Plugins that write velocity or teleports around the choke point get upper-bound timing and corrections. |
+| 20 | [SV-3](#sv-3) | Partial | config | Leaf options that drop or delay knockback are documented but not refused. |
+| 21 | [SV-4](#sv-4) | Partial | netcode | An exception in authority code falls back to the claim, but no fault-injection test proves it never kicks. |
+| 22 | [VI-3](#vi-3) | Partial | netcode | Invisible or teleporting opponents after a desync are re-paired and counted, with no playtest budget yet. |
+| 23 | [HR-7](#hr-7) | Partial | combat, netcode | The 26.3 client picks the bare box, without 1.7's +0.1 margin; spear hits on players never land under enforce. |
+| 24 | [SP-4](#sp-4) | Open | netcode | W-tap and block-hit macros are not measured. |
+| 25 | [KB-9](#kb-9) | Partial | combat | Classic keeps 1.7's combo lock by design; DI is built in `neue`, which is parked. |
+| 26 | [NW-3](#nw-3) | Open | netcode | Tab ping is keep-alive based, not the RTT authority judges with. |
 
 ---
 
@@ -321,7 +315,7 @@ Solved items are left out.
   scenes). For B, the rig's `attack_ranges` at eye-to-box distances 2.95-3.15 with and without sprinting, all
   `VALID` iff the client picked.
 
-### HR-8 Modern poses shrink the hitbox — Open {#hr-8}
+### HR-8 Modern poses shrink the hitbox — Accepted (the modern box) {#hr-8}
 
 - **Players:** crouch-spam to dodge hits. Sprint-swimming and crawling players are tiny targets in water and in
   trapdoor gaps. 1.7 never changed the box ([15]: Java Edition 1.9 and 1.14 changes).
@@ -329,6 +323,7 @@ Solved items are left out.
   swimming and crawling 0.6. Its own eye drops to 1.27 when crouching, against 1.54 in 1.7.
 - **Today:** the mirror replays the pose exactly (`RemoteMirror`, `DATA_POSE`), so hits are judged on the 26.x box.
   That is consistent, but not 1.7. The classic audit re-confirmed it (tracked here, not a new item).
+- **Decided 2026-10-23 (the user):** keep the modern crouch box; viewers keep seeing the crouch.
 - **Fix (netcode, combat):** a `legacy-poses` option.
   - Rewrite `DATA_POSE` `CROUCHING` → `STANDING` in entity data sent to viewers. Keep the shared-flags sneak bit, so
     the nametag still dims. Viewers then see a full 1.8 box, as in 1.7, and lose the crouch animation.
@@ -340,7 +335,7 @@ Solved items are left out.
 - **Proof (to add):** the rig, with a sneaking target. The viewer client's `getBoundingBox()` height is 1.8, and hits
   aimed at y 1.5-1.8 above the feet are `VALID` and land.
 
-### HR-9 Miss penalty and the dropped first click after a screen — Open [limit] {#hr-9}
+### HR-9 Miss penalty and the dropped first click after a screen — Accepted [limit] {#hr-9}
 
 - **Players:** "1.8 hit delay" ([1]: HitDelayFix). A whiff while the button is still down at the tick boundary
   blocks attack clicks until a tick sees the button up. After closing the inventory (pot refills) the first attack
@@ -355,7 +350,7 @@ Solved items are left out.
 - **Proof:** rig scenario `whiff_then_click` (not built; `client-compat.md` §9.1 R1): agent clicks against `Punch`
   packets, documenting how many clicks the client itself eats. This is a reference number, not a pass/fail.
 
-### HR-10 Trades: the lower uplink wins ties — Open {#hr-10}
+### HR-10 Trades: the lower uplink wins ties — Accepted (1.7's order) {#hr-10}
 
 - **Players:** "low ping wins trades", "first hit is random on ping" ([5], [6]). In 1.7 the first fresh hit often
   decides the combo.
@@ -367,7 +362,9 @@ Solved items are left out.
   already dead when its attack arrives).
 - **Today:** arrival order. When two attackers have held clicks on one victim (`classic-capped`, `neue`), connection
   order decides who lands fresh (`neue-combat.md` §5.2).
-- **Fix (combat, netcode):** inside one server tick, apply player-vs-player attacks in order of estimated click time,
+- **Decided 2026-10-23 (the user):** keep 1.7's arrival order, and no kill trades (a blow from a player already dead on
+  the server stays dropped). Ordering by click time would delay every hit's knock by up to a tick.
+- **Fix, if wanted later (combat, netcode):** inside one server tick, apply player-vs-player attacks in order of estimated click time,
   `arrival − rttBase / 2`, instead of arrival. This adds no delay. Bound the credit by the HR-2 cap, so lagging
   doesn't buy priority. Ties across server ticks stay inherent.
 - **Proof (to add):** two `FakeClient`s with asymmetric latency (20 ms and 120 ms) click at the same real instants
@@ -435,7 +432,7 @@ Solved items are left out.
   +5); unit `TransactionsTest.aPingTooOldIsDueWhateverTheWindowsSay`,
   `ArrivalStampsTest.windowsWaitingForTheMainThreadWidenTheCredit`.
 
-### KB-3 High-ping victims take the knock late — Open [limit] {#kb-3}
+### KB-3 High-ping victims take the knock late — Accepted [limit] {#kb-3}
 
 - **Players:** "high ping players are glued to the floor", "can't combo high ping", or the reverse, "low ping gets
   comboed easily" ([5], [6]; Hypixel threads say high-ping KB arrives 200-220 ms late).
@@ -625,7 +622,7 @@ Solved items are left out.
 - **Proof (to add):** a synthetic-population study like `neue-combat.md` §12.3: false positives per hour on human
   timing models, detection rate on fixed-delay macros.
 
-### SP-5 Swapping to the sword: the first hits skip 1.7's attacker slowdown — Partial {#sp-5}
+### SP-5 Swapping to the sword: the first hits skip 1.7's attacker slowdown — Accepted {#sp-5}
 
 - **Players:** after a rod, a pot or a pearl, the first sword hits keep the attacker's speed and sprint. 1.7 slowed
   the attacker ×0.6 and stopped its sprint on every sprint hit.
@@ -826,7 +823,7 @@ Solved items are left out.
     Esc, number key, the throw, the sword, twice): 0 corrections, no grammar drop, every claim exact, at localhost,
     150, 250 and 300 ms.
 
-### IN-6 Click and frame timing, polling rate — Open [limit] {#in-6}
+### IN-6 Click and frame timing, polling rate — Accepted [limit] {#in-6}
 
 - **Players:** "input delay", "1.8.9 has the best input"; 4000-8000 Hz mice stutter; low FPS feels laggy ([11],
   [19]).
@@ -930,7 +927,7 @@ Solved items are left out.
     `LegacyThrowTest.aStandingSelfPotBurstsHalfABlockUpOn17` (heals 7 standing, 6 sprinting).
   - To add: the RedLine pot drill stats (`potionAccuracy`) before and after, with core's precision off.
 
-### PR-5 Pot timing on high ping — Partial [limit] {#pr-5}
+### PR-5 Pot timing on high ping — Accepted [limit] {#pr-5}
 
 - **Players:** "ghost pots", high-ping players potting at five hearts ([5]).
 - **Cause:** protocol and client. The heal reaches the client one RTT after the throw, plus flight time.
@@ -1097,7 +1094,7 @@ Solved items are left out.
     tick less behind".
   - To add: `view_target_strafe` at 30 and 45 blocks, 0 freezes.
 
-### VI-2 Opponents are drawn behind (interpolation delay) — Open [limit] {#vi-2}
+### VI-2 Opponents are drawn behind (interpolation delay) — Accepted [limit] {#vi-2}
 
 - **Players:** "I'm hitting where he was" ([18]; MC-302347).
 - **Cause:** client. The 26.3 client shows remote players about 1.5 steps behind the newest data. Measured with a
@@ -1485,7 +1482,7 @@ Solved items are left out.
 
 ## 13. What a vanilla client can't fix, and what a light client mod would change
 
-The design's non-goal stands: no mod is required (`authoritative.md` §1). This section says what is lost by that.
+The design's non-goal stands: no mod is required (`authoritative.md` §1). This section says what is lost by that. Decided 2026-10-23 (the user): vanilla only, no light mod; the [limit] items below are accepted.
 
 A mod is never a security boundary: anything it does, a cheat client can fake. So a mod can only improve how the game
 feels for honest players and widen what the server's rules can express. The authority must keep judging every packet
