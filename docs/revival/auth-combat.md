@@ -356,7 +356,10 @@ stall (`combat.DamageWindows`):
   time (`NeueCombat.windowOpen`), so a held click lands when its replay will find the window open. Right after a stall
   the pass waits a tick while windows the attacker sent through the stall still wait for the main thread
   (`AuthPlayer.landingWaits`): their clicks reached the server before the landing, the one at the window's opening
-  with its own time. Landing the held click first would start the next window at the stall's end.
+  with its own time. Landing the held click first would start the next window at the stall's end. The wait asks
+  `Authority.behindNow`, so a test host that is itself a tick behind (two builds and a live suite at once, 2026-10-23)
+  trips it with no stall injected: the Neue landing row then reads one tick late (`revivalpaper-auth-20261023-1606`'s
+  build) and passes alone on the same jar. On a server at 20 TPS the wait fires only in a hitch.
 - The counter is still vanilla's field. The clock writes it only at a tracked click's damage, so the hurt animation
   (`hurtTime`), the Bukkit no-damage-ticks API and `EntityDamageEvent` see one window.
 
