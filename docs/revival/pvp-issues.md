@@ -1356,7 +1356,22 @@ Solved items are left out.
   - A 2 s client freeze (torture `freeze2`, 2026-10-23): no kick at 0 to 250 ms (keep-alives go out unbundled, NW-2);
     the recovery takes 4, 2, 6, 2 and 19 corrections at localhost, r80j10, r150j30, r150j10 and r250j30. The knocks the
     target dealt during the freeze were forced at their deadline, and the client applies them only once it runs again.
-- **Fix (netcode):** make the recovery after a freeze one correction. For loss, an ack deadline that waits, bounded,
+  - Why 250 ms chains (traced tick by tick, 2026-10-23, `freeze2` and `freeze3`): after the first correction, one lands
+    every round trip with a new one decided in its own window. In one such window a knock lands too: the truth takes
+    it before the accept is checked, the accept's residual (5 mm) starts the backstop, and the backstop forecasts the
+    client from the accept without that knock, so it sends the knock's flight as a correction (1.9 blocks) to a client
+    that was on the truth. That lands a round trip later and starts the next. The backstop also goes absolute after any
+    two backstops in a row, converging or not, and an absolute carries the forecast's inputs. An attempt that went
+    absolute only when the gap stopped halving, and forecast the truth for absolutes with no belief, moved the counts
+    within one run's noise (19 to 17 at r250j30, 6 to 2 at r150j30, 4 to 5 at localhost) and was not kept. A second
+    gave the belief every knock, explosion and rod pull the client takes in its drain, and the backstop the knocks in
+    flight (`freeze4`): r250j30 fell to 7, but r80j10, r150j10 and r150j30 rose to 8, 6 and 12. There the chain starts
+    with a correction forecast 12 windows ahead (the windows queued behind the freeze) that lands 2 later, a forecast
+    `freeze2` made too. Not kept either: single runs vary too much (forced entries 11 to 65 in the same condition) to
+    judge a reconciler change; it needs several runs per condition.
+- **Fix (netcode):** make the recovery after a freeze one correction: the accept backstop must forecast the client
+  with the knocks it takes after the accept in that window, as a deferred correction does with knocks in flight. For
+  loss, an ack deadline that waits, bounded,
   while the entry's bytes are still unacked by the client's TCP (`TCP_INFO` on Linux, the NAS): a retransmit is the
   network, a pong held back with the bytes delivered is the client. A plain longer deadline would hand the same slack
   to a client holding pongs.
