@@ -49,7 +49,10 @@ import org.jspecify.annotations.Nullable;
  *       frame start), then actions, input if changed, the sprint command if changed, the move packet
  *       {@code LocalPlayer.sendPosition} would choose, and {@code ServerboundClientTickEndPacket}.</li>
  * </ul>
- * Called from the main thread, packets are handled at once, as the packet processor would.
+ * Called from the main thread, packets are handled at once, as the packet processor would. A client on {@code wire}
+ * can tick on a thread of its own, in real time through a server stall: its packets pass the channel's pipeline as
+ * Netty would hand them on, so the handlers authority puts there stamp its {@code TickEnd}s as they arrive
+ * (ArrivalStamps), and queue for the main thread like a real connection's.
  */
 final class FakeClient {
 
@@ -58,9 +61,20 @@ final class FakeClient {
     }
 
     final class FakeConnection extends Connection {
-        FakeConnection() {
+        FakeConnection(final boolean wire) {
             super(PacketFlow.SERVERBOUND);
             this.channel = new EmbeddedChannel();
+            if (wire) {
+                // Netty's last stop, under the name authority puts its arrival stamps in front of. EmbeddedChannel runs
+                // handlers on the calling thread
+                this.channel.pipeline().addLast(net.minecraft.network.HandlerNames.PACKET_HANDLER, new io.netty.channel.ChannelInboundHandlerAdapter() {
+                    @Override
+                    @SuppressWarnings("unchecked")
+                    public void channelRead(final io.netty.channel.ChannelHandlerContext ctx, final Object msg) {
+                        FakeClient.this.handOver((Packet<? super ServerGamePacketListener>) msg);
+                    }
+                });
+            }
         }
 
         @Override
@@ -119,6 +133,7 @@ final class FakeClient {
     private final ConcurrentLinkedQueue<Packet<? super ServerGamePacketListener>> replies = new ConcurrentLinkedQueue<>();
     private final MinecraftServer server;
     private final FakeConnection connection;
+    private final boolean wire;
     final ServerPlayer player;
 
     private PositionMoveRotation clientState = new PositionMoveRotation(Vec3.ZERO, Vec3.ZERO, 0.0F, 0.0F);
@@ -136,8 +151,13 @@ final class FakeClient {
     int ticks;
 
     FakeClient(final MinecraftServer server, final ServerLevel level, final String name) {
+        this(server, level, name, false);
+    }
+
+    FakeClient(final MinecraftServer server, final ServerLevel level, final String name, final boolean wire) {
         this.server = server;
-        this.connection = new FakeConnection();
+        this.wire = wire;
+        this.connection = new FakeConnection(wire);
         final GameProfile profile = new GameProfile(UUID.nameUUIDFromBytes(("revival-auth-" + name).getBytes()), name);
         this.player = new ServerPlayer(server, level, profile, ClientInformation.createDefault());
         this.player.isRealPlayer = true;
@@ -258,9 +278,18 @@ final class FakeClient {
         this.ticks++;
     }
 
+    /** Sends a packet: through the channel's pipeline on {@code wire}, else straight to {@link #handOver}. */
+    void deliver(final Packet<? super ServerGamePacketListener> packet) {
+        if (this.wire) {
+            this.connection.channel.pipeline().fireChannelRead(packet);
+        } else {
+            this.handOver(packet);
+        }
+    }
+
     /** Hands a packet to the server the way Connection.channelRead0 would: handled now on the main thread, else queued. */
     @SuppressWarnings("unchecked")
-    void deliver(final Packet<? super ServerGamePacketListener> packet) {
+    void handOver(final Packet<? super ServerGamePacketListener> packet) {
         final ServerGamePacketListener listener = this.player.connection;
         if (this.server.packetProcessor().isSameThread()) {
             ((Packet<ServerGamePacketListener>) packet).handle(listener);

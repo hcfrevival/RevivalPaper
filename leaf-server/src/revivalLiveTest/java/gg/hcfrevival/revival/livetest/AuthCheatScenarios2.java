@@ -281,6 +281,8 @@ final class AuthCheatScenarios2 {
 
         // Server faults: authority code that throws
         this.only("faults", () -> this.faults());
+        // Server lag: a stalled main thread (pvp-issues SV-2)
+        this.only("serverLag", () -> this.serverLag());
 
         this.step(1, "cheat suite 2: summary", this::summary);
         this.step(1, "cheat suite 2: rules classic again", () -> this.rules(CombatRules.DEFAULT));
@@ -1868,6 +1870,199 @@ final class AuthCheatScenarios2 {
 
     private static final Set<String> FAULTED = Set.of("tick", "belief", "correction", "setVelocity", "addVelocity", "clientAttack", "startUsingItem",
         "releaseUsingItem", "resetAttackStrength", "retryAttackStrength", "retryWithSlot", "seedFromMove", "snapBeliefOut");
+
+    // =================================================================================================================
+    // Server lag (pvp-issues SV-2)
+    // =================================================================================================================
+
+    private static final String WALL_CLOCK = "world-settings.default.legacy-combat.damage-windows.melee-wall-clock";
+
+    // A plugin stalls the main thread 200 ms once every 40 ticks (35 to 45 apart, seeded, so the stalls fall on every
+    // point of the 10-tick hit cycle: at a fixed 40 the cycle settles, after the first hit a stall delays, on a phase the
+    // stalls miss) while an honest client on its own thread clicks a still target at 12 CPS, 2, 2, 1 ticks apart (a
+    // click on every tick a window can open). Its packets pass the channel's pipeline, so its TickEnds are stamped as
+    // they arrive and queue behind a stall as a real connection's do. Fresh hits a second over 600 client ticks each:
+    // without stalls (the control), with them and the window on server ticks (melee-wall-clock off: what a stall costs
+    // without SV-2), and with them on the clicks' clock. Measured in real time, between the times the fresh hits' clicks
+    // reached the server (a held click's: its landing): the rate over the first to the last, and the gaps in whole ticks
+    // (1.7's window is 10; a direct click and a held click's landing in one tick are up to half a tick apart, so a gap
+    // counts as late from 12 and early from 8)
+    private void serverLag() {
+        final String id = "server lag: a still target clicked at 12 CPS through a 200 ms stall every 40 ticks";
+        final int ticks = 600;
+        final String[] names = {"no stalls", "stalls, the window on server ticks", "stalls, the window on the clicks' clock"};
+        final FakeClient[] fake = {null};
+        final Clicker[] clicker = {null};
+        final List<long[]> hits = new ArrayList<>(); // {when its click reached the server, its client tick, server tick}, one per fresh hit
+        final Listener fresh = new Listener() {
+        };
+        final boolean[] stalling = {false};
+        final java.util.Random random = new java.util.Random(40);
+        final int[] untilStall = {0};
+        final int[] stalled = {0};
+        final double[] rates = new double[3];
+        final String[] gaps = new String[3];
+        final int[] late = new int[3];
+        final int[] early = new int[3];
+        this.step(1, id + ": arena and join", () -> {
+            this.open(id);
+            this.label = "HONEST";
+            this.clearArena();
+            this.walls(true, true, GAP);
+            this.h = this.client("Honest", this.ox + 0.5, this.gy, this.oz + 0.3 + GAP, 180.0F);
+            final FakeClient x = new FakeClient(this.server, this.level, this.next("Clicker"), true);
+            fake[0] = x;
+            final net.minecraft.server.ServerScoreboard scoreboard = this.server.getScoreboard();
+            scoreboard.addPlayerToTeam(x.player.getScoreboardName(), scoreboard.getPlayerTeam(TEAM));
+            x.player.revivalAuth.setOverride(AuthMode.ENFORCE);
+            x.player.connection.teleport(this.ox + 0.5, this.gy, this.oz + 0.3, 0.0F, 0.0F);
+            this.probe = () -> x.clientTick(List.of(), NONE, false, x.clientPosition(), 0.0F, 0.0F, true, false);
+            // A fresh hit: the rule let the damage through an open window (an overflow hit meets it shut)
+            this.tests.getServer().getPluginManager().registerEvent(EntityDamageByEntityEvent.class, fresh, EventPriority.MONITOR, (ignored, event) -> {
+                if (event instanceof final EntityDamageByEntityEvent damage && !damage.isCancelled() && damage.getEntity().getUniqueId().equals(this.h.player.getUUID())
+                    && damage.getDamager().getUniqueId().equals(x.player.getUUID())
+                    && !(this.h.player.damageCooldownTime > this.h.player.invulnerableDuration / 2.0F)) {
+                    hits.add(new long[] {x.player.revivalAuth.clickNanos(), x.player.revivalAuth.tick(), MinecraftServer.currentTick});
+                    if (TRACE) {
+                        this.tests.getLogger().info("REVIVAL_CHEAT2_TRACE fresh hit t" + MinecraftServer.currentTick + " window " + x.player.revivalAuth.tick()
+                            + " click " + (x.player.revivalAuth.clickNanos() - this.server.getNextTickTime()) / 1_000_000L + " ms from the next tick");
+                    }
+                }
+            }, this.tests);
+        });
+        this.step(WARM + 5, id + ": under enforce, swords; the clicker's own thread", () -> {
+            final FakeClient x = fake[0];
+            this.tests.check(x.player.revivalAuth.mode() == AuthMode.ENFORCE && x.player.revivalAuth.simulation().seeded() && x.loaded(),
+                id + ": the clicker runs under enforce (mode " + x.player.revivalAuth.mode() + ")");
+            this.ready(this.h);
+            x.player.getInventory().setItem(0, new ItemStack(Items.DIAMOND_SWORD));
+            x.player.inventoryMenu.broadcastChanges();
+            this.give(this.h, 0, new ItemStack(Items.DIAMOND_SWORD));
+            this.h.before = v -> v.player.setHealth(20.0F); // knocked into its wall, never killed
+            // The plugin's stalls, from the driver's task on the main thread; the clicker ticks on its own from here
+            this.probe = () -> {
+                if (stalling[0] && --untilStall[0] <= 0) {
+                    untilStall[0] = 35 + random.nextInt(11);
+                    stalled[0]++;
+                    if (TRACE) {
+                        this.tests.getLogger().info("REVIVAL_CHEAT2_TRACE stall t" + MinecraftServer.currentTick);
+                    }
+                    try {
+                        Thread.sleep(200L);
+                    } catch (final InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    }
+                }
+            };
+            // Its ticks 25 ms into the server's own (the next tick's due time, plus half a tick)
+            clicker[0] = new Clicker(x, this.h.player.getId(), x.clientPosition(), this.server.getNextTickTime() + 25_000_000L);
+            clicker[0].start();
+        });
+        final int[] mark = {0, 0};
+        for (int p = 0; p < names.length; p++) {
+            final int phase = p;
+            this.step(phase == 0 ? 10 : 30, id + ": " + names[phase], () -> {
+                this.configure(WALL_CLOCK, phase != 1);
+                reset(this.h.player);
+                mark[0] = hits.size();
+                mark[1] = stalled[0];
+                untilStall[0] = 35 + random.nextInt(11);
+                stalling[0] = phase != 0;
+                clicker[0].click(ticks);
+            });
+            this.step(ticks + 15, id + ": " + names[phase] + " done", () -> {
+                stalling[0] = false;
+                final List<long[]> mine = new ArrayList<>(hits.subList(mark[0], hits.size()));
+                rates[phase] = mine.size() < 2 ? 0.0 : (mine.size() - 1) * 1.0E9 / (mine.getLast()[0] - mine.getFirst()[0]);
+                final Map<Long, Integer> histogram = new java.util.TreeMap<>();
+                for (int i = 1; i < mine.size(); i++) {
+                    final long gap = Math.round((mine.get(i)[0] - mine.get(i - 1)[0]) / 50_000_000.0);
+                    histogram.merge(gap, 1, Integer::sum);
+                    late[phase] += gap >= 12L ? 1 : 0;
+                    early[phase] += gap <= 8L ? 1 : 0;
+                }
+                gaps[phase] = mine.size() + " hits, ticks apart " + histogram;
+                if (phase > 0) {
+                    gaps[phase] += ", " + (stalled[0] - mark[1]) + " stalls";
+                }
+            });
+        }
+        this.judge(1, id, () -> {
+            clicker[0].halt();
+            fake[0].disconnect();
+            HandlerList.unregisterAll(fresh);
+            this.configure(WALL_CLOCK, true);
+            for (int p = 0; p < names.length; p++) {
+                this.note(names[p] + ": " + String.format(Locale.ROOT, "%.2f", rates[p]) + " fresh hits a second (" + gaps[p] + ")");
+            }
+            this.honestExpect(rates[0] >= 1.95 && early[0] == 0, "the control lands a fresh hit on every opening, never sooner");
+            this.honestExpect(rates[2] >= 1.95, "through the stalls, the clicks' clock keeps at least 1.95 fresh hits a second");
+            // One late hit allowed for a hiccup of the machine's own; on server ticks the stalls move several
+            this.honestExpect(late[2] <= 1 && early[2] == 0, "and no stall moves a hit: " + late[2] + " came late, " + early[2] + " early (on server ticks "
+                + late[1] + " and " + early[1] + ")");
+        });
+        this.step(1, id + ": verdict", () -> {
+            this.record();
+            this.leaveAll();
+        });
+    }
+
+    /**
+     * An honest client's ticks on a thread of their own, one every 50 ms of real time from {@code start} whatever the server
+     * does: a still player looking straight ahead, clicking a target 2, 2, 1 ticks apart (12 CPS) while armed. Started
+     * half a tick off the server's schedule, steady clicks never straddle a server tick.
+     */
+    private static final class Clicker extends Thread {
+        private final FakeClient fake;
+        private final int target;
+        private final Vec3 at;
+        private volatile boolean running = true;
+        private volatile int from = Integer.MAX_VALUE;
+        private volatile int to = Integer.MIN_VALUE;
+        private volatile int sent;
+
+        private final long start;
+
+        Clicker(final FakeClient fake, final int target, final Vec3 at, final long start) {
+            super("revival-live-clicker");
+            this.setDaemon(true);
+            this.fake = fake;
+            this.target = target;
+            this.at = at;
+            this.start = start;
+        }
+
+        /** Clicks for {@code n} ticks, from two ticks on. */
+        void click(final int n) {
+            final int start = this.sent + 2;
+            this.to = start + n;
+            this.from = start;
+        }
+
+        void halt() {
+            this.running = false;
+            try {
+                this.join(1_000L);
+            } catch (final InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        }
+
+        @Override
+        public void run() {
+            for (int t = 0; this.running; t++) {
+                final long due = this.start + t * 50_000_000L;
+                for (long wait = due - System.nanoTime(); wait > 0L; wait = due - System.nanoTime()) {
+                    java.util.concurrent.locks.LockSupport.parkNanos(wait);
+                }
+                final int k = t - this.from;
+                final boolean click = t >= this.from && t < this.to && (k % 5 == 0 || k % 5 == 2 || k % 5 == 4);
+                this.fake.clientTick(click ? List.of(new ServerboundAttackPacket(this.target), new ServerboundPunchPacket()) : List.of(), NONE, false,
+                    this.at, 0.0F, 0.0F, true, false);
+                this.sent = t + 1;
+            }
+        }
+    }
 
     // =================================================================================================================
     // Combat plumbing (attacker c, victim h, as AuthCheatScenarios' combatJoin)
