@@ -365,7 +365,8 @@ No kick anywhere. Hitch set (`t_hitch_client` 250/500/1000 ms, `t_hitch_server` 
 `t_hitch_server` 0 corrections and every hit VALID (the server hitches had 25 `INVALID REWIND` per condition on the
 first clock, 63-73 % `REWIND` before). Not at target: `t_hitch_client_over` (a 2 s client hitch, past
 `max-unacked-ms`, so a freeze by design) still takes 19-27 corrections after the freeze (3-27 across two runs; 5-37 before): a
-claim stays ~1e-4 off the truth for many ticks after it, corrected again and again; next to look at.
+claim stays ~1e-4 off the truth for many ticks after it, corrected again and again; next to look at. (One correction
+since 2026-10-23: [NW-1](#nw-1-one-correction-after-a-2-s-client-freeze-netcode-2026-10-23).)
 
 K per viewer (`runs/stallfix7-k1`, combat set, `-0649.jar`): 0 corrections, every claim exact, every hit VALID
 (255/268/302/243), every pick and box equal, in base, r30j0, r80j10 and r150j30; the viewer moved to K1 once in base and
@@ -422,6 +423,145 @@ accept a tick of motion off; only standing still stopped it. Reproduced here wit
 
 `t_hitch_client` (0.3/0.55/1.05 s) and `t_hitch_server` (0.36/0.76/1.26 s): 0 corrections before and after. Marathon
 (`glitch-fix7-marathon`): 0 corrections and 100 % exact in all seven conditions, as before.
+
+## NW-1: one correction after a 2 s client freeze (netcode, 2026-10-23)
+
+`t_hitch_client_over` on its own (a duel: the rig player strafes W+A/D, aims and clicks every 2 ticks; the target
+strafe-jumps and hits it every 15 ticks; a 2 s client hitch at t40, past `max-unacked-ms`), five conditions, three runs
+per build: the NAS jar `torture/jars/revivalpaper-auth-20261023-1232.jar` (`316a191f`) against the fix
+(`revivalpaper-nw1-5.jar`, `4b1282ab` less some comments). One run per build was never enough: the NAS jar's r150j30
+took 4, 25 and 2.
+
+| condition | before (`nw1-base-1/2/3`): corrections (absolute) | after (`nw1-fix-1/2/3`) | after: lands, windows after the refused tick |
+|---|---|---|---|
+| `base` | 4 (2), 4 (2), 4 (2) | 1 (0), 1 (0), 1 (0) | 12, 12, 12 |
+| `r80j10` | 6 (3), 14 (6), 4 (2) | 1 (0), 1 (0), 1 (0) | 16, 15, 15 |
+| `r150j30` | 4 (2), 25 (12), 2 (1) | 1 (0), 1 (0), 1 (0) | 19, 20, 20 |
+| `r150j10` | 22 (11), 2 (1), 2 (1) | 1 (0), 1 (0), 1 (0) | 18, 18, 19 |
+| `r250j30` | 12 (6), 4 (2), 19 (10) | 1 (0), 1 (0), 1 (0) | 24, 24, 23 |
+
+Every correction after the fix is relative and 0.22 blocks (the strafe tick the truth refused), and its accept lands
+within 1e-9 of the truth (`debug.log`: `accept ... residual`); before, up to 4.0 blocks, about half absolute. Ten of
+the windows after the refused tick are the client's catch-up burst (one frame), so the correction lands about 100, 250,
+450 and 700 ms after the freeze ends at localhost, 80, 150 and 250 ms. One r250j30 run's correction landed within a
+µm but not on the bit: its claims stay sub-µm after it (40 exact), as after any relative correction.
+
+| condition | run | measured ack RTT p10/p50/p90/p99 (ms) | claims exact | corrections (abs) | correction size p50/max (blocks) | client PlayerPosition corrections | forced entries | timer refused | player frozen | max queued | knocks at ack | client hits VALID | pick = verdict | mirror box bit-equal | K2 view freezes | status |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| `base` | nw1-base-1 | 6/11/15/21 | 145/147 | 4 (2) | 0.295/1.072 | 4 | 5 | 1 | 1 | 1 | 9/9 | 0/0 | 160/160 | 155/160 | 1/146 | ok |
+| `r80j10` | nw1-base-1 | 77/91/99/110 | 40/146 | 6 (3) | 0.206/3.015 | 6 | 15 | 1 | 1 | 1 | 9/9 | 0/0 | 160/160 | 155/160 | 2/137 | ok |
+| `r150j30` | nw1-base-1 | 133/159/186/204 | 40/136 | 4 (2) | 0.383/1.401 | 4 | 61 | 1 | 1 | 0 | 9/9 | 0/0 | 160/160 | 155/160 | 9/121 | ok |
+| `r150j10` | nw1-base-1 | 145/161/177/187 | 40/66 | 22 (11) | 0.421/1.407 | 22 | 35 | 1 | 1 | 1 | 10/10 | 0/0 | 160/160 | 156/160 | 3/142 | ok |
+| `r250j30` | nw1-base-1 | 227/260/292/317 | 40/77 | 12 (6) | 0.970/2.060 | 12 | 64 | 1 | 1 | 1 | 9/9 | 0/0 | 160/160 | 155/160 | 3/130 | ok |
+| `base` | nw1-base-2 | 6/14/17/26 | 40/147 | 4 (2) | 0.295/1.073 | 4 | 5 | 1 | 1 | 0 | 9/9 | 0/0 | 160/160 | 156/160 | 2/147 | ok |
+| `r80j10` | nw1-base-2 | 77/90/103/119 | 40/125 | 14 (6) | 0.201/1.368 | 14 | 26 | 1 | 1 | 1 | 10/10 | 0/0 | 160/160 | 155/160 | 2/129 | ok |
+| `r150j30` | nw1-base-2 | 131/162/187/204 | 40/55 | 25 (12) | 0.222/4.011 | 24 | 63 | 1 | 1 | 1 | 9/9 | 0/0 | 160/160 | 156/160 | 6/130 | ok |
+| `r150j10` | nw1-base-2 | 147/161/174/186 | 40/151 | 2 (1) | 0.216/3.484 | 2 | 36 | 1 | 1 | 1 | 10/10 | 0/0 | 160/160 | 155/160 | 2/140 | ok |
+| `r250j30` | nw1-base-2 | 228/259/289/306 | 40/127 | 4 (2) | 0.581/1.668 | 4 | 10 | 1 | 1 | 1 | 9/9 | 0/0 | 160/160 | 155/160 | 5/116 | ok |
+| `base` | nw1-base-3 | 3/15/18/25 | 40/147 | 4 (2) | 0.295/1.073 | 4 | 5 | 1 | 1 | 0 | 10/10 | 0/0 | 160/160 | 156/160 | 2/150 | ok |
+| `r80j10` | nw1-base-3 | 76/89/101/115 | 40/143 | 4 (2) | 0.629/1.213 | 4 | 7 | 1 | 1 | 1 | 10/10 | 0/0 | 160/160 | 156/160 | 4/135 | ok |
+| `r150j30` | nw1-base-3 | 132/160/187/202 | 137/151 | 2 (1) | 0.214/3.794 | 2 | 62 | 1 | 1 | 1 | 9/9 | 0/0 | 160/160 | 155/160 | 4/113 | ok |
+| `r150j10` | nw1-base-3 | 147/160/175/186 | 40/152 | 2 (1) | 0.214/3.989 | 2 | 61 | 1 | 1 | 1 | 10/10 | 0/0 | 160/160 | 156/160 | 5/147 | ok |
+| `r250j30` | nw1-base-3 | 228/258/293/308 | 40/41 | 19 (10) | 0.939/3.073 | 18 | 9 | 1 | 1 | 1 | 10/10 | 0/0 | 160/160 | 156/160 | 4/137 | ok |
+| `base` | nw1-fix-1 | 4/13/17/20 | 148/158 | 1 (0) | 0.220/0.220 | 1 | 5 | 1 | 1 | 1 | 10/10 | 0/0 | 160/160 | 155/160 | 1/146 | ok |
+| `r80j10` | nw1-fix-1 | 79/91/103/116 | 144/156 | 1 (0) | 0.220/0.220 | 1 | 7 | 1 | 1 | 0 | 10/10 | 0/0 | 160/160 | 155/160 | 1/147 | ok |
+| `r150j30` | nw1-fix-1 | 134/160/191/216 | 141/155 | 1 (0) | 0.220/0.220 | 1 | 63 | 1 | 1 | 1 | 9/9 | 0/0 | 160/160 | 156/160 | 5/118 | ok |
+| `r150j10` | nw1-fix-1 | 149/163/177/187 | 142/155 | 1 (0) | 0.220/0.220 | 1 | 61 | 1 | 1 | 1 | 9/9 | 0/0 | 160/160 | 156/160 | 2/122 | ok |
+| `r250j30` | nw1-fix-1 | 229/263/290/328 | 136/153 | 1 (0) | 0.220/0.220 | 1 | 11 | 1 | 1 | 1 | 9/9 | 0/0 | 160/160 | 155/160 | 6/125 | ok |
+| `base` | nw1-fix-2 | 5/14/18/20 | 148/158 | 1 (0) | 0.220/0.220 | 1 | 5 | 1 | 1 | 1 | 9/9 | 0/0 | 160/160 | 155/160 | 1/146 | ok |
+| `r80j10` | nw1-fix-2 | 76/91/102/113 | 145/157 | 1 (0) | 0.220/0.220 | 1 | 25 | 1 | 1 | 1 | 9/9 | 0/0 | 160/160 | 155/160 | 4/125 | ok |
+| `r150j30` | nw1-fix-2 | 135/166/196/220 | 140/155 | 1 (0) | 0.220/0.220 | 1 | 35 | 1 | 1 | 1 | 9/9 | 0/0 | 160/160 | 156/160 | 4/113 | ok |
+| `r150j10` | nw1-fix-2 | 147/161/173/186 | 142/155 | 1 (0) | 0.220/0.220 | 1 | 62 | 1 | 1 | 1 | 9/9 | 0/0 | 160/160 | 156/160 | 4/133 | ok |
+| `r250j30` | nw1-fix-2 | 234/265/291/323 | 40/153 | 1 (0) | 0.220/0.220 | 1 | 9 | 1 | 1 | 1 | 9/9 | 0/0 | 160/160 | 155/160 | 3/127 | ok |
+| `base` | nw1-fix-3 | 4/13/17/19 | 148/158 | 1 (0) | 0.220/0.220 | 1 | 5 | 1 | 1 | 1 | 10/10 | 0/0 | 160/160 | 156/160 | 4/140 | ok |
+| `r80j10` | nw1-fix-3 | 77/91/100/114 | 145/157 | 1 (0) | 0.220/0.220 | 1 | 20 | 1 | 1 | 1 | 9/9 | 0/0 | 160/160 | 155/160 | 2/125 | ok |
+| `r150j30` | nw1-fix-3 | 133/164/196/216 | 140/155 | 1 (0) | 0.220/0.220 | 1 | 63 | 1 | 1 | 1 | 9/9 | 0/0 | 160/160 | 156/160 | 7/120 | ok |
+| `r150j10` | nw1-fix-3 | 149/163/177/195 | 141/155 | 1 (0) | 0.220/0.220 | 1 | 30 | 1 | 1 | 1 | 9/9 | 0/0 | 160/160 | 155/160 | 1/123 | ok |
+| `r250j30` | nw1-fix-3 | 237/260/292/325 | 136/153 | 1 (0) | 0.219/0.219 | 1 | 10 | 1 | 1 | 1 | 9/9 | 0/0 | 160/160 | 156/160 | 5/115 | ok |
+
+What chained (traced tick by tick in `freeze2` and `nw1-base-*`; `pvp-issues.md` NW-1, the mechanism in
+`auth-netcode.md`):
+
+- **The first correction**, absolute because the refused tick left the belief stale, was forecast from the first
+  windows of the client's catch-up burst while the rest waited off the wire (`ArrivalStamps`): "ahead 5", landed 15
+  later. Fix: the belief runs the refused tick (`tickBelief`) and a claim it explains to a µm clears the stale flag;
+  the correction waits while `TickEnd`s wait for the main thread or the newest was a catch-up tick (a jittery link
+  split one burst into reads of 4, 1 and 7 windows, the single one 15 ms after the first: just paced).
+- **The landing lag** measured the freeze: the burst's first flush read 11 windows at 80 ms ("ahead 12, lands in 2"),
+  and the freeze aged every older landing out. Fix: stamps count the waiting `TickEnd`s, nothing is sampled around a
+  freeze, landings age by the client's windows.
+- **Knocks.** The belief never took the knocks the client applied, and the accept backstop forecast without those on
+  their way or later in its drain: a knock's flight went out as a correction. A deferred correction missed its own
+  window's drain knocks (it runs before the drain), and an absolute one held for a knock in flight went out without it
+  when its pong came. Fix: the belief takes every drain knock, the client's attack slowdown and item use; both
+  forecasts take the rest of the drain and the knocks in flight.
+- **The backstop** went absolute after any two in a row, with the forecast's inputs and yaw: only a backstop that
+  doesn't halve the gap counts now.
+- **What was left** (single runs, `nw1-c2-1`: 1, 2, 2, 2, 2): one correction plus a 0.2 to 2.4 mm one, the first
+  decided while the gap still moved (0.002 a tick after the burst, the client airborne at the freeze) and a knock on its
+  way landing 4 windows after it was decided, or a landing a window off its forecast; the next knock froze the miss and
+  the persist rule took it 20 ticks later. Fix: wait until the gap settles (`velocityGap`): a knock on its way replaces
+  both velocities when it lands (`nw1-c3-1`: 1, 1, 1, 1, 2), or the drift over the forecast is under
+  `correction-persist-min` (`nw1-c4-1/2/3`: 1 in all 15).
+
+Regressions, same day, the final jar against the NAS jar:
+
+- **Hitch set**, five conditions (`nw1-base-hitch`, `nw1-fix-hitch`): `t_hitch_client` (0.3/0.55/1.05 s) and
+  `t_hitch_server` (0.3/0.7/1.2 s) 0 corrections on both. The freeze 4/4/24/4/10 → 1/1/1/1/1, and the claims after it
+  exact again (520-622 exact of 529-627 → 616-628 of 633-638). Non-`VALID` hits 0/1/10/5/10 → 0/0/2/1/2: judged past the rewind
+  cap right after the server hitches and the freeze (rewind 470 to 1070 ms against a cap of 360 to 600; the judge is
+  unchanged).
+- **Combat set** at r150j30 and r250j30 (`nw1-fix-combat`): 0 corrections, every claim exact, every hit `VALID` (245,
+  309), every pick and mirror box equal, every knock at its ack.
+- **Marathon** at r80s300w, r150s300w, r80stall1000w and r80down300w (`nw1-base-marathon`, `nw1-fix-marathon`): 0
+  corrections and every claim exact on both; forced entries 0/0/21/22 → 0/0/25/23, hits within one run's noise.
+- **Unit** 538 green (7 new). **Live** suites (default rules, both trackers) green; a first run lost one timing check
+  ("K1 shows the walker sooner": 2.37 against 2.50 ticks) while two other live suites shared the machine, and the rerun
+  passed it (1.37 against 2.50).
+
+| condition | run | measured ack RTT p10/p50/p90/p99 (ms) | claims exact | corrections (abs) | correction size p50/max (blocks) | client PlayerPosition corrections | forced entries | timer refused | player frozen | max queued | knocks at ack | client hits VALID | pick = verdict | mirror box bit-equal | K2 view freezes | status |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| `base` | nw1-base-hitch | 4/11/17/21 | 520/627 | 4 (2) | 0.282/1.023 | 4 | 0 | 1 | 1 | 1 | 39/39 | 191/191 | 635/640 | 640/640 | 16/502 | ok |
+| `r80j10` | nw1-base-hitch | 78/90/99/116 | 622/623 | 4 (2) | 0.426/0.865 | 4 | 0 | 1 | 1 | 1 | 39/39 | 196/197 (INVALID PICKED 1) | 566/640 | 640/640 | 15/474 | ok |
+| `r150j30` | nw1-base-hitch | 131/161/193/216 | 520/529 | 24 (11) | 0.580/2.154 | 24 | 0 | 1 | 1 | 1 | 37/37 | 170/180 (INVALID PICKED 1, INVALID MISSED 7, INVALID OUT_OF_REACH 2) | 496/640 | 640/640 | 16/474 | ok |
+| `r150j10` | nw1-base-hitch | 148/162/177/195 | 520/615 | 4 (2) | 0.414/1.264 | 4 | 0 | 1 | 1 | 1 | 37/37 | 192/197 (INVALID MISSED 3, INVALID PICKED 2) | 502/640 | 640/640 | 14/441 | ok |
+| `r250j30` | nw1-base-hitch | 232/265/291/322 | 518/575 | 10 (4) | 0.220/3.380 | 10 | 0 | 1 | 1 | 2 | 36/36 | 185/195 (INVALID MISSED 9, INVALID PICKED 1) | 522/640 | 640/640 | 27/468 | ok |
+| `base` | nw1-fix-hitch | 4/12/17/21 | 628/638 | 1 (0) | 0.220/0.220 | 1 | 0 | 1 | 1 | 1 | 38/38 | 197/197 | 635/640 | 640/640 | 6/511 | ok |
+| `r80j10` | nw1-fix-hitch | 78/91/102/117 | 625/637 | 1 (0) | 0.220/0.220 | 1 | 0 | 1 | 1 | 1 | 38/38 | 189/189 | 539/640 | 640/640 | 15/496 | ok |
+| `r150j30` | nw1-fix-hitch | 133/164/194/223 | 620/634 | 1 (0) | 0.216/0.216 | 1 | 0 | 1 | 1 | 1 | 37/37 | 182/184 (INVALID PICKED 2) | 543/640 | 640/640 | 20/454 | ok |
+| `r150j10` | nw1-fix-hitch | 148/163/178/192 | 621/635 | 1 (0) | 0.218/0.218 | 1 | 0 | 1 | 1 | 1 | 38/38 | 192/193 (INVALID PICKED 1) | 525/640 | 640/640 | 19/467 | ok |
+| `r250j30` | nw1-fix-hitch | 230/261/293/331 | 616/633 | 1 (0) | 0.220/0.220 | 1 | 0 | 1 | 1 | 1 | 36/36 | 191/193 (INVALID MISSED 2) | 509/640 | 640/640 | 20/479 | ok |
+
+| condition | run | measured ack RTT p10/p50/p90/p99 (ms) | claims exact | corrections (abs) | correction size p50/max (blocks) | client PlayerPosition corrections | forced entries | timer refused | player frozen | max queued | knocks at ack | client hits VALID | pick = verdict | mirror box bit-equal | K2 view freezes | status |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| `r150j30` | nw1-fix-combat | 134/162/192/223 | 1170/1170 | 0 (0) | -/- | 0 | 0 | 0 | 0 | 0 | 47/47 | 245/245 | 1570/1570 | 1570/1570 | 5/1152 | ok |
+| `r250j30` | nw1-fix-combat | 232/262/291/321 | 1168/1168 | 0 (0) | -/- | 0 | 0 | 0 | 0 | 0 | 47/47 | 309/309 | 1645/1645 | 1645/1645 | 0/1001 | ok |
+
+| condition | run | measured ack RTT p10/p50/p90/p99 (ms) | claims exact | corrections (abs) | correction size p50/max (blocks) | client PlayerPosition corrections | forced entries | timer refused | player frozen | max queued | knocks at ack | client hits VALID | pick = verdict | mirror box bit-equal | K2 view freezes | status |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| `r80s300w` | nw1-base-marathon | 76/89/99/128 | 1202/1202 | 0 (0) | -/- | 0 | 0 | 0 | 0 | 0 | 79/79 | 0/0 | 1240/1240 | 1240/1240 | 24/1171 | ok |
+| `r150s300w` | nw1-base-marathon | 150/163/177/198 | 1202/1202 | 0 (0) | -/- | 0 | 0 | 0 | 0 | 0 | 75/75 | 116/116 | 1240/1240 | 1240/1240 | 15/974 | ok |
+| `r80stall1000w` | nw1-base-marathon | 78/91/102/120 | 1201/1201 | 0 (0) | -/- | 0 | 21 | 0 | 0 | 2 | 75/75 | 156/156 | 1238/1239 | 1211/1239 | 16/976 | ok |
+| `r80down300w` | nw1-base-marathon | 79/91/102/114 | 1202/1202 | 0 (0) | -/- | 0 | 22 | 0 | 0 | 0 | 79/79 | 68/71 (UNKNOWN INEXACT_TARGET 3) | 1235/1240 | 1204/1240 | 67/984 | ok |
+| `r80s300w` | nw1-fix-marathon | 77/90/101/129 | 1202/1202 | 0 (0) | -/- | 0 | 0 | 0 | 0 | 0 | 79/79 | 0/0 | 1240/1240 | 1240/1240 | 12/1164 | ok |
+| `r150s300w` | nw1-fix-marathon | 146/162/178/199 | 1202/1202 | 0 (0) | -/- | 0 | 0 | 0 | 0 | 0 | 79/79 | 56/56 | 1240/1240 | 1240/1240 | 36/1111 | ok |
+| `r80stall1000w` | nw1-fix-marathon | 78/91/102/119 | 1202/1202 | 0 (0) | -/- | 0 | 25 | 0 | 0 | 1 | 75/75 | 136/137 (INVALID MISSED 1) | 1237/1240 | 1211/1240 | 15/972 | ok |
+| `r80down300w` | nw1-fix-marathon | 78/91/102/118 | 1202/1202 | 0 (0) | -/- | 0 | 23 | 0 | 0 | 0 | 79/79 | 71/72 (UNKNOWN INEXACT_TARGET 1) | 1238/1240 | 1207/1240 | 65/1052 | ok |
+
+| condition | stalls | with forced entries | with corrections | with refusals | with freezes | max queued | window wait 2-4 s after a stall, p50/max (ms) |
+|---|---|---|---|---|---|---|---|
+| `r80s300w` | 12 | 0 | 0 | 0 | 0 | 0 | 1/1 |
+| `r150s300w` | 12 | 0 | 0 | 0 | 0 | 0 | 1/1 |
+| `r80stall1000w` | 4 | 4 | 0 | 0 | 0 | 2 | 63/73 |
+| `r80down300w` | 15 | 13 | 0 | 0 | 0 | 0 | 1/1 |
+| `r80s300w` | 12 | 0 | 0 | 0 | 0 | 0 | 0/1 |
+| `r150s300w` | 12 | 0 | 0 | 0 | 0 | 0 | 0/1 |
+| `r80stall1000w` | 4 | 4 | 0 | 0 | 0 | 1 | 45/49 |
+| `r80down300w` | 15 | 13 | 0 | 0 | 0 | 0 | 0/1 |
+
+Left over, measured only (pvp-issues HR-3, a §15.7 estimator change for sign-off): after the freeze the jitter term
+(p90 − p10 of the last 256 acks) reads 730 to 930 ms, against 25 to 100 before, and is still up when the scenario ends
+5.5 s later; it moved a K1 viewer back to K2 ("own jitter 759 ms"). `rttBase` is lifted 100 to 200 ms for under a second.
 
 ## Failures: root cause, fix, owner
 
@@ -594,7 +734,7 @@ the tick rate allows, and a lag spike costs the moment it happens, not the next 
 | `rttBase` estimator | p10 of 256 acks | 5 to 10 s to follow a 30 → 250 ms step, with 3 of 43 hits VALID meanwhile | follow increases within ~1 s (F7) |
 | K (replication `path-step-ticks`) | 2 | K1 cuts the view by 55 to 68 ms (base 143 → 84, RTT 80/j10 190 → 122, RTT 150/j30 228 → 173), 0 freezes up to 10 ms jitter, 11 of 796 moving ticks frozen at 30 ms jitter; mirrors bit-exact either way (1,000 of 1,000 boxes) | **K per viewer**: K1 while the viewer's own jitter (`rttHigh − rttBase`) is under ~25 ms, K2 above ~35 ms (hysteresis, re-pair on switch). Most HCF players on wired or good Wi-Fi get one tick (50 ms) back on every remote player |
 | Tick clock: `max-banked-ticks` 10, `timer-drift-ms` 120, `timer-ack-settle-ms` 100, `timer-queue-cap-ms` 1000 | | 0 refusals and ≤ 2.2 ms window waits on every steady link; client hitches up to 1 s caught up without refusals; but any backlog becomes permanent (F4) | Fix F4 (credit for time windows spent queued, ack-clock-bounded catch-up). Then the bank of 10 (500 ms) is right for bursts after stalls, and `timer-queue-cap-ms` can drop to ~400: a window that waited that long is a cheat or a broken link, not a backlog |
-| `max-unacked-ms` | 1500 | a 1 s client hitch peaked at 992 / 1,051 / 1,151 ms oldest ping at RTT 0 / 80 / 150: no freeze; 2 s froze as designed | keep 1500 (covers a 1 s hitch up to RTT ~250 + jitter); after F3/F5 the recovery from a real freeze should be one correction, not 5 to 37 |
+| `max-unacked-ms` | 1500 | a 1 s client hitch peaked at 992 / 1,051 / 1,151 ms oldest ping at RTT 0 / 80 / 150: no freeze; 2 s froze as designed | keep 1500 (covers a 1 s hitch up to RTT ~250 + jitter); after F3/F5 the recovery from a real freeze should be one correction, not 5 to 37 (it is since 2026-10-23: [NW-1](#nw-1-one-correction-after-a-2-s-client-freeze-netcode-2026-10-23)) |
 | Corrections: `correction-threshold` 1e-3, budget 0.01/0.95, `max-corrections-per-second` 5, `correction-repeat-limit` 2 | | 0 corrections in 35,165 steady claims, so no false positives to tune away. Every correction seen comes from F1-F5 | keep; after F5, one correction per real divergence. The rate limit spaces the F5 loop 2 to 4 ticks apart; it is not the cause |
 
 Where the latency budget goes (input to what another player sees, two players on the same link):

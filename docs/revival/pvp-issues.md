@@ -2,7 +2,7 @@
 
 Status: 2026-10-23, branch `revival/authoritative` (the classic audit, `auth-classic-audit.md`: the jump-reset alert,
 the two parity switches as the user set them, the stale self-echo fixes, the keep-sprint and never-loaded holes closed;
-then the ghost-hand rule, WD-4, and a code review's fixes). The live suites are green on `classic-capped`, both trackers: cheat suite 126/126, cheat suite 2 55/55. The
+then the ghost-hand rule, WD-4, a code review's fixes, and NW-1's one-correction recovery from a 2 s freeze). The live suites are green on `classic-capped`, both trackers: cheat suite 126/126, cheat suite 2 55/55. The
 real client (run `classic6`) is exact with every hit `VALID` at localhost, 150, 250 and 300 ms. This is a list of every problem 1.7 PvP
 is known to have, checked against the authoritative RevivalPaper server. It draws on the community's own record
 (sources at the end) and on this repo's design, code, tests and real-client runs.
@@ -105,7 +105,7 @@ Solved items are left out.
 |---|---|---|---|---|
 | 1 | [SV-1](#sv-1) | Partial | netcode, config | 200 players on one map run exact at MSPT p99 8.6 ms, 50 at 125 ms are exact, and 100 heal from a 2.3 s stall in 7 s. 200 in one fight needs a second machine to measure. |
 | 2 | [CL-1](#cl-1) | Partial | netcode, config, core | Most HCF players use Lunar. Frame-time packets no longer kick, but no rule reads HCFR's Apollo combat options and no recorded Lunar session has checked them against the grammar. |
-| 3 | [NW-1](#nw-1) | Partial | netcode | Steady links, Wi-Fi hiccups and 0.5% loss are clean on a real client; 2% loss at 150 ms and a 2 s freeze still cost corrections, and the loss costs hits. |
+| 3 | [NW-1](#nw-1) | Partial | netcode | Steady links, Wi-Fi hiccups and 0.5% loss are clean on a real client, and a 2 s freeze recovers with one correction; 2% loss at 150 ms still costs corrections and hits. |
 | 4 | [SV-2](#sv-2) | Partial | combat | A server hitch no longer refuses hits, but damage windows count server ticks, so a stall shuts windows real time had opened. |
 | 5 | [PR-7](#pr-7) | Partial | combat, core | Pearls land only where a standing box fits and stop at fake walls; no running-server glitch suite, and core isn't told of a refund. |
 | 6 | [HR-3](#hr-3) | Partial | netcode | A low-ping cheater has about the 150 ms slack plus its jitter of free backtrack inside its cap; using it on every hit raises `rewind-stretch`, on thresholds from simulated and torture-rig play only. |
@@ -209,7 +209,10 @@ Solved items are left out.
     the stale box it chose.
   - A stall widens it for a while (found 2026-10-23 in torture `freeze2`): the jitter term is the p90 of the last 256
     acks, so a 2 s stall's late pongs keep it at the ceiling (`rtt-ceiling-ms`, 250 ms more) for about 13 s. A 20 ms
-    player who stalls on purpose gets about 520 ms of cap instead of 280 for that time.
+    player who stalls on purpose gets about 520 ms of cap instead of 280 for that time. Measured in the NW-1 runs
+    (`nw1-base-*`, `nw1-fix-*`, 2026-10-23): after a 2 s client freeze the raw term reads 730 to 930 ms, against 25 to 100
+    before, and is still there when the scenario ends 5.5 s later; the same term moved a K1 viewer back to K2 ("own
+    jitter 759 ms"). `rttBase` itself (the last 32 acks' p10) is lifted 100 to 200 ms for under a second.
   - The `rewind-stretch` alert (2026-10-23, `auth.input.RewindWatch`): every valid melee hit's rewind, less the
     attacker's `rttBase` and the display delay its mirror measured, is its excess; `AuthInputAnomalyEvent`
     `rewind-stretch` fires when the median of the last `stats.rewind-stretch-hits` (30) valid hits is at least
@@ -1340,8 +1343,8 @@ Solved items are left out.
   - Wi-Fi hiccups: after the stall fixes (torture F2-F5, review 2 X2-02 and X2-04), a 300 ms stall every 4-5 s in a
     minute-long duel costs 0 corrections (`glitch-fix7-marathon`, seven conditions; torture `audit4`, real client,
     2026-10-22: 0).
-  - Hitches: `audit4` took 4 corrections per hitch condition. In the run before it (`glitch-fix7-hitch`) they all came
-    from the 2 s client freeze, past `max-unacked-ms`: client hitches up to 1 s and server hitches up to 1.2 s cost 0.
+  - Hitches: client hitches up to 1 s and server hitches up to 1.2 s cost 0 corrections (`glitch-fix7-hitch`; again
+    2026-10-23, `nw1-fix-hitch`, five conditions). The 2 s client freeze, past `max-unacked-ms`, is below.
   - Hits made during a long stall can still be lost: 176 of 184 `VALID` after a 1 s stall (`stallfix3-marathon`).
   - Real internet: the server has run on the NAS over Playit since 2026-10-21, played with Lunar; those reports
     (block glitching, jitter) led to the block-glitch fix (WD-2, MV-4).
@@ -1353,34 +1356,39 @@ Solved items are left out.
     outlasts the ack deadline (7 paced windows at 150 ms), so knocks and the target's path steps are forced before the
     client has them, and its view of the target falls behind the server's mirror (95 forced entries, 183 mirror-box
     differences).
-  - A 2 s client freeze (torture `freeze2`, 2026-10-23): no kick at 0 to 250 ms (keep-alives go out unbundled, NW-2);
-    the recovery takes 4, 2, 6, 2 and 19 corrections at localhost, r80j10, r150j30, r150j10 and r250j30. The knocks the
-    target dealt during the freeze were forced at their deadline, and the client applies them only once it runs again.
-  - Why 250 ms chains (traced tick by tick, 2026-10-23, `freeze2` and `freeze3`): after the first correction, one lands
-    every round trip with a new one decided in its own window. In one such window a knock lands too: the truth takes
-    it before the accept is checked, the accept's residual (5 mm) starts the backstop, and the backstop forecasts the
-    client from the accept without that knock, so it sends the knock's flight as a correction (1.9 blocks) to a client
-    that was on the truth. That lands a round trip later and starts the next. The backstop also goes absolute after any
-    two backstops in a row, converging or not, and an absolute carries the forecast's inputs. An attempt that went
-    absolute only when the gap stopped halving, and forecast the truth for absolutes with no belief, moved the counts
-    within one run's noise (19 to 17 at r250j30, 6 to 2 at r150j30, 4 to 5 at localhost) and was not kept. A second
-    gave the belief every knock, explosion and rod pull the client takes in its drain, and the backstop the knocks in
-    flight (`freeze4`): r250j30 fell to 7, but r80j10, r150j10 and r150j30 rose to 8, 6 and 12. There the chain starts
-    with a correction forecast 12 windows ahead (the windows queued behind the freeze) that lands 2 later, a forecast
-    `freeze2` made too. Not kept either: single runs vary too much (forced entries 11 to 65 in the same condition) to
-    judge a reconciler change; it needs several runs per condition.
-- **Fix (netcode):** make the recovery after a freeze one correction: the accept backstop must forecast the client
-  with the knocks it takes after the accept in that window, as a deferred correction does with knocks in flight. For
-  loss, an ack deadline that waits, bounded,
-  while the entry's bytes are still unacked by the client's TCP (`TCP_INFO` on Linux, the NAS): a retransmit is the
-  network, a pong held back with the bytes delivered is the client. A plain longer deadline would hand the same slack
-  to a client holding pongs.
+  - A 2 s client freeze, past `max-unacked-ms` (torture `t_hitch_client_over`: a duel, the target knocking every 15
+    ticks; 2026-10-23, three runs per condition): no kick (keep-alives go out unbundled, NW-2), and the recovery is one
+    correction at localhost, r80j10, r150j30, r150j10 and r250j30 in all 15 runs (`nw1-fix-1..3`). Each is relative,
+    0.22 blocks (the strafe tick the truth refused), lands the client on the truth to the nanometre, and lands 100 to
+    700 ms after the freeze ends (localhost to 250 ms). The NAS build before it (`nw1-base-1..3`) took 4/4/4, 6/14/4,
+    4/25/2, 22/2/2 and 12/4/19, about half absolute, up to 4 blocks.
+  - What chained (traced tick by tick in `freeze2` and those runs; `auth-netcode.md` has the mechanism now):
+    - The first correction went out absolute (the refused tick left the belief stale) in the client's catch-up burst,
+      forecast from its first windows while the rest of the burst waited off the wire: it landed 10 to 15 windows late,
+      a block off. Now the belief runs the refused tick, a claim it explains clears the stale flag, and the correction
+      waits for the burst (`TickEnd`s waiting for the main thread, a catch-up tick last).
+    - The landing lag measured the freeze: a burst's first flush, with the rest of the burst behind it, read 11 windows
+      at 80 ms, and the freeze aged every older landing out, so the first corrections after it were forecast 9 or 10
+      windows long at 80 and 150 ms. Now nothing around a freeze is sampled, and landings age by the client's ticks.
+    - The belief never took the knocks the client applied, and the accept backstop forecast without the knocks still on
+      their way or later in its drain, so it sent a knock's flight as a correction (1.9 blocks); a deferred correction
+      missed the knocks of its own window's drain. Both take them now.
+    - Every second backstop went absolute, converging or not, carrying the forecast's inputs and yaw. Now only a
+      backstop that doesn't halve the gap counts.
+    - With those (single runs) one correction remained, plus a 0.2 to 2.4 mm one: the first was decided while the gap
+      still moved (its velocity not yet died out, a knock on its way), landed a window off its forecast, and the next
+      knock froze the miss for the persist rule. Now it waits until the gap settles: the knock lands (it replaces both
+      velocities), or the drift over the forecast is under `correction-persist-min`.
+  - Two earlier attempts, each with one of these alone, moved the counts within one run's noise (`freeze3`, `freeze4`).
+- **Fix (netcode):** for loss, an ack deadline that waits, bounded, while the entry's bytes are still unacked by the
+  client's TCP (`TCP_INFO` on Linux, the NAS): a retransmit is the network, a pong held back with the bytes delivered is
+  the client. A plain longer deadline would hand the same slack to a client holding pongs.
 - **Proof:**
   - Exists: the torture runs above (`grid1`, `stall1`, `marathon`, `marathon2`, `hitch1`, then `stallfix3-marathon`,
     `stallfix4-hitch`, `glitch-fix7-*`), `full1` and `classic1`, and real client, 2026-10-22, runs `classic4-bh` and
-    torture `audit4`; 2026-10-23, `classic11-loss` and torture `freeze2`.
-  - To add: ≤ 1 correction after a 2 s freeze; at 0.5% and 2% real loss, ≤ 1 correction per minute and every
-    client-picked attack `VALID`.
+    torture `audit4`; 2026-10-23, `classic11-loss`, torture `freeze2`, and `nw1-base-1..3` against `nw1-fix-1..3`
+    with the regression runs `nw1-fix-hitch`, `nw1-fix-combat` and `nw1-fix-marathon` (`auth-torture.md`, "NW-1").
+  - To add: at 0.5% and 2% real loss, ≤ 1 correction per minute and every client-picked attack `VALID`.
 
 ### NW-2 An honest lag spike kicks the player — Solved {#nw-2}
 
@@ -1654,7 +1662,7 @@ PR-8, NW-2 and SV-6 exist now (see each item).
 
 **Real client** (`~/Developer/tools/auth-rig/enforce-neue`, `torture`):
 
-- real packet loss at 0.5% and 2%, and a 2 s freeze that recovers with ≤ 1 correction (NW-1);
+- real packet loss at 0.5% and 2% (NW-1);
 - the K view at 30 and 45 blocks (VI-1);
 - a sneaking target's box (HR-8);
 - `ATTACK_RANGE` picks (HR-7);

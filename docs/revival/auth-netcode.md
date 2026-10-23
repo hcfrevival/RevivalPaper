@@ -105,20 +105,38 @@ it decides **when** the client saw what, and feeds the simulation and the mirror
      tracker): `getVelocity`, 26.x knockback and the move checks read it; `motion-model: authoritative` knocks from it.
      The sprint knock arms from the simulated sprint, and the attack reads the sprint the client attacked with.
    - Corrections are decided a window late, so a hotbar change by number key (report 02 H9) or the attack-strength reset
-     tick can explain the claim first (bounded branching). They forecast truth and belief to the apply tick; an accept
-     with a residual is forecast again from where the client says it is; a correction that keeps coming back, or would
-     land the client inside a block, goes out absolute (position and velocity).
+     tick can explain the claim first (bounded branching). They forecast truth and belief to the apply tick with every
+     knock the client takes before it: the rest of the drain being run (their pongs are in, the drain that applies them
+     isn't), then those on their way; the client's forecast takes all of them at its start, the truth's those not forced
+     yet. An accept with a residual is forecast again the same way from where the client says it is. A correction that
+     would land the client inside a block or keeps coming back, or a backstop that didn't halve the gap of the one before
+     it, goes out absolute (position and velocity).
+   - The belief is the client's own state (pvp-issues NW-1): stepped with the client's inputs in every tick the client
+     ran, refused ones included (a freeze, the timer: only the belief runs them), and taking what the client applies:
+     knocks, explosions and rod pulls in its drain (a forced one when it lands), its own sprint-hit slowdown, item use and
+     release, our corrections. After a refused tick or forced entries it is stale, and the next correction absolute,
+     until a claim lands where it put the client (within `correction-persist-min`): its velocity is the client's then.
    - The apply tick is measured, not guessed (NAS glitch 2026-10-22, `LandingLag`): every ping is stamped at its flush
-     with the window the client is in and how it was flushed (windows run between server ticks flush as they end; the
+     with the window the client is in (past the last `TickEnd` handled by real time, or by the `TickEnd`s off the wire
+     that wait for the main thread) and how it was flushed (windows run between server ticks flush as they end; the
      server tick's bundle at its end), and its pong window gives that flush kind's trip. A correction is forecast
-     `(window the client is in - window being run) + the median trip of its flush kind over the last
-     landing-sample-ms`, else `ceil(rttBase / 50) - 1` trip; a scope that ran windows and sent nothing gets a lone probe
-     ping every `landing-probe-ms`. Pings flushed while no `TickEnd` came for two ticks (a stall, a client freeze) are not
-     measured. `round(rtt / 50)` put every correction one tick short at 60 ms (or at 30 ms behind a busy server tick), so
-     each accept was a tick of motion off and the backstop chased the client every other tick for as long as it moved.
-   - A correction waits while windows the client already sent are queued behind the one running (a catch-up), at most
-     `max-banked-ticks` windows in a row: the truth runs them, inputs and all, instead of a forecast across them. The
-     accept backstop counts against `max-corrections-per-second` like any correction.
+     `(window the client is in - window being run) + the median trip of its flush kind over the client's last
+     landing-sample-ms of ticks` (a freeze doesn't age them), else `ceil(rttBase / 50) - 1` trip; a scope that ran
+     windows and sent nothing gets a lone probe ping every `landing-probe-ms`. Pings flushed while no `TickEnd` came for
+     two ticks (a stall, a client freeze) or right after one that ended a longer gap, and pongs answered in that drain,
+     are not measured: a freeze's catch-up ticks are still on the wire then. `round(rtt / 50)` put every correction one
+     tick short at 60 ms (or at 30 ms behind a busy server tick), so each accept was a tick of motion off and the
+     backstop chased the client every other tick for as long as it moved.
+   - A correction waits while windows the client already sent are queued behind the one running, or wait for the main
+     thread off the wire, or the newest was a catch-up tick (a freeze's burst runs window by window, and a jittery link
+     splits it), at most `max-banked-ticks` windows in a row: the truth runs them, inputs and all, instead of a forecast
+     across them. While the belief explains the client it also waits until the gap stops moving: a knock on its way
+     replaces both velocities where it lands (wait for it, at most an ack deadline of windows), otherwise the gap's
+     velocity dies out with the client's drag (wait while the gap is within `attack-eye-offset-cap`, so its attacks are
+     cast from its own eye, at most `correction-persist-ticks`). Settled is a drift under `correction-persist-min` over the
+     forecast; a relative correction then lands the client on the truth in whatever window it arrives (NW-1: one landing
+     a window off with the gap still moving missed by 0.2 to 2.4 mm, and the next knock froze that for a second
+     correction). The accept backstop counts against `max-corrections-per-second` like any correction.
    - A claim off by less than `correction-persist-min` (1e-6, sub-µm) never counts toward `correction-persist-ticks`:
      counted, never corrected (a teleport aborts a dig and cancels block-prediction snaps; a relative one can't remove a
      rounding gap, only add one every 20 ticks).
@@ -177,8 +195,8 @@ it decides **when** the client saw what, and feeds the simulation and the mirror
   forced entries are outstanding (when it would land, and on what, is unknown), nor in the window whose drain lands one
   (its pong already cleared it, but the client applies it in that tick: torture r80down300w, a knock forced one window
   before its pong was corrected as if the client would never have it, and five corrections chased the double). Corrections forecast the client with
-  every knock still on its way to it (logged-unacked, torture F5), and an absolute one is held while any is. Once every forced entry has landed, the next correction is absolute and the viewer's mirrors are
-  re-paired (load P0: never while its acks lag). Past `max-unacked-ms` the player is frozen (windows refused) for as long as
+  every knock still on its way to it (logged-unacked, torture F5), and an absolute one is held while any is. Once every forced entry has landed, the next correction is absolute (unless the claim after the
+  landing is where the belief put the client) and the viewer's mirrors are re-paired (load P0: never while its acks lag). Past `max-unacked-ms` the player is frozen (windows refused) for as long as
   the stall lasts, and never kicked for it (pvp-issues NW-2: in HCF a kick is a combat-logger death); Paper's keep-alive
   timeout still applies. `rttBase` (`RttBaseline`) is the 10th percentile of the last 256 ack round trips, or of the last 32 when
   that is higher: a ping that went up (Wi-Fi, a route change) is followed once 29 of the last 32 acks are above the
@@ -247,10 +265,12 @@ All listed in `scripts/revival/markers.txt`.
   viewer mirror that went inexact (a lag spike past the ack deadline), re-pairs the player on that viewer.
 - **Reconcile:** `Reconciler` decides (exact / budget / correct / in flight / rate limited). In enforce the simulation
   keeps a belief (the client's own state: re-based on the truth at every exact claim, moved onto a diverged claim,
-  stepped with the client's inputs). A correction runs truth and belief `n̂ = round(rttBase / 50)` ticks ahead with the
-  latest input and sends `Δpos`, `Δvel` relative (`Simulation.correction`), so the client lands on the truth at the
-  tick it applies it; without a belief it falls back to relative position and absolute velocity. The accept is checked
-  as a claim (residual); the truth is written through `revivalApplyTruth`.
+  stepped with the client's inputs in every tick it ran, refused ones too (`tickBelief`), taking the client's knocks
+  (`beliefVelocity`), its attack slowdown and its item use). A correction runs truth and belief to the apply tick
+  (`LandingLag`) with the latest input and the knocks the client takes first, and sends `Δpos`, `Δvel` relative
+  (`Simulation.correction`), so the client lands on the truth at the tick it applies it; it waits until the gap stops
+  moving (`velocityGap`). Without a belief it falls back to relative position and absolute velocity. The accept is
+  checked as a claim (residual); the truth is written through `revivalApplyTruth`.
 
 ## Config (`revival.yml`)
 
@@ -262,9 +282,9 @@ All under `authoritative.` (defaults in brackets):
 | `rebase-epsilon` [0], `rebase-drift-cap` [1e-9], `rebase-drift-window-ticks` [20] | adopt claims this close (ulp scale at most), with the creep guard |
 | `correction-threshold` [1e-3], `correction-budget` [0.01], `correction-budget-decay` [0.95] | small divergences go into a decaying budget |
 | `correction-persist-ticks` [20] | a claim off by less than the threshold this many ticks in a row is corrected anyway |
-| `correction-repeat-limit` [2] | the same correction (or accepts that keep needing one) this many times goes out absolute |
+| `correction-repeat-limit` [2] | the same correction (or accepts that keep needing one without halving the gap) this many times goes out absolute |
 | `correction-persist-min` [1e-6] | a claim off by less than this never counts toward the persist rule (counted as sub-µm) |
-| `landing-probe-ms` [500], `landing-sample-ms` [2000] | a between-ticks flush that sent nothing gets a lone ping when its kind wasn't measured this long; corrections use the landings of this long |
+| `landing-probe-ms` [500], `landing-sample-ms` [2000] | a between-ticks flush that sent nothing gets a lone ping when its kind wasn't measured this long; corrections use the landings of the client's last this long of ticks (a freeze doesn't age them) |
 | `max-corrections-per-second` [5] | |
 | `max-rewind-ms` [600], `rewind-jitter-factor` [1.0], `rewind-slack-ms` [150] | the per-attacker rewind cap (HR-2, one method for melee, Neue's landing and projectiles): `min(rttBase, rtt-ceiling-ms)` + the client's measured display delay + jitter (spread capped at the ceiling) + slack; `max-rewind-ms` is only a sanity bound. Past the cap a hit is judged at the target's truth at the capped age (`HitValidator`): a high-ping shooter leads moving players |
 | `attack-eye-offset-cap` [0.5] | off the truth, attacks are cast from the claim only within this per axis (review E3) |
@@ -311,11 +331,12 @@ export JAVA_HOME=~/Developer/tools/jdk25/Contents/Home
 ```
 
 Unit (`leaf-server/src/test/java/gg/hcfrevival/revival/auth/**`): transactions (ids, FIFO, bundles, deadlines, stamps),
-the client stream (windows, grammar, second claims, overflow, window age), the tick clock, `LpVec3`, attributes, self
-echo (meant fields, speed syncs), the classifier (rockets, pistons and shulker boxes), the reconciler (in-flight Δ,
-bounded eye, forged and stale accepts), the rebase guard, the input rules (one test per rule), the anomaly watch, the
-bypass auditor (packet level, pre-encoded, skipped expectations), prediction rules, occlusion and visibility hysteresis,
-the sprint modifier from state, config.
+landings (a burst's waiting `TickEnd`s, aged by the client's windows), the drain's knocks for a forecast, the belief's
+knocks and the gap's velocity, the client stream (windows, grammar, second claims, overflow, window age), the tick
+clock, `LpVec3`, attributes, self echo (meant fields, speed syncs), the classifier (rockets, pistons and shulker boxes),
+the reconciler (in-flight Δ, bounded eye, forged and stale accepts), the rebase guard, the input rules (one test per
+rule), the anomaly watch, the bypass auditor (packet level, pre-encoded, skipped expectations), prediction rules,
+occlusion and visibility hysteresis, the sprint modifier from state, config.
 
 Live (`AuthLiveScenarios`, `FakeClient`, a client-side model running the same port on what the client applied): under
 `observe` one window per client tick, server teleports and velocity applied exactly at their ack window, an honest walk
@@ -342,6 +363,11 @@ second run) authority refuses.
 
 ## Gaps
 
+- The belief takes the client's knocks, attack slowdown and item use, but self attribute syncs, self entity-data echoes
+  (sprint, pose, use flags) and server teleports only by re-basing on an exact claim: a correction forecast while the
+  client is off the truth across one of them misses by it (`PortSimulation.attributes`, shortcut). The settle wait
+  needs the gap to stop moving; a gap whose velocity outlasts it (in the air, `correction-persist-ticks`) is corrected
+  unsettled, and a knock landing on that correction's miss leaves a sub-mm gap for the persist rule.
 - Prediction admission follows a vanilla client's held item and crosshair; dig progress per tick is left to Paper's
   own break checks. Every sequence-carrying packet is acked when its window runs, even when Paper then drops it.
   Block clicks and dig starts are checked for sight (`unseen-target`); entity interactions are not.
