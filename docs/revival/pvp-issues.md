@@ -1,9 +1,9 @@
 # 1.7 PvP issues: the checklist
 
-Status: 2026-10-22, branch `revival/authoritative`, after commit `3638e753` and the classic audit
-(`auth-classic-audit.md`), with the working tree's uncommitted changes (the jump-reset alert, the
-`stop-sprint-on-block` and `hide-cooldown-on-items` switches, the two stale self-echo fixes). The live suites are green
-on `classic-capped`, both trackers: cheat suite 111/111, cheat suite 2 54/54. This is a list of every problem 1.7 PvP
+Status: 2026-10-22, branch `revival/authoritative` at commit `3ad3f490` (the classic audit, `auth-classic-audit.md`;
+the jump-reset alert, the `stop-sprint-on-block` and `hide-cooldown-on-items` switches, the two stale self-echo
+fixes). The live suites are green on `classic-capped`, both trackers: cheat suite 111/111, cheat suite 2 54/54. The
+real client (run `classic6`) is exact with every hit `VALID` at localhost, 150, 250 and 300 ms. This is a list of every problem 1.7 PvP
 is known to have, checked against the authoritative RevivalPaper server. It draws on the community's own record
 (sources at the end) and on this repo's design, code, tests and real-client runs.
 
