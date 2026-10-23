@@ -123,6 +123,14 @@ import gg.hcfrevival.revival.auth.AuthMode;
  *                                row with exactly one click (a 20 CPS lock or a one-per-tick macro)
  * @param pongLagMs a second whose ack RTT runs this much over the keep-alive RTT is counted (pongs held back, review E5)
  * @param anomalyGrammarViolations input-grammar alert: actions a vanilla client can't send, since the player joined
+ * @param anomalyJumpResetShare jump-reset alert (classic audit #8): the share of knocks applied on the ground whose own
+ *                              window pressed jump (a rising edge) at or past this, and...
+ * @param anomalyJumpResetBaseRatio ...this many times the player's own share of grounded ticks that press jump (a
+ *                                  tap-hopper presses on most of them, so a high share alone accuses nobody), ...
+ * @param anomalyJumpResetMinKnocks ...over at least this many grounded knocks. A human can't react inside the tick a knock
+ *                                  lands; simulated, honest styles from 2% to 95% of grounded ticks and humans hitting the
+ *                                  exact tick a fifth of the time by anticipation stay under 1 in 10,000 per 40 knocks,
+ *                                  a macro on 95% of knocks is always flagged
  * @param traceDirectory where {@code /revival auth trace} writes RVTR files, relative to the server folder
  * @param externalMoverBlockWindowTicks after a piston or shulker box event, nearby ticks may be pushed for this many
  *                                      client ticks (a piston moves for 2-3 ticks, a shulker box lid for 10)
@@ -210,6 +218,9 @@ public record AuthoritativeSettings(
     int anomalyClickStreakTicks,
     int pongLagMs,
     int anomalyGrammarViolations,
+    double anomalyJumpResetShare,
+    double anomalyJumpResetBaseRatio,
+    int anomalyJumpResetMinKnocks,
     String traceDirectory,
     int externalMoverBlockWindowTicks,
     double externalMoverBlockRange,
@@ -331,6 +342,9 @@ public record AuthoritativeSettings(
             Math.max(1, reader.getInt(PATH + "stats.click-streak-ticks", 100)),
             Math.max(0, reader.getInt(PATH + "stats.pong-lag-ms", 150)),
             Math.max(1, reader.getInt(PATH + "stats.grammar-violations", 3)),
+            Math.clamp(reader.getDouble(PATH + "stats.jump-reset-share", 0.65), 0.0, 1.0),
+            Math.max(1.0, reader.getDouble(PATH + "stats.jump-reset-base-ratio", 4.0)),
+            Math.max(1, reader.getInt(PATH + "stats.jump-reset-min-knocks", 40)),
             reader.getString(PATH + "trace.directory", "traces"),
             Math.max(0, reader.getInt(PATH + "external-movers.block-window-ticks", 12)),
             Math.max(0.0, reader.getDouble(PATH + "external-movers.block-range", 14.0)),

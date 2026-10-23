@@ -762,6 +762,7 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
         this.frozen = false;
         this.speedSyncsPending = 0; // syncs a reset dropped are never applied
         this.speedSyncSprint = false;
+        this.sentServerFlags = -1; // what vanilla sent before authority isn't recorded
         this.netActive = true;
         Authority.activated(this);
         Authority.mirrors().onReset(this);
@@ -866,12 +867,29 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
         if (this.ownsClientState() && MinecraftServer.getServer().isSameThread()) {
             final Simulation sim = this.simulation;
             if (packet instanceof final ClientboundSetEntityDataPacket data && data.id() == this.player.getId()) {
-                out = SelfEcho.entityData(data, sim.sprinting(), sim.swimming(), sim.fallFlying(), this.meant);
-                if (out == null) {
+                final ClientboundSetEntityDataPacket echo = SelfEcho.entityData(data, sim.sprinting(), sim.swimming(), sim.fallFlying(), this.meant,
+                    this.sentServerFlags);
+                final int sent = echo == null ? -1 : SelfEcho.sharedFlags(echo);
+                if (sent >= 0) {
+                    this.sentServerFlags = sent & SelfEcho.SERVER_FLAGS;
+                } else if (SelfEcho.sharedFlags(data) >= 0) {
+                    this.stats.flagEchoesDropped++;
+                }
+                if (echo == null) {
                     return;
                 }
+                out = echo;
             } else if (packet instanceof final ClientboundUpdateAttributesPacket attributes && attributes.getEntityId() == this.player.getId()) {
-                final ClientboundUpdateAttributesPacket echo = (this.meant & SelfEcho.SPRINT) == 0 ? SelfEcho.attributes(attributes, sim.sprinting()) : attributes;
+                ClientboundUpdateAttributesPacket echo = attributes;
+                if ((this.meant & SelfEcho.SPRINT) == 0) {
+                    // A sprint toggle the client made itself needs no sync; a late one undid the client's next toggle
+                    echo = SelfEcho.withoutSprintOnly(attributes, this.view.attributes);
+                    if (echo == null) {
+                        this.stats.sprintSyncsDropped++;
+                        return;
+                    }
+                    echo = SelfEcho.attributes(echo, sim.sprinting());
+                }
                 out = echo;
                 final int speed = SelfEcho.speedSync(echo);
                 if (speed >= 0) {
@@ -1700,6 +1718,12 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
             input.turns() >= settings.anomalyMinTurns());
         this.anomaly(AnomalyWatch.INPUT_GRAMMAR, this.rules.total(), settings.anomalyGrammarViolations(), true);
         this.anomaly(AnomalyWatch.CLICK_STREAK, this.cadence.streak(), settings.anomalyClickStreakTicks(), true);
+        // Classic audit #8: knocks taken on the ground with a jump in their own window, against the player's own jump rate
+        final AuthStats stats = this.stats;
+        final double base = stats.groundedTicks() == 0 ? 0.0 : (double) stats.groundJumps() / stats.groundedTicks();
+        this.anomaly(AnomalyWatch.JUMP_RESET, stats.groundedKnocks() == 0 ? 0.0 : (double) stats.knockJumps() / stats.groundedKnocks(),
+            Math.max(settings.anomalyJumpResetShare(), settings.anomalyJumpResetBaseRatio() * base),
+            stats.groundedKnocks() >= settings.anomalyJumpResetMinKnocks());
     }
 
     private void anomaly(final int kind, final double value, final double threshold, final boolean enough) {
@@ -2022,6 +2046,8 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
 
     private int speedSyncsPending;
     private boolean speedSyncSprint;
+    // The server-owned bits (SelfEcho.SERVER_FLAGS) of the last shared-flags byte sent to the client; -1: unknown, the next goes out
+    private int sentServerFlags = -1;
     // Torture F2/F5: forced entries are being applied; entries were forced since the client last caught up with its acks
     private boolean applyingForced;
     private boolean forcedSinceCatchUp;
@@ -2280,6 +2306,13 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
             }
         }
         this.lastExempt = exempt;
+        if (exempt == AuthStats.EXEMPT_NONE && wasOnGround) {
+            // The jump-reset alert's base rate: how often this player presses jump on the ground anyway
+            this.stats.groundedTicks++;
+            if (keys.jump() && !this.stream.previousInput().jump()) {
+                this.stats.groundJumps++;
+            }
+        }
         // The claim against the client's own state stepped with its own inputs (the belief), read before reconcile moves
         // the belief onto the claim: the part of the claim nothing the server sent explains (NaN without a belief)
         double unexplained = Double.NaN;
@@ -2298,11 +2331,19 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
                 if (this.reportedSprint != sim.sprinting()) {
                     gg.hcfrevival.revival.combat.LegacyKnockback.simulatedSprint(this.player, sim.sprinting(), wasOnGround);
                 }
-                // The 1.7 block-hit: a tick with a legacy block up re-arms a held sprint, once per block (classic audit #5)
-                if (sim.usingItem() && !this.blockRearmed && Revival.settings().swordBlocking().rearmSprintOnBlock()
-                    && gg.hcfrevival.revival.combat.LegacySwordBlocking.isBlockingWeapon(sim.useItem())) {
-                    this.player.revivalSprintLedger.rearm(wasOnGround);
+                final gg.hcfrevival.revival.config.SwordBlockingSettings blocking = Revival.settings().swordBlocking();
+                if (sim.usingItem() && !this.blockRearmed && gg.hcfrevival.revival.combat.LegacySwordBlocking.isBlockingWeapon(sim.useItem())) {
                     this.blockRearmed = true;
+                    if (blocking.stopSprintOnBlock()) {
+                        // 1.7's block stopped the sprint (classic audit #6): a server write, so the client gets it as
+                        // meant and the truth takes it at the ack; the release re-sprints and re-arms by itself
+                        if (sim.sprinting()) {
+                            this.player.setSprinting(false);
+                        }
+                    } else if (blocking.rearmSprintOnBlock()) {
+                        // The 1.7 block-hit: a tick with a legacy block up re-arms a held sprint, once per block (#5)
+                        this.player.revivalSprintLedger.rearm(wasOnGround);
+                    }
                 }
             }
             this.reportedSprint = sim.sprinting();
@@ -3473,6 +3514,7 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
         final boolean keepData = (keep & ClientboundRespawnPacket.KEEP_ENTITY_DATA) != 0;
         this.view.respawn(keepAttributes, keepData);
         this.simulation.respawn(keepData, keepAttributes);
+        this.sentServerFlags = -1; // a new local player: its flags are whatever the server sends it next
         this.stream.resetClient(keepData);
         if (!keepData) {
             this.stream.setRotation(-180.0F, 0.0F);
@@ -3494,6 +3536,7 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
         this.reconciler.reset();
         this.speedSyncsPending = 0; // a lost log dropped the syncs in flight; the next sprint change sends a fresh one
         this.speedSyncSprint = false;
+        this.sentServerFlags = -1;
         // Teleports a lost log dropped never complete at a pong; their accepts complete them as before authority
         this.clearTeleportBookkeeping();
         this.repairMirrors(true, this.settings()); // the book was emptied: every tracked player spawns again, logged

@@ -50,6 +50,26 @@ class ClientAttributesTest {
     }
 
     @Test
+    void aSyncThatOnlyTogglesTheSprintModifierIsNotSent() {
+        // Real client 2026-10-22 (250 ms): the server's copy toggles sprint after the client did, and the late sync is
+        // copied over the client's next toggle (MC-69459); a sync that says nothing else is not sent at all
+        final ClientAttributes client = new ClientAttributes();
+        client.apply(speed(0.10000000149011612, total("swiftness", 0.2)));
+        client.setSprinting(false);
+        final net.minecraft.network.protocol.game.ClientboundUpdateAttributesPacket sprintOnly =
+            new net.minecraft.network.protocol.game.ClientboundUpdateAttributesPacket(7, speed(0.10000000149011612, total("swiftness", 0.2),
+                ClientAttributes.SPEED_MODIFIER_SPRINTING));
+        org.junit.jupiter.api.Assertions.assertNull(SelfEcho.withoutSprintOnly(sprintOnly, client), "only the sprint modifier differs");
+        final net.minecraft.network.protocol.game.ClientboundUpdateAttributesPacket potion =
+            new net.minecraft.network.protocol.game.ClientboundUpdateAttributesPacket(7, speed(0.10000000149011612, total("swiftness", 0.4),
+                ClientAttributes.SPEED_MODIFIER_SPRINTING));
+        org.junit.jupiter.api.Assertions.assertSame(potion, SelfEcho.withoutSprintOnly(potion, client), "a real change still goes out");
+        final net.minecraft.network.protocol.game.ClientboundUpdateAttributesPacket base =
+            new net.minecraft.network.protocol.game.ClientboundUpdateAttributesPacket(7, speed(0.2, total("swiftness", 0.2)));
+        org.junit.jupiter.api.Assertions.assertSame(base, SelfEcho.withoutSprintOnly(base, client), "a new base still goes out");
+    }
+
+    @Test
     void respawnKeepsModifiersOnlyWhenAsked() {
         final ClientAttributes attributes = new ClientAttributes();
         attributes.apply(speed(0.2, total("speed", 0.4)));

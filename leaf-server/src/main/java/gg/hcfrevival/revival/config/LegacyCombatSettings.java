@@ -33,6 +33,11 @@ import org.jspecify.annotations.Nullable;
  * @param legacyEnchantProtection a legacy hit is reduced by 1.7.10 Protection instead of 26.x's
  * @param randomizeProtection 1.7.10 rolled each hit's Protection between half and all of it; off uses all of it
  * @param hideCooldownIndicator while a legacy weapon is held, max out attack speed so the client shows no cooldown bar
+ * @param hideCooldownOnItems with {@code hideCooldownIndicator}, keep it maxed while an item with no attack speed of its
+ *                            own is held too (a rod, a pot, a pearl, food, a block; never the empty hand, which stays
+ *                            26.x), so a swap to the sword has 1.7's first hit at once: the client otherwise learns of it
+ *                            an UpdateAttributes later and its first hits fall under 0.9 strength (no x0.6, no sprint
+ *                            stop) while the server gives the full 1.7 sprint knock. Off by default (classic audit #11)
  * @param maxAttacksPerTick legacy attacks a player may land per tick; 0 is unlimited, as in 1.7.10
  * @param projectiles which projectiles hit and knock like 1.7.10
  * @param damageWindows separate damage windows for melee, projectile, mob and other damage
@@ -55,6 +60,7 @@ public record LegacyCombatSettings(
     boolean legacyEnchantProtection,
     boolean randomizeProtection,
     boolean hideCooldownIndicator,
+    boolean hideCooldownOnItems,
     int maxAttacksPerTick,
     LegacyProjectileSettings projectiles,
     DamageWindowSettings damageWindows,
@@ -85,7 +91,8 @@ public record LegacyCombatSettings(
     LegacyCombatSettings withKnockback(final String name, final KnockbackProfile profile) {
         return new LegacyCombatSettings(this.weaponItems, this.weaponTags, this.weaponDamage, this.strengthPerLevel, this.weaknessPerLevel,
             this.sharpnessPerLevel, this.criticalMultiplier, this.sweepAttack, name, profile, this.legacyArmor, this.legacyEnchantProtection,
-            this.randomizeProtection, this.hideCooldownIndicator, this.maxAttacksPerTick, this.projectiles, this.damageWindows, this.rulesName, this.rules);
+            this.randomizeProtection, this.hideCooldownIndicator, this.hideCooldownOnItems, this.maxAttacksPerTick, this.projectiles, this.damageWindows,
+            this.rulesName, this.rules);
     }
 
     /** Whether any weapon is a legacy weapon in this world; {@code weapons: []} turns legacy combat off. */
@@ -149,6 +156,7 @@ public record LegacyCombatSettings(
             reader.getWorldBoolean(world, PATH + "legacy-enchant-protection", true),
             reader.getWorldBoolean(world, PATH + "randomize-protection", true),
             reader.getWorldBoolean(world, PATH + "hide-cooldown-indicator", true),
+            reader.getWorldBoolean(world, PATH + "hide-cooldown-on-items", false),
             reader.getWorldInt(world, PATH + "max-attacks-per-tick", 0),
             LegacyProjectileSettings.read(reader, world),
             DamageWindowSettings.read(reader, world),

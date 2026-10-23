@@ -146,6 +146,27 @@ public final class RevivalLiveTests extends JavaPlugin implements Listener {
         this.after(80, "one knock and one velocity packet per legacy hit", this::oneKnockPerHit);
         this.after(1, "non-legacy hits stay 26.x", this::axeStaysModern);
         this.after(30, "non-legacy hits stay 26.x (hit)", this::axeHit);
+        // Classic audit #11: hide-cooldown-on-items keeps the no-cooldown modifier on a rod (a swap to the sword hits as 1.7
+        // at once), never on an axe or the empty hand; off by default
+        this.after(1, "hide-cooldown-on-items on, a rod", () -> {
+            this.hideCooldownOnItems(true);
+            this.attacker.setItemInHand(InteractionHand.MAIN_HAND, new ItemStack(Items.FISHING_ROD));
+        });
+        this.after(2, "hide-cooldown-on-items: the rod keeps the modifier", () -> {
+            this.check(this.attacker.getAttribute(Attributes.ATTACK_SPEED).hasModifier(LegacyHitRegistration.NO_COOLDOWN), "no-cooldown modifier kept with a rod");
+            this.attacker.setItemInHand(InteractionHand.MAIN_HAND, new ItemStack(Items.IRON_AXE));
+        });
+        this.after(2, "hide-cooldown-on-items: an axe drops it", () -> {
+            this.check(!this.attacker.getAttribute(Attributes.ATTACK_SPEED).hasModifier(LegacyHitRegistration.NO_COOLDOWN), "no no-cooldown modifier with an axe");
+            this.attacker.setItemInHand(InteractionHand.MAIN_HAND, ItemStack.EMPTY);
+        });
+        this.after(2, "hide-cooldown-on-items: the empty hand drops it (fists stay 26.x)", () -> {
+            this.check(!this.attacker.getAttribute(Attributes.ATTACK_SPEED).hasModifier(LegacyHitRegistration.NO_COOLDOWN), "no no-cooldown modifier with an empty hand");
+            this.hideCooldownOnItems(false);
+            this.attacker.setItemInHand(InteractionHand.MAIN_HAND, new ItemStack(Items.FISHING_ROD));
+        });
+        this.after(2, "hide-cooldown-on-items off: the rod drops it (26.x, the default)", () ->
+            this.check(!this.attacker.getAttribute(Attributes.ATTACK_SPEED).hasModifier(LegacyHitRegistration.NO_COOLDOWN), "no no-cooldown modifier with a rod by default"));
         this.after(1, "a cancelled hit has no side effects", this::cancelledHit);
         this.after(25, "sprint knock once per sprint start", this::sprintFirstHit);
         this.after(25, "held sprint gets no second sprint knock", this::sprintHeldHit);
@@ -424,6 +445,20 @@ public final class RevivalLiveTests extends JavaPlugin implements Listener {
         this.after(25, "windows on: rod then sword is unchanged", this::rodHit);
         this.after(3, "windows on: rod then sword is unchanged (sword)", this::swordAfterRod);
         this.after(1, "damage windows off", () -> this.damageWindows(false));
+    }
+
+    private void hideCooldownOnItems(final boolean on) {
+        try {
+            final File file = new File("revival.yml");
+            final YamlConfiguration yaml = YamlConfiguration.loadConfiguration(file);
+            yaml.set("world-settings.default.legacy-combat.hide-cooldown-on-items", on);
+            yaml.save(file);
+        } catch (final java.io.IOException failure) {
+            throw new IllegalStateException(failure);
+        }
+        gg.hcfrevival.revival.config.RevivalConfig.reload();
+        this.check(gg.hcfrevival.revival.Revival.settings().legacyCombat(this.level.getWorld().getName()).hideCooldownOnItems() == on,
+            "hide-cooldown-on-items is " + on + " after /revival reload");
     }
 
     // Flips legacy-combat.damage-windows.enabled in revival.yml and reloads it, as an owner would

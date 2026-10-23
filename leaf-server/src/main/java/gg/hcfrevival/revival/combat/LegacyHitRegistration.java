@@ -37,6 +37,27 @@ public final class LegacyHitRegistration {
         NeueCombat.tick(player);
     }
 
+    // hide-cooldown-on-items: an item that brings no attack speed of its own (a rod, a pot, a pearl) keeps the modifier, so
+    // the client already has it when a swap brings the sword (classic audit #11). Never the empty hand: fists stay 26.x
+    private static boolean keepsNoCooldown(final ServerPlayer player, final net.minecraft.world.item.ItemStack held) {
+        if (held.isEmpty()) {
+            return false;
+        }
+        final gg.hcfrevival.revival.config.LegacyCombatSettings world = gg.hcfrevival.revival.Revival.settings().legacyCombat(player.level().getWorld().getName());
+        if (!world.hideCooldownOnItems() || !world.hideCooldownIndicator() || !world.enabled()) {
+            return false;
+        }
+        final net.minecraft.world.item.component.ItemAttributeModifiers modifiers = held.getOrDefault(net.minecraft.core.component.DataComponents.ATTRIBUTE_MODIFIERS,
+            net.minecraft.world.item.component.ItemAttributeModifiers.EMPTY);
+        final java.util.List<net.minecraft.world.item.component.ItemAttributeModifiers.Entry> entries = modifiers.modifiers();
+        for (int i = 0, n = entries.size(); i < n; i++) { // per tick: no iterator
+            if (entries.get(i).attribute().is(Attributes.ATTACK_SPEED)) {
+                return false; // a 26.x weapon (an axe, a mace, a trident): its cooldown stays
+            }
+        }
+        return true;
+    }
+
     /**
      * Before an attack. Refreshes the modifier first, so a weapon swapped in since the last tick gets its own
      * cooldown, then applies Neue's stagger lockout and click cap ({@link NeueCombat}) and the per-tick cap. Returns
@@ -68,7 +89,7 @@ public final class LegacyHitRegistration {
     private static void refresh(final ServerPlayer player, final @Nullable LegacyCombatSettings settings) {
         final AttributeInstance speed = player.getAttribute(Attributes.ATTACK_SPEED);
         if (speed != null) {
-            refresh(speed, settings != null && settings.hideCooldownIndicator());
+            refresh(speed, settings != null ? settings.hideCooldownIndicator() : keepsNoCooldown(player, player.getWeaponItem()));
         }
     }
 

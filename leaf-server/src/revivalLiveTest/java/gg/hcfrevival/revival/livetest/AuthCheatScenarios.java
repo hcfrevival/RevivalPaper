@@ -170,6 +170,7 @@ final class AuthCheatScenarios {
     private final Map<UUID, Integer> attacks = new HashMap<>();
     private final Map<UUID, Integer> clicks = new HashMap<>();
     private final Map<UUID, String> kicks = new HashMap<>();
+    private final Map<UUID, java.util.Set<String>> anomalies = new HashMap<>();
     private final Set<Long> protectedBlocks = new HashSet<>();
     private double moveMaxY;
     private double moveMinY;
@@ -287,6 +288,11 @@ final class AuthCheatScenarios {
         this.silentPot();
         this.offhandPot(true);
         this.offhandPot(false);
+        // Classic audit #8: the jump-reset alert, a macro against an honest tap-hopper
+        this.jumpReset("jump-reset: a macro that jumps in the window of every knock it takes on the ground", true);
+        this.jumpReset("honest: a player who jumps on 3% of its ground ticks at random, knocked as often (control)", false);
+        // Classic audit #13: a pot refill through the inventory screen mid-fight, as an honest client does it
+        this.potRefill();
         // Classic audit #9: eating and drinking under enforce, as an honest client does them
         this.consume("honest: a golden apple eaten under enforce (control)", false);
         this.consume("honest: a Speed potion drunk under enforce, then a sprint (control)", true);
@@ -2483,6 +2489,105 @@ final class AuthCheatScenarios {
         this.finish(id);
     }
 
+    // Knocked every 20 ticks (alternating +x/-x), 16 times; the macro presses jump in the very tick it takes each knock,
+    // the honest player presses it on 5% of its ground ticks at random (seeded), so most of its knocks land on the ground
+    // and the alert judges it (10 grounded knocks at least). The alert (min knocks lowered to 10 for the row) flags the macro and not the
+    // jumpy player, whose share of jumps on knocks is its own share anyway
+    private void jumpReset(final String id, final boolean macro) {
+        this.begin(id, () -> {
+        });
+        this.step(1, id + ": min knocks 10", () -> this.configure("authoritative.stats.jump-reset-min-knocks", 10));
+        this.arm(id, () -> {
+            this.c.forcePosition = true;
+            final int[] seen = {this.c.knocksSeen};
+            final boolean[] wasJump = {false};
+            final java.util.Random dice = new java.util.Random(4242L);
+            this.c.before = x -> {
+                final boolean knocked = x.knocksSeen > seen[0];
+                seen[0] = x.knocksSeen;
+                final boolean jump = macro ? knocked : x.model.onGround() && !wasJump[0] && dice.nextDouble() < 0.03;
+                wasJump[0] = jump;
+                x.keys = jump ? JUMP : NONE;
+            };
+        });
+        // 24 knocks: a 3% hopper is in the air for about 3 in 10 of them, and the control only means something with at least
+        // min-knocks (10) grounded ones (a 5% hopper over 16 knocks had 8)
+        for (int i = 0; i < 24; i++) {
+            final double vx = i % 2 == 0 ? 0.3 : -0.3;
+            this.step(20, id + ": knock " + (i + 1), () -> this.knock(this.c, vx, 0.3, 0.0));
+        }
+        this.judge(20, id, () -> {
+            final AuthStats s = this.c.auth.stats();
+            final boolean flagged = this.anomalies.getOrDefault(this.c.player.getUUID(), java.util.Set.of()).contains("jump-reset");
+            final String detail = "grounded knocks " + s.groundedKnocks() + ", jumped in their window " + s.knockJumps() + ", grounded ticks "
+                + s.groundedTicks() + ", jumps on them " + s.groundJumps();
+            if (macro) {
+                this.expect(flagged, "the jump-reset alert fired: " + flagged + " (" + detail + ")");
+            } else {
+                this.label = "CONTROL";
+                this.honestExpect(!flagged && s.groundedKnocks() >= 10, "no jump-reset alert over " + s.groundedKnocks() + " grounded knocks: " + flagged
+                    + " (" + detail + ")");
+            }
+            this.c.before = null;
+            this.configure("authoritative.stats.jump-reset-min-knocks", 40);
+        });
+        this.honestAfter(id, NONE, 0);
+        this.finish(id);
+    }
+
+    // Walking with the sword, the player opens its inventory (no packet; KeyMapping.releaseAll, so the next input is
+    // empty), shift-clicks a pot from the main inventory into the hotbar, closes the screen, walks again, takes the pot
+    // with its number key and throws it: every packet is a vanilla client's, so no grammar drop and no correction
+    private void potRefill() {
+        final String id = "honest: a pot refill through the inventory screen mid-fight, then the throw (control)";
+        this.begin(id, () -> {
+        });
+        this.step(1, id + ": a sword, an empty slot 2, pots in the inventory", () -> {
+            this.c.player.getInventory().setItem(0, new ItemStack(Items.DIAMOND_SWORD));
+            this.c.player.getInventory().setItem(1, ItemStack.EMPTY);
+            final ItemStack pots = splashHealing();
+            pots.setCount(1);
+            this.c.player.getInventory().setItem(9, pots);
+            this.c.player.getInventory().setSelectedSlot(0);
+            this.c.player.inventoryMenu.broadcastChanges();
+        });
+        final long[] dropped = new long[1];
+        this.step(5, id + ": walk", () -> {
+            this.open(id);
+            this.label = "CONTROL";
+            this.base = this.snap(this.c);
+            dropped[0] = this.c.auth.stats().grammarDropped();
+            this.c.forcePosition = true;
+            this.c.keys = FORWARD;
+        });
+        this.step(10, id + ": open the inventory (the keys release)", () -> this.c.keys = NONE);
+        this.step(2, id + ": shift-click the pot into the hotbar", () -> this.c.actions.add(new ServerboundContainerClickPacket(0,
+            this.c.player.inventoryMenu.getStateId(), (short) 9, (byte) 0, ContainerInput.QUICK_MOVE, new Int2ObjectOpenHashMap<>(), HashedStack.EMPTY)));
+        this.step(3, id + ": close it, walk on", () -> {
+            this.c.actions.add(new ServerboundContainerClosePacket(0));
+            this.c.keys = FORWARD;
+        });
+        this.step(4, id + ": number key 2, throw the pot", () -> {
+            this.honestExpect(this.c.player.getInventory().getItem(1).is(Items.SPLASH_POTION), "the pot moved into hotbar slot 2 ("
+                + this.c.player.getInventory().getItem(1) + ")");
+            this.c.actions.add(new ServerboundSetCarriedItemPacket(1));
+            this.c.noUsePrediction = true;
+            this.c.actions.add(new ServerboundUseItemPacket(InteractionHand.MAIN_HAND, 1, this.c.yaw, this.c.pitch));
+        });
+        this.judge(10, id, () -> {
+            final Snap d = this.delta(this.c);
+            final var thrown = this.potions(this.c);
+            this.honestExpect(thrown.size() == 1, "the pot was thrown (" + thrown.size() + ")");
+            this.honestExpect(this.c.auth.stats().grammarDropped() == dropped[0], "no grammar drop (" + (this.c.auth.stats().grammarDropped() - dropped[0]) + ")");
+            this.honestExpect(d.corrections() == 0 && d.exact() == d.compared(), "no correction: " + d.corrections() + " corrections, " + d.exact() + "/"
+                + d.compared() + " claims exact");
+            thrown.forEach(net.minecraft.world.entity.Entity::discard);
+            this.c.noUsePrediction = false;
+            this.c.keys = NONE;
+        });
+        this.finish(id);
+    }
+
     // The client eats or drinks it to the end (the server's completion reaches it as USE_ITEM_COMPLETE), then walks or
     // sprints: no correction while it eats, slowed, or after, sped up by the potion
     private void consume(final String id, final boolean potion) {
@@ -2765,6 +2870,11 @@ final class AuthCheatScenarios {
         plugins.registerEvent(PrePlayerAttackEntityEvent.class, this.listener, EventPriority.MONITOR, (ignored, event) -> {
             if (event instanceof final PrePlayerAttackEntityEvent attack) {
                 this.attacks.merge(attack.getPlayer().getUniqueId(), 1, Integer::sum);
+            }
+        }, this.tests);
+        plugins.registerEvent(gg.hcfrevival.revival.api.event.AuthInputAnomalyEvent.class, this.listener, EventPriority.MONITOR, (ignored, event) -> {
+            if (event instanceof final gg.hcfrevival.revival.api.event.AuthInputAnomalyEvent anomaly) {
+                this.anomalies.computeIfAbsent(anomaly.getPlayer().getUniqueId(), k -> new java.util.HashSet<>()).add(anomaly.getKind());
             }
         }, this.tests);
         plugins.registerEvent(InventoryClickEvent.class, this.listener, EventPriority.MONITOR, (ignored, event) -> {
@@ -3262,6 +3372,8 @@ final class AuthCheatScenarios {
         boolean suppressSprintStop;
         /** {@code BlockEvent}s handled (a piston moving, a shulker box opening). */
         int blockEvents;
+        /** Knocks ({@code SetEntityMotion} for itself) handled. */
+        int knocksSeen;
         /** A sprint command sent this tick in the sprint slot whatever the model does (a spoofed one), then cleared. */
         ServerboundPlayerCommandPacket.@Nullable Action injectSprint;
         boolean blink;
@@ -3713,6 +3825,7 @@ final class AuthCheatScenarios {
                 }
                 case final ClientboundPlayerPositionPacket position -> this.teleport(position);
                 case final ClientboundSetEntityMotionPacket motion when motion.id() == self -> {
+                    this.knocksSeen++;
                     if (!this.ignoreMotion && this.seeded) {
                         final double[] decoded = new double[3];
                         Wire.lpVec3(motion.movement().x, motion.movement().y, motion.movement().z, decoded);

@@ -93,6 +93,7 @@ start, and writes any missing key back on later starts.
 | `legacy-enchant-protection` | `true` | 1.7.10 Protection instead of 26.x's. |
 | `randomize-protection` | `true` | Roll each hit's Protection between half and all of it, as 1.7.10 did. |
 | `hide-cooldown-indicator` | `true` | No cooldown bar while a legacy weapon is held. |
+| `hide-cooldown-on-items` | `false` | With `hide-cooldown-indicator`, keep it on while an item with no attack speed of its own is held too (a rod, a pot, a pearl, food, a block; never the empty hand), so a swap to the sword hits as 1.7 at once instead of after the client learns of the change. |
 | `max-attacks-per-tick` | `0` | Legacy attacks a player may land per tick; `0` is unlimited, as in 1.7.10. Keep it `0` with a click buffer. |
 | `rules` | `classic` | The combat rule set this world uses: `classic` (plain 1.7), `classic-capped`, `neue` or a set under `combat-rules` (see below). |
 
@@ -154,6 +155,7 @@ Melee keeps the entity's real window, so the no-damage-ticks API and plugins tha
 | `ignore-armor-bypassing-damage` | `true` | Blocking doesn't reduce damage that bypasses armor. |
 | `use-speed-multiplier` | `0.2` | Movement speed while blocking (0 to 1). |
 | `rearm-sprint-on-block` | `true` | Blocking re-arms the sprint knock, as releasing W would. |
+| `stop-sprint-on-block` | `false` | Under authority (enforce), a block stops the sprint as 1.7's did (a 26.3 client keeps sprinting through a block: about 30% faster than 1.7's blocking walk, plus the sprint-jump boost). Releasing the block with the sprint key held sprints again and re-arms the sprint knock itself, so `rearm-sprint-on-block` is skipped while this is on. |
 
 ### Knockback profiles
 

@@ -115,6 +115,10 @@ public final class AuthStats {
     long eyeOffsetsRefused;
     long groundedKnocks;
     long knockJumps;
+    long groundedTicks;
+    long groundJumps;
+    long sprintSyncsDropped;
+    long flagEchoesDropped;
     long attacksOverCps;
     long pongsBehindKeepAlive;
     long teleportsHeld;
@@ -419,6 +423,26 @@ public final class AuthStats {
      */
     public long knockJumps() {
         return this.knockJumps;
+    }
+
+    /** Self movement-speed syncs not sent: they only toggled the sprint modifier, which the client had toggled itself. */
+    public long sprintSyncsDropped() {
+        return this.sprintSyncsDropped;
+    }
+
+    /** Self shared-flags bytes not sent: only client-owned bits (sprint, swim, glide, shift) changed in them. */
+    public long flagEchoesDropped() {
+        return this.flagEchoesDropped;
+    }
+
+    /** Simulated ticks the client started on the ground: the base rate of {@link #groundJumps}. */
+    public long groundedTicks() {
+        return this.groundedTicks;
+    }
+
+    /** Of {@link #groundedTicks}, those whose input pressed jump (a rising edge): how often this player jumps anyway. */
+    public long groundJumps() {
+        return this.groundJumps;
     }
 
     /** Denied breaks whose restore snapped the client back where it broke the block (vanilla {@code syncBlockState}). */

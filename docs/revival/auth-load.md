@@ -660,6 +660,57 @@ on one side of the 25 ms K1 threshold. So at N=100 some viewers' p90 - p10 ack j
 **Not run this time:** N=100 with the locator bar off, and N=50 at ≈125 ms RTT (finding 3). Both are still asked for in
 NOTES.md.
 
+## Stall re-run on the classic build (2026-10-22 20:05)
+
+**Build:** `torture/jars/revivalpaper-audit7.jar` (sha256 `43b0a61d…58f86`): commit 3638e753 plus the working tree that
+became the next commit (the jump-reset alert, the two classic switches, no self echoes of client-owned sprint state).
+It carries the review-2 netcode batch, including X2-04: forced entries hold corrections for one ack deadline at most.
+**Run:** `runs/audit7-hitch100`. N=100, the same harness and settings as above (locator bar on, view and simulation
+distance 6/4), a 30 s warm-up, a 150 s window, no JFR (so no class-histogram GC opens the window). Two server hitches
+were injected with `load hitch`: 450 ms at 30 s and 2,300 ms at 70 s (`load.py --hitch 30:450 --hitch 70:2300`). The
+machine was quiet apart from this run.
+
+**Finding 2's loops are gone.** Corrections per second, all bots summed:
+
+| Window | What happens |
+|---|---|
+| t 1-30 | **0** |
+| 450 ms hitch at t 30 | 3, 5, 54, 3, 1, then **0 from t 36** (6 s) |
+| t 55: a bot-side hiccup (the bots' pongs fell to 1,587/s from 2,250, then 3,686 the next second; server MSPT max 10 ms) | 141, 49, 10, 1, then **0 from t 60** (4 s) |
+| 2,300 ms hitch at t 70 (every bot frozen: `freezes` 100) | 561, 95, 42, 35, 16, 4, then **0 from t 77** (7 s) to the end of the window (t 148) |
+
+Every bot took some corrections (1,020 in all, 54 at most for one bot), and none looped. The 09:30 build left 5 bots
+looping after a 441 ms hitch and 47 after a 2.3 s one.
+
+| | audit7, hitches injected | 09:30 merged B (converged) |
+|---|---|---|
+| TPS | 19.69 (the 2.3 s hitch) | 20.00 |
+| MSPT mean / p99 / max | 6.38 / **7.08** / 2,315 (the hitch) | 7.54 / 22.2 / 214 |
+| claims compared / bit-exact / sub-µm / over threshold | 294,601 / 267,575 / 26,166 / 606 | 150,163 / 149,243 / - / 235 |
+| corrections (absolute) | 1,020 (469) | 534 (228) |
+| attacks queued / accepted / rejected | 31,073 / 29,604 / 407 (98.6% of judged hits `VALID`) | 16,544 / 16,099 / 384 |
+| rejected by reason | MISSED 370, OUT_OF_REACH 8, OCCLUDED 3, REWIND 2, VALID but gated 24 | MISSED 320, REWIND 46, OUT_OF_REACH 8 |
+| forced entries | 102,657 | 131,709 |
+| mirrors per viewer, late events | 99.0 of 99, 0 | 99.0 of 99, 0 |
+| old gen after GC, start → end | 464 → 464 MB | |
+| down / up per player | 146.9 / 1.01 KiB/s | 138.7 / 1.00 KiB/s |
+
+How to read it:
+
+- **Sub-µm claims** (`subMicronClaims`, counted since the NAS block-glitch fix in 98008afa) are claims off the truth by
+  less than `correction-persist-min`. They are never corrected: before that fix a 1e-7 gap that rounding kept was
+  "corrected" by a teleport every 20 ticks. A few bots carry such a gap and count it on every claim; it moves nothing
+  (the eye offset refusals, 27,577, are the same gaps). The real client has none: every real-client run is 100.00%
+  exact.
+- **Self echoes no longer sent:** `flagEchoesDropped` 24,526 and `sprintSyncsDropped` 21,876 (about 1.6 and 1.5 per player
+  per second): the client's own sprint changes, which it already had.
+- **Forced entries are still about 700 per second** at N=100 (the sampled connection's ack RTT: base 105 ms, high 483 ms,
+  the in-JVM bots' receive threads at 100 bots). They no longer start loops; the harness still can't tell how much of
+  that RTT is the server's Netty and how much the bots'.
+- `MISSED` (370) still follows the correction bursts: a bot being corrected picks from an eye the server doesn't use.
+
+Still not run: 100 bots with the locator bar off, 50 at about 125 ms RTT on the current rewind cap, and 200.
+
 ## Reproduce
 
 ```bash

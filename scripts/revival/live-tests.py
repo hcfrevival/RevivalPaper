@@ -26,7 +26,7 @@ import tempfile
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 LIBS = ROOT / "leaf-server/build/libs"
 CACHE = ROOT / "leaf-server/build/revival-live"
-TIMEOUT = 900  # the sync run carries the auth scenarios and the cheat suite
+TIMEOUT = 1800  # the sync run carries the auth scenarios and both cheat suites (about 17 min on a laptop, 2026-10-22)
 TRACKERS = {"sync tracker": False, "async tracker": True}
 
 

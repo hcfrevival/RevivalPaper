@@ -1,15 +1,30 @@
 # 1.7 PvP issues: the checklist
 
-Status: 2026-10-21, branch `revival/authoritative` (working tree after commit `a7a84a06`). This is a list of every
-problem 1.7 PvP is known to have, checked against the authoritative RevivalPaper server. It draws on the community's
-own record (sources at the end) and on this repo's design, code, tests and real-client runs.
+Status: 2026-10-22, branch `revival/authoritative`, after commit `3638e753` and the classic audit
+(`auth-classic-audit.md`), with the working tree's uncommitted changes (the jump-reset alert, the
+`stop-sprint-on-block` and `hide-cooldown-on-items` switches, the two stale self-echo fixes). The live suites are green
+on `classic-capped`, both trackers: cheat suite 111/111, cheat suite 2 54/54. This is a list of every problem 1.7 PvP
+is known to have, checked against the authoritative RevivalPaper server. It draws on the community's own record
+(sources at the end) and on this repo's design, code, tests and real-client runs.
 
 The goal it measures against: a 1.7-PvP server for vanilla 26.3 clients that is fast and exact, and that removes as
-many of 1.7's problems as a server can.
+many of 1.7's problems as a server can. The current focus is classic 1.7 under authority.
+
+Rule sets (`legacy-combat.rules`, README "Combat rules"): `classic` is plain 1.7 and the default. `classic-capped` is
+classic plus the 12 CPS cap and the 0.15 s click buffer; it is the NAS world's. `neue` (tipper, DI, parry, the cap and
+the buffer) is built and parked. An item that a rule set fixes says which.
 
 Read with: `authoritative.md` (design, §15 binding), `auth-netcode.md`, `auth-combat.md`, `auth-sim.md`,
-`auth-cheat-suite.md`, `neue-combat.md` (specced, not built), `README.md` (combat mechanics and `revival.yml`).
-Code paths are under `leaf-server/src/main/java/gg/hcfrevival/revival/` unless they say otherwise.
+`auth-classic-audit.md`, `auth-review-2.md`, `auth-cheat-suite.md` and `auth-cheat-suite-2.md`, `auth-torture.md` (a
+real client through a bad network), `auth-load.md` (bots at scale), `projectiles.md`, `client-compat.md`,
+`neue-combat.md`, `README.md` (combat mechanics and `revival.yml`). Code paths are under
+`leaf-server/src/main/java/gg/hcfrevival/revival/` unless they say otherwise.
+
+Evidence is named the way it runs: unit tests by class (`./gradlew :leaf-server:runRevivalTests`), live and cheat-suite
+rows by the name the suite prints (`AuthLiveScenarios`, `AuthCheatScenarios`, `AuthCheatScenarios2`,
+`NeueLiveScenarios`, `RevivalLiveTests`), real-client runs by the rig's run name. "Real client, 2026-10-22, run X" is
+a run of the real vanilla 26.3 client (the enforce-neue rig) under enforce on `classic-capped`, through the torture
+rig's latency proxy, not yet written up in the repo. Conditions read like `r150j30`: 150 ms RTT, ±30 ms jitter.
 
 ## How to read an item
 
@@ -26,7 +41,7 @@ Status:
 - **Solved**: the mechanism is built and a test that exists proves it.
 - **Partial**: some of it is built, or it is built and the proof is missing, or it only works in some conditions.
 - **Open**: nothing addresses it yet.
-- **[limit]**: a vanilla 26.3 client makes a full fix impossible. §12 says what a light client mod would change.
+- **[limit]**: a vanilla 26.3 client makes a full fix impossible. §13 says what a light client mod would change.
 
 Owners: **netcode** (`auth`, `auth.net`, `auth.view`, `auth.combat`, `auth.replicate`), **combat**
 (`combat`, the knockback and damage rules), **sim** (`auth.sim`, the movement port), **config** (defaults and
@@ -36,78 +51,88 @@ policy in `revival.yml` and server configs), **core** (the HCFR plugins, outside
 
 | | Count |
 |---|---|
-| Solved | 20 |
-| Partial | 29 |
-| Open | 17 (4 of them [limit]) |
-| Items | 66 |
+| Solved | 30 |
+| Partial | 31 (1 of them [limit]) |
+| Open | 8 (4 of them [limit]) |
+| Items | 69 |
+
+Since the last refresh (2026-10-21, `a7a84a06`): 9 items moved to Solved (HR-2, HR-6, IN-1, IN-2, IN-5, PR-3, NW-2,
+SV-6, and HR-11, which was never an issue under authority) and 5 from Open to Partial (KB-9, PR-1, PR-4, PR-7, CL-1). The classic audit added 3 items, all Partial: BL-3,
+SP-5 and KB-10.
 
 Solved today, in short:
 
 - Movement cheats of every kind (fly, speed, phase, timer, blink, no-fall, no-slow, jesus, spider, step).
-- Reach, hitbox, through-wall and no-aim killaura hits.
-- Anti-knockback.
-- Exact hit registration up to the rewind cap: the server's verdict equals the client's own pick, bit for bit.
+- Reach, hitbox, through-wall and no-aim killaura hits, including a made-up eye offset (classic audit #1).
+- Anti-knockback and pong games: ignored, withheld, delayed, batched or selectively skipped knocks, and stalls used to
+  void ack deadlines.
+- Exact hit registration at real ping: a real client's hits are VALID and its pick equals the server's verdict, up to
+  300 ms and ±30 ms of jitter.
 - Consistent 1.7 knockback.
-- Sprint and w-tap desync.
+- Sprint and w-tap desync, spoofed sprint packets, and the stale sprint syncs that broke block-hitting at 250-300 ms.
 - Sword blocking on a modern client.
+- The CPS race and clicks lost into the damage window, in `classic-capped` (the NAS world) and `neue`.
+- One-tick pot swaps, off-hand pots behind a sword, silent aim on throws, and inventory-move.
+- 1.7 throws and flight.
 - The 26.3 interpolation stutter near the fight.
 - Ghost blocks and phasing through fake walls.
+- A stalled player: frozen, never kicked, still hittable where it stopped.
+- Far teleports and pearls into chunks the client lacks.
+- Paper's movement checks fighting the truth.
 
-The biggest open risks are untested conditions rather than missing mechanisms: players with real ping (above about
-150 ms the fixed rewind cap starts refusing honest hits), real jitter and loss, big fights at scale, and Lunar
-Client's server-controlled combat options against the exact input grammar.
+The biggest open risks are now scale and clients, not one player's exactness. A real 26.3 client is exact up to 300 ms
+with ±30 ms of jitter, and 300 ms Wi-Fi stalls cost it no correction. 100 players now recover from a 2.3 s server
+stall in 7 s (SV-1). Not shown yet: 200 players, Lunar with HCFR's Apollo combat options against the exact input
+grammar (CL-1), and rod hits at real ping (built, unproven, PR-1). Two attackers on one victim, and lethal ties, still
+go to the lower uplink (HR-10). Two 1.7-parity switches wait on the user's call: `stop-sprint-on-block` (BL-3) and
+`hide-cooldown-on-items` (SP-5).
 
 ## 0. Ranked open and partial items
 
-Ranked by player impact: how many players it touches, how often, and how badly. The tag says what kind of work it
-is.
+Ranked by player impact for classic 1.7 under authority: how many players it touches, how often, and how badly.
+Solved items are left out.
 
 | # | Item | Status | Owner | In one line |
 |---|---|---|---|---|
-| 1 | [HR-2](#hr-2) | Partial | netcode | Was a fixed 300 ms rewind cap; now the attacker's ping is made good up to 250 ms plus its display delay, jitter and tick waits, and past the cap a hit is judged at the target's capped-age truth (the latency-proxy proof is still to add). |
-| 2 | [SV-1](#sv-1) | Partial | netcode | Authority has never run a big fight. 100+ players within 24 blocks with K2 paths (twice vanilla's movement packets) are unmeasured for MSPT and bandwidth. |
-| 3 | [NW-1](#nw-1) | Partial | netcode | Every real-client run was on localhost. Real ping, jitter and loss were never exercised, so forced knocks, corrections and freezes for Wi-Fi players are unknown. |
-| 4 | [CL-1](#cl-1) | Open | netcode, config, core | Lunar's Apollo combat options (no miss penalty, dig-and-use) and other PvP-client changes may break the exact input grammar and use prediction for the biggest client population. |
-| 5 | [PR-1](#pr-1) | Open | combat, netcode | Rod, bow and snowball hits are judged on server positions with no lag compensation, so rod combos depend on ping. |
-| 6 | [HR-6](#hr-6), [IN-1](#in-1) | Open, Partial | combat, netcode | Classic rules keep 1.7's CPS race and lose clicks into the damage window; the neue cap and click buffer are specced but not built. |
-| 7 | [HR-10](#hr-10) | Open | combat, netcode | Trades and "who hits first" are decided by whose packet arrives first, so low ping wins ties. |
-| 8 | [PR-7](#pr-7) | Open | combat, core | Pearl glitching: pearls land players inside fence gates, door cracks and slabs, and fly through client-only combat walls. |
-| 9 | [NW-2](#nw-2) | Open | netcode, config | An honest 4.5 s network stall kicks the player ("no transaction replies"), which in HCF means a combat-logger death. |
-| 10 | [SV-2](#sv-2) | Partial | combat | A server stall still eats hits: damage windows count server ticks while the clients' clicks queue up. |
-| 11 | [KB-3](#kb-3) | Open [limit] | combat (metrics) | A high-ping victim's client applies the knock late, so they are harder to combo and feel "glued to the floor". |
-| 12 | [KB-4](#kb-4) | Partial | combat, netcode | The knock's direction comes from server positions, not from what the attacker saw, so a strafing target at ping is knocked sideways. |
-| 13 | [HR-3](#hr-3) | Partial | netcode | A low-ping cheater has about 170 ms of fake lag or backtrack inside the cap, and victims get hit "behind cover" up to 300 ms in the past. |
-| 14 | [PR-3](#pr-3), [PR-4](#pr-4) | Open | combat | Potions and pearls inherit the thrower's motion and splash falls off box-to-box (26.x), so pot accuracy is not 1.7's. |
-| 15 | [HR-8](#hr-8) | Open | netcode, combat | Crouching shrinks the 26.x hitbox to 1.5 (swim and crawl to 0.6), and 1.7 never did. |
-| 16 | [VI-1](#vi-1) | Partial | netcode | K2 paths only within 24 blocks. Beyond that, the 26.3 stutter is back, at bow, rod and pearl range. |
-| 17 | [IN-3](#in-3) | Partial | netcode | Autoclickers are capped but not flagged; the locked-cadence detector is specced, not built. |
-| 18 | [IN-4](#in-4) | Partial | netcode | Aim assist is only measured, with thresholds never tuned on real mouse data. |
-| 19 | [CL-2](#cl-2) | Partial | config | Non-26.3 clients (ViaVersion, Geyser) skip authority entirely and play client-trusted. |
-| 20 | [WD-4](#wd-4) | Partial | netcode | Ghost hand: doors, chests and digs are not ray-checked against walls (only predicted block changes are). |
-| 21 | [KB-9](#kb-9) | Open | combat | A 1.7 combo lock has no counterplay; neue DI is specced, not built. |
-| 22 | [WD-1](#wd-1) | Partial | netcode | Block glitching is stopped by design (`honor-denied-predictions: false`), but no test plays the HCF case. |
-| 23 | [HR-7](#hr-7) | Partial | combat, netcode | The 26.3 client picks the bare box, without 1.7's +0.1 margin; spear hits on players never land under enforce. |
-| 24 | [PR-6](#pr-6) | Partial | config | Split damage windows are built but off by default, so fire ticks and arrows still eat sword hits. |
-| 25 | [IN-5](#in-5) | Partial | netcode | Inventory-move is blocked, but a one-tick "switch, throw, switch back" pot macro is not. |
-| 26 | [VI-3](#vi-3) | Partial | netcode | Invisible or teleporting opponents after a desync are re-paired, with no playtest metric yet. |
-| 27 | [MV-5](#mv-5) | Partial | sim, netcode | Exempt ticks (pistons, shulkers, geysers, rod pulls, riptide, `vehicles: vanilla`) trust the client with no band. |
-| 28 | [HR-9](#hr-9) | Open [limit] | none server-side | The vanilla miss penalty and the dropped first click after closing the inventory. |
-| 29 | [CL-3](#cl-3) | Partial | config | GrimAC false flags on legit 1.7 play; the GrimAC checklist was never run with a real client. |
-| 30 | [MV-3](#mv-3) | Partial | netcode | Packet crits and ground spoofing are impossible by design, but no test plays a crit cheat. |
-| 31 | [SP-3](#sp-3) | Partial | netcode | Keep-sprint and sprint-packet spoofing are impossible by design, but no cheat-suite row plays them. |
-| 32 | [SV-3](#sv-3) | Partial | config | Leaf options that drop or delay knockback are documented but not refused. |
-| 33 | [SV-5](#sv-5) | Partial | netcode | Plugins that write velocity or teleports around the choke point get upper-bound timing and corrections. |
-| 34 | [SV-4](#sv-4) | Partial | netcode | An exception in authority code falls back to the claim now, but no fault-injection test proves it never kicks. |
-| 35 | [SV-6](#sv-6) | Partial | netcode | Stock Spigot movement checks no longer judge the truth, but the stock-checks run predates the fix. |
-| 36 | [VI-4](#vi-4) | Partial | config, netcode | Anti-ESP is built but off by default, and pop-in when it is on is unmeasured. |
-| 37 | [PR-8](#pr-8) | Solved | netcode | A far teleport or pearl into a chunk the client lacks: held until the chunk is on its way. |
-| 38 | [PR-5](#pr-5) | Partial [limit] | none server-side | On high ping the heal lands late; the throw origin is already exact. |
-| 39 | [VI-2](#vi-2) | Open [limit] | none server-side | Remote players are drawn about 75-125 ms + RTT behind; lag compensation hides it for hits. |
-| 40 | [HR-11](#hr-11) | Open | combat | A damage window opens after 9 or 10 server ticks, depending on whether the hit came in a queued window. |
-| 41 | [IN-2](#in-2) | Partial | none needed | Double-click mice: same-tick doubles are dropped; cross-tick doubles count as clicks. |
-| 42 | [SP-4](#sp-4) | Open | netcode | W-tap and block-hit macros are not measured. |
-| 43 | [IN-6](#in-6) | Open [limit] | none server-side | Clicks count per 20 Hz client tick, and low FPS or 4-8 kHz polling delays them. |
-| 44 | [NW-3](#nw-3) | Open | netcode | Tab ping is keepalive-based, not the RTT authority judges with. |
+| 1 | [SV-1](#sv-1) | Partial | netcode, config | 20 and 50 bots are exact; at 100 a 2.3 s server hitch is healed in 7 s with no loops (MSPT p99 7 ms), but 200 players and 50 at real ping are unmeasured. |
+| 2 | [HR-10](#hr-10) | Open | combat, netcode | Two attackers on one victim, or a lethal tie: the lower uplink lands first. A 1v1 trade lands both hits, each judged on what its attacker saw. |
+| 3 | [CL-1](#cl-1) | Partial | netcode, config, core | Most HCF players use Lunar. Frame-time packets no longer kick, but no rule reads HCFR's Apollo combat options and no recorded Lunar session has checked them against the grammar. |
+| 4 | [PR-1](#pr-1) | Partial | combat, netcode | Rods, snowballs and eggs hit where the shooter saw the target; a real client's rod hit rate holds from localhost to 300 ms (15 casts), but the sample is small and arrows stay on server boxes. |
+| 5 | [BL-3](#bl-3) | Partial | config | A 26.3 client keeps sprinting through a sword block, about 30% faster than 1.7's blocking walk. The 1.7 switch works on a real client but its stop lands a round trip late: at 250-300 ms 1 in 4 sprint block-hits loses its knock. Off by default. |
+| 6 | [HR-8](#hr-8) | Open | netcode, combat | Crouching shrinks the 26.x hitbox to 1.5 (swimming and crawling to 0.6), and 1.7 never did. |
+| 7 | [NW-1](#nw-1) | Partial | netcode | Steady links and Wi-Fi hiccups are clean on a real client; a 2 s freeze recovers with 4 corrections, and real packet loss is untested. |
+| 8 | [SV-2](#sv-2) | Partial | combat | A server hitch no longer refuses hits, but damage windows count server ticks, so a stall shuts windows real time had opened. |
+| 9 | [KB-3](#kb-3) | Open [limit] | combat (metrics) | A high-ping victim's client applies the knock late, so they are harder to combo and feel "glued to the floor". |
+| 10 | [PR-7](#pr-7) | Partial | combat, core | Pearls land only where a standing box fits and stop at fake walls; no running-server glitch suite, and core isn't told of a refund. |
+| 11 | [HR-3](#hr-3) | Partial | netcode | A low-ping cheater has about the 150 ms slack plus its jitter of free backtrack inside its cap; no `rewind-stretch` flag. |
+| 12 | [SP-5](#sp-5) | Partial | config | After a rod, pot or pearl, the first sword hits skip 1.7's ×0.6 attacker slowdown and sprint stop; the switch is off. |
+| 13 | [KB-4](#kb-4) | Partial | combat, netcode | The base knock points between server positions, not along what the attacker saw; unmeasured at ping. |
+| 14 | [VI-1](#vi-1) | Partial | netcode | Paths are exact within 24 blocks; beyond, the 26.3 stutter shows on 1.6-4% of moving ticks, at bow, rod and pearl range. |
+| 15 | [IN-4](#in-4) | Partial | netcode | Aim assist is measured (yaw GCD), with thresholds never tuned on real mouse data. |
+| 16 | [WD-4](#wd-4) | Partial | netcode | Ghost hand: doors, chests and digs are not ray-checked against walls (only predicted block changes are). |
+| 17 | [KB-10](#kb-10) | Partial | netcode | Jump-reset macros raise an alert, on thresholds from simulated players only. |
+| 18 | [IN-3](#in-3) | Partial | netcode | Autoclickers are capped at 12 CPS and a 20 CPS lock is flagged; the fixed-rate detector (`click-lock`) isn't built. |
+| 19 | [PR-4](#pr-4) | Partial | combat, core | 1.7's splash falloff is on; core's own pot precision may stack on it, and no pot drill compares them. |
+| 20 | [WD-1](#wd-1) | Partial | netcode | Block glitching is stopped by design, but no test plays the HCF case (a cancelled placement, then a climb). |
+| 21 | [MV-5](#mv-5) | Partial | sim, netcode | Geysers, riptide, `vehicles: vanilla` and solid copies that went inexact still trust the client, within 1 block. |
+| 22 | [SP-3](#sp-3) | Partial | netcode | Keep-sprint is impossible by design but has no cheat row; sprint-packet spoofing now has rows. |
+| 23 | [MV-3](#mv-3) | Partial | netcode | Packet crits and ground spoofing are impossible by design, but no test plays a crit cheat. |
+| 24 | [CL-2](#cl-2) | Partial | config | ViaVersion and Geyser players play client-trusted unless `ineligible: deny`; hcfr-core runs neither today. |
+| 25 | [CL-3](#cl-3) | Partial | config | GrimAC false flags on legit 1.7 play; the GrimAC checklist was never run with a real client. |
+| 26 | [PR-6](#pr-6) | Partial | config | Split damage windows are built and live-tested but off by default, so fire ticks and arrows still eat sword hits. |
+| 27 | [VI-4](#vi-4) | Partial | config, netcode | Anti-ESP is built but off by default, and pop-in when it is on is unmeasured. |
+| 28 | [SV-5](#sv-5) | Partial | netcode | Plugins that write velocity or teleports around the choke point get upper-bound timing and corrections. |
+| 29 | [SV-3](#sv-3) | Partial | config | Leaf options that drop or delay knockback are documented but not refused. |
+| 30 | [SV-4](#sv-4) | Partial | netcode | An exception in authority code falls back to the claim, but no fault-injection test proves it never kicks. |
+| 31 | [VI-3](#vi-3) | Partial | netcode | Invisible or teleporting opponents after a desync are re-paired and counted, with no playtest budget yet. |
+| 32 | [HR-7](#hr-7) | Partial | combat, netcode | The 26.3 client picks the bare box, without 1.7's +0.1 margin; spear hits on players never land under enforce. |
+| 33 | [SP-4](#sp-4) | Open | netcode | W-tap and block-hit macros are not measured. |
+| 34 | [KB-9](#kb-9) | Partial | combat | Classic keeps 1.7's combo lock by design; DI is built in `neue`, which is parked. |
+| 35 | [NW-3](#nw-3) | Open | netcode | Tab ping is keep-alive based, not the RTT authority judges with. |
+| 36 | [PR-5](#pr-5) | Partial [limit] | none server-side | On high ping the heal lands late; the throw is exact. |
+| 37 | [VI-2](#vi-2) | Open [limit] | none server-side | Remote players are drawn RTT + 135-170 ms behind (K1: 50-70 ms less); lag compensation hides it for hits. |
+| 38 | [HR-9](#hr-9) | Open [limit] | none server-side | The vanilla miss penalty and the dropped first click after closing the inventory. |
+| 39 | [IN-6](#in-6) | Open [limit] | none server-side | Clicks count per 20 Hz client tick, and low FPS or 4-8 kHz polling delays them. |
 
 ---
 
@@ -122,40 +147,57 @@ is.
   line-of-sight rule that shortened reach to 3 blocks at corners (PandaSpigot GH-244, [3]).
 - **Today:** exact lag compensation. Each viewer has a `MirrorBook` of every other player: a line-by-line port of
   26.3's stepped interpolation, fed the packets the viewer acked, at the tick it applied them. `PickRay` replays the
-  client's `pick(1.0F)` from the authoritative eye. `HitValidator` accepts a hit iff some candidate order lets the
-  client return that target (`auth/combat/{RemoteMirror,MirrorBook,PickRay,HitValidator}.java`, wired in
+  client's `pick(1.0F)` from the authoritative eye (HR-4). `HitValidator` accepts a hit iff some candidate order lets
+  the client return that target (`auth/combat/{RemoteMirror,MirrorBook,PickRay,HitValidator}.java`, wired in
   `auth/CombatWiring.java`, patch 1013). In enforce, player targets need `VALID`.
-- **Fix:** nothing more for this item. See HR-2 for the cap.
+- **Fix:** nothing more for this item. HR-2 covers the cap.
 - **Proof (exists):**
   - `MirrorVerify`: 2,000,000 ticks of the mirror against the real client classes, 0 mismatches.
   - `PickVerify`: 1,000,000 scenes against the client's own `LocalPlayer.pick`, 0 mismatches.
-  - Real 26.3 client (`~/Developer/tools/auth-rig/README-enforce.md`, run `full3`): 159/159 attacks `VALID`. On 890
-    of 890 ticks the server's would-be verdict equals the client's pick, and the mirrored box equals the client's box
-    bit for bit.
+  - Real 26.3 client, run `full3` (`~/Developer/tools/auth-rig/README-enforce.md`): 159/159 attacks `VALID`. On 890 of
+    890 ticks the server's would-be verdict equals the client's pick, and the mirrored box equals the client's box bit
+    for bit.
+  - Torture rig, steady links from 0 to 250 ms with up to ±30 ms jitter (`auth-torture.md`): 3,759 of 3,759 client
+    hits `VALID`; the verdict equals the client's pick on 31,775 of 31,775 ticks, the box bit-equal on all.
+  - Real client, 2026-10-22, run `classic4-bh` (block-hit and sprint-hit scenarios at direct, r150j30, r250j30 and
+    r300j10): pick = verdict 360/360 at direct and 535/535 at each latency.
 
-### HR-2 High-ping players lose hits (fixed rewind cap) — Partial {#hr-2}
+### HR-2 High-ping players lose hits (the rewind cap) — Solved {#hr-2}
 
 - **Players:** "My hits don't register on this server", but only for players on high ping. This is the most common
   complaint in PvP and the one an authoritative server is supposed to end.
-- **Cause:** server (netcode).
-  - `CombatWiring.judge` computes `cap = min(max-rewind-ms, rttBase + ack-jitter-ticks × 50 + path-step-ticks × 50)`
-    = `min(300, rttBase + 300)`. That is always 300 ms, so the per-player `rttBase` term never binds.
-  - `HitValidator` refuses `REWIND` when `now - stamp > cap`. The stamp is the send time of the step the attacker's
-    client displayed.
-  - The real-client run on localhost (RTT 1-15 ms) recorded rewinds of 100 / 111 / 121 / 155 ms (min / p50 / p95 /
-    max, `enforce/runs/full3/probe.jsonl`). So a hit's rewind is about RTT + 110 ms: the K2 display delay, plus the
-    wait for the client tick and the server tick.
-  - From those numbers: some honest hits fail from about 145 ms RTT, most fail from about 190 ms, all fail past about
-    200 ms. This is arithmetic from measured parts; no run with real latency exists (NW-1).
-- **Today (2026-10-22, Overwatch's policy):** one cap for melee, Neue's held-click landing and projectiles
-  (`CombatWiring.sharedRewindCap`): `min(rttBase, rtt-ceiling-ms 250)` + the display delay measured from the attacker's
-  own mirror + its jitter (p90 − p10, at most the ceiling) + `rewind-slack-ms` (150). `max-rewind-ms` (600) is only a
-  sanity bound. Inside the cap the hit is judged on the box the client drew (HR-1); past it, against the target's truth
-  at the capped age (`HitValidator`, `TruthHistory`), so a shooter whose ping exceeds the ceiling leads moving players
-  by the excess instead of losing every hit. Config version 3 moves files still holding the old 300/400 to 600.
-- **Proof:** `RewindCapTest`; cheat suite: honest hits at 50, 150 and 250 ms land, at a steady 300 ms on a target
-  sprinting across (rewind 445 ms, cap 513 ms); fake lag stays `INVALID`. Still to add: the real-client latency proxy
-  runs, and the `rewind-stretch` anomaly.
+- **Cause:** server (netcode). A hit's rewind is about RTT + 110-135 ms: the K2 display delay, plus the waits for the
+  client tick and the server tick (`full3` probe, the torture rig's rewind ages). Until 2026-10-22 the cap was a fixed
+  300 ms (`min(max-rewind-ms, rttBase + 300)`), so honest hits failed from about 145 ms RTT. The load harness measured
+  14.6% of honest hits refused `REWIND` at about 125 ms (`auth-load.md` finding 3, the 21:32 jar).
+- **Today:** Overwatch's policy, one cap for melee, the click buffer's landing and projectiles
+  (`CombatWiring.sharedRewindCap`):
+  - `min(rttBase, rtt-ceiling-ms 250)` + the display delay measured from the attacker's own mirror + its jitter
+    (p90 − p10, at most the ceiling) + `rewind-slack-ms` (150). `max-rewind-ms` (600) is only a sanity bound. Config
+    version 3 moves files still holding the old 300/400 to 600.
+  - Ages are on the lag-compensation clock (`Authority.clockMillis`), so a server hitch is never charged to the
+    attacker (torture F6).
+  - Inside the cap the hit is judged on the box the client drew (HR-1). Past it, against the target's truth at the
+    capped age (`HitValidator`, `TruthPaths`): a shooter whose ping exceeds the ceiling leads moving players by the
+    excess instead of losing every hit.
+  - A hit the judge called `VALID` skips Paper's range check on current positions for that target (patch 1018
+    `Lag-compensated reach`, `AuthPlayer.judgedReach`; classic audit #7), so chase hits on fast targets land.
+- **Fix:** none. Past about 350 ms of steady ping a shooter must lead moving targets: that is the designed limit.
+- **Proof (exists):**
+  - unit `RewindCapTest` (honest hits fit at every ping; the old flat cap refused them above 190 ms; withheld pongs
+    don't widen it), `HitValidatorTest` (past the cap a leading attacker hits the truth at the capped age, and the stale
+    box misses);
+  - cheat rows "combat: an honest hit at 50 ms of latency (control)", the same at 150 and 250 ms, "combat: an honest hit
+    at 300 ms of latency on a target sprinting across" and "combat: an honest hit at 300 ms of latency on a target
+    running straight away with Speed IV"; live "neue enforce: past the rewind cap (450 ms)" (aiming where it shows the
+    victim misses, leading lands);
+  - torture rig: every client hit `VALID` on steady links up to `r250j30` (306/306), the closest 61 ms under the cap;
+    `r300j10` 309/309. At `r400j10` the old cap refused 261 of 309 (`REWIND`, run `ceiling`); with the capped-age
+    judge, real client, 2026-10-22, run `classic6-400`: 324 of 355 `VALID`, the 31 others on strafing targets (19
+    `MISSED`, 12 `OUT_OF_REACH`): past the ceiling the shooter leads by the excess, as designed;
+  - real client, run `classic1` (direct, r80j10, r150j30): hits VALID/INVALID/UNKNOWN 283/0/0, 305/0/0, 255/0/0;
+  - real client, 2026-10-22, run `classic4-bh`: 37/0/0, 40/0/0, 41/0/0 and 42/0/0 at direct, r150j30, r250j30 and
+    r300j10.
 
 ### HR-3 Backtrack and fake lag inside the cap; hit "behind cover" — Partial {#hr-3}
 
@@ -165,19 +207,25 @@ is.
 - **Cause:** netcode trade-off. Favouring the attacker means rewinding the victim. The rewind a player may use should
   be what their connection needs, not a constant.
 - **Today:**
-  - A cheater who delays its own pongs delays its own knockback too, bounded by the ack deadline (cheat rows 15-17).
+  - A cheater who delays its own pongs delays its own knockback too, bounded by the ack deadline (KB-2).
   - A cheater who answers pongs but holds entity packets is judged on the mirror the pongs say it has, so its old-box
     hits are `INVALID`.
-  - The cap is the attacker's own (HR-2): a 20 ms player's is about 20 + display + jitter + 150, so the fake lag it
-    can add freely is about the slack and its own jitter; past the cap its hits are judged at the target's truth at the
-    capped age, not at the stale box it chose.
-  - The gap left: the 150 ms tick-wait slack, and the `rewind-stretch` flag (not built).
-- **Proof (to add):** the HR-2 cheat row. Also a victim-side metric: the share of hits taken where the victim's own
-  truth was more than 1 block from the attacker's mirrored box. Report p50 and p99 per ping band in playtests.
+  - The cap is the attacker's own (HR-2), sized from its mirror's measured display delay, not from its K: perfectly
+    regular pongs that earn K1 buy no extra rewind (cheat suite 2).
+  - A 20 ms player's cap is about 20 + display + jitter + 150 ms, so the fake lag it can add freely is about the
+    150 ms slack plus its own jitter. Past the cap its hits are judged at the target's truth at the capped age, not at
+    the stale box it chose.
+- **Fix (netcode):** a `rewind-stretch` anomaly that flags a player whose hits keep using more rewind than its own RTT
+  and display delay explain: evidence for staff, like the other anomalies. Not specified beyond this line. The slack
+  itself is the price of honest tick waits.
+- **Proof:**
+  - Exists: cheat rows "combat: fake lag (pongs on time, the victim's movement shown 10 ticks late)" and "combat:
+    backtrack past the rewind cap (pongs held 500 ms)" (both refused); cheat suite 2 "replication: perfectly regular
+    pongs to get K1, then a 500 ms backtrack" (refused).
+  - To add: the `rewind-stretch` anomaly's own test, and a victim-side metric: the share of hits taken where the
+    victim's own truth was more than 1 block from the attacker's mirrored box, p50 and p99 per ping band in playtests.
 
 ### HR-4 Reach, hitbox expand, through-wall hits, killaura without aim — Solved {#hr-4}
-
-> **Classic audit #1 (2026-10-22):** "Solved" missed a residue of review E3: the attack eye followed any claim within 0.5 per axis, 0.5-0.7 blocks of free reach and hits through panes and doors. Fixed: the eye offset is only for a gap the server caused, matching the belief, with no block in it ([auth-classic-audit.md](auth-classic-audit.md)).
 
 - **Players:** 3.1-3.3 "legit reach" debates, hitbox mods, killaura ([2], [8]).
 - **Cause:** client cheats. Server checks on stale positions need tolerance, and a 1.7/1.8 client's 0.1 pick margin
@@ -186,10 +234,20 @@ is.
   - 26.3's bare box, strict `<` against `ENTITY_INTERACTION_RANGE` from the client's own attribute view, the block
     pass on the client's `WorldView`;
   - `INVALID` reasons `OUT_OF_REACH`, `BLOCKED`, `OCCLUDED`, `MISSED`;
-  - an `INEXACT` mirror gives `UNKNOWN`, and in enforce a player target is then not hit (fails safe).
+  - an `INEXACT` mirror gives `UNKNOWN`, and in enforce a player target is then not hit (fails safe);
+  - the eye is the truth's. It follows the client's claim (within `attack-eye-offset-cap`, 0.5 per axis) only for a
+    gap the server caused: entries forced at their deadline, a refused window, a denied break, a revert snap
+    (`AuthPlayer.gapCaused`). Every claim since the client was last on the truth must also land within
+    `attack-eye-forecast-tolerance` (0.03) of the belief, with no block between the truth and the claim. A made-up gap
+    casts from the truth and counts as `eye offsets refused`. Before classic audit #1, any claim within 0.5 per axis
+    moved the eye: 0.5-0.7 blocks of free reach, and hits through panes and doors.
 - **Fix:** none needed. Killaura that also aims is an input cheat (IN-4).
-- **Proof (exists):** cheat suite rows 45-50 (reach 3.5, 4.5 and 6.0, through a wall, killaura without aim, 5 attacks
-  in one window), with honest controls at 2.5 blocks (rows 44 and 51).
+- **Proof (exists):** cheat rows "combat: reach 3.5", "combat: reach 4.5", "combat: reach 6.0", "combat: through a wall
+  at 2.5", "combat: killaura without aim (target 2 blocks to the side)" and "combat: 5 attacks in one window
+  (autoclicker)", with the honest controls "combat: honest hit at 2.5 (control)" and "combat: honest hit at 2.5 after
+  the cheats (control)"; classic audit #1 rows "combat: claims 0.49 toward a target 3.3 from the true eye before the
+  swing", "combat: creeps 0.025 a tick toward a target 3.3 from the true eye, then swings" and "combat: claims 0.49
+  through a glass pane it touches, target 1.5 behind the pane".
 
 ### HR-5 Honest hits refused after a lag spike or during one's own teleport — Solved {#hr-5}
 
@@ -199,29 +257,49 @@ is.
   - Entries force-applied at the ack deadline marked the victim's mirror inexact until the next spawn, and since
     `UNKNOWN` no longer delivers, the victim became unhittable.
   - Attacks during a pending server teleport were never judged.
+  - Authority started with the client's rotation unknown (0/0) until the mouse moved, so a player facing anything but
+    yaw 0 had its hits judged facing yaw 0 (cheat suite 2 H1).
+  - A target whose link stopped became unhittable once its last path step aged past the attacker's cap (review 2
+    X2-01).
 - **Today:**
   - `PathWiring` re-pairs a target on a viewer whose mirror went inexact (`mayRepair`, at most every
-    `repair-interval-ticks` 20), so the mirror is exact again within a few ticks.
+    `repair-interval-ticks` 20), so the mirror is exact again within a few ticks; never while the viewer's own acks lag
+    (review 2 PT2-03: a re-pair that is itself forced loops).
   - `AuthPlayer.runAttack` judges attacks while a teleport is pending, from the pre-teleport windows.
-- **Fix:** none beyond the proof refresh.
-- **Proof:** cheat rows 53, 57 and 60 (honest controls). The table in `auth-cheat-suite.md` still shows them failing,
-  from the 21:45 run. Commit `a7a84a06` reports "67/68 blocked with no honest client affected" after the fixes.
-  Re-run the suite and refresh the table (§13).
+  - Activation seeds the stream's rotation from the `ServerPlayer`.
+  - Past the cap, a target whose path stopped is judged where it stopped, while its `ServerPlayer` is still there and
+    no server teleport is pending (`combat/TruthPaths`, `AuthPlayer.stillAt`).
+- **Fix:** none.
+- **Proof (exists):** cheat rows "combat: honest hit at 2.5 while a server teleport is pending (control)", "combat: one
+  lag spike past the ack deadline -> then an honest hit at 2.5 (control)" and "combat: hit a target whose link stopped
+  2 s ago, where it stopped" (`VALID` at 2050 ms past a 202 ms cap); cheat suite 2 "honest: a client facing yaw 180
+  that hasn't turned since authority started attacks and strafes" (the attack lands `VALID`, the strafe 17/17 exact).
 
-### HR-6 Clicks into the damage window ("didn't register" mid-combo) — Open {#hr-6}
+### HR-6 Clicks into the damage window ("didn't register" mid-combo) — Solved (`classic-capped`, `neue`) {#hr-6}
 
 - **Players:** in a combo, clicks that land while the victim is still immune do nothing. This is the 1.7 "hit delay"
   feel, and the root of the CPS race (IN-1): more clicks means one is more likely to land on the tick the window
   opens.
 - **Cause:** server, by 1.7's design. A fresh hit opens a 10-tick window, and a click inside it is dropped unless it
   is harder (overflow). The client can't see the victim's window, and at ping it can't time it.
-- **Today:** classic rules are exactly 1.7 (`LivingEntity.revivalHurtServer`, `combat/LegacyDefence.lastHurt`).
-- **Fix (combat, netcode):** the neue click buffer (`neue-combat.md` §5). A valid click that the window turns away
-  waits up to 3 server ticks and lands on the first tick the window opens, with reach re-checked against the
-  attacker's mirror. This is opt-in per world (`rules: neue`). Classic stays as 1.7.
-- **Proof (to add):** `ClickBufferTest`; the live pair from §5.4 (exactly one buffered fresh hit on the tick
-  `damageCooldownTime` reaches 10, none under classic); `buffer_sim.py` targets (2.00 fresh hits/s for every rate of
-  6 CPS or more with perfect aim).
+- **Today:**
+  - `classic-capped` and `neue` have the click buffer (`click-buffer-seconds` 0.15, `neue-combat.md` §5): a valid
+    click that the window turns away waits up to 3 server ticks and lands on the first tick the window opens, with
+    reach re-checked on the attacker's mirror and a line of sight (`combat/NeueCombat`, `combat/NeueState`; the landing
+    pass runs first in `AuthPlayer.onServerTick`). One held click per attacker, one attempt.
+  - `classic` stays exactly 1.7 (`LivingEntity.revivalHurtServer`, `combat/LegacyDefence.lastHurt`): a click into the
+    window is lost.
+- **Fix:** none for `classic-capped`, the NAS world. Plain `classic` keeps 1.7's behaviour on purpose.
+- **Proof (exists):**
+  - unit `ClickBufferTest` (a click 3 ticks before the window opens lands on the opening tick, 4 expires; out of reach
+    at the opening is dropped for good; classic holds nothing);
+  - live "neue enforce: classic-capped: a click 1 tick before the window opens lands on the opening tick", the same at
+    2 and 3 ticks, and "... a click 4 ticks before the window opens expires"; control "neue enforce: classic: a click
+    into the window is lost";
+  - cheat suite 2 "classic-capped click-buffer: an honest click into the window lands on the opening tick (control)",
+    with three cheats on it blocked (pre-loading clicks from out of reach, a target walking out before the window
+    opens, held clicks spammed across two targets);
+  - real client, run `full1` (rule set `neue`, three conditions): 141 buffered landings, 141 on the opening tick.
 
 ### HR-7 1.7's pick margin, and attack-range items — Partial {#hr-7}
 
@@ -253,7 +331,7 @@ is.
 - **Cause:** client. A 26.3 client sizes a remote player from the pose in its entity data: crouching 1.5 tall,
   swimming and crawling 0.6. Its own eye drops to 1.27 when crouching, against 1.54 in 1.7.
 - **Today:** the mirror replays the pose exactly (`RemoteMirror`, `DATA_POSE`), so hits are judged on the 26.x box.
-  That is consistent, but not 1.7.
+  That is consistent, but not 1.7. The classic audit re-confirmed it (tracked here, not a new item).
 - **Fix (netcode, combat):** a `legacy-poses` option.
   - Rewrite `DATA_POSE` `CROUCHING` → `STANDING` in entity data sent to viewers. Keep the shared-flags sneak bit, so
     the nametag still dims. Viewers then see a full 1.8 box, as in 1.7, and lose the crouch animation.
@@ -277,34 +355,43 @@ is.
   (`ATTACK_AFTER_CLOSE`, `auth/input/InputRules.java`).
 - **Fix:** none for vanilla clients. Lunar's Apollo combat module has a server-controlled `DISABLE_MISS_PENALTY`
   ([20]). That makes Lunar and vanilla players play different rules, and it collides with the grammar (CL-1).
-- **Proof:** rig scenario `whiff_then_click`: agent clicks against `Punch` packets, documenting how many clicks the
-  client itself eats. This is a reference number, not a pass/fail.
+- **Proof:** rig scenario `whiff_then_click` (not built; `client-compat.md` §9.1 R1): agent clicks against `Punch`
+  packets, documenting how many clicks the client itself eats. This is a reference number, not a pass/fail.
 
 ### HR-10 Trades: the lower uplink wins ties — Open {#hr-10}
 
 - **Players:** "low ping wins trades", "first hit is random on ping" ([5], [6]). In 1.7 the first fresh hit often
   decides the combo.
-- **Cause:** server ordering. Attacks are applied in arrival order. Two players who click at the same real instant
-  land in the order their packets arrive, so the lower one-way latency wins. Lag compensation fixes where, not when.
-- **Today:** arrival order. When two attackers have buffered clicks on one victim, neue lands them in connection
-  order (`neue-combat.md` §5.2).
+- **Cause:** server ordering. Attacks are applied in arrival order. Lag compensation fixes where, not when, but under
+  authority that narrows the problem. In a 1v1 trade both hits land: each is judged on what its own attacker saw
+  (HR-1), on a different victim, and each knock reaches its victim after the attacker's uplink plus the victim's
+  downlink, so with symmetric links both knocks land at the same real time. Arrival order still decides two cases:
+  who lands fresh when two attackers hit one victim inside its window, and a lethal tie (the second attacker is
+  already dead when its attack arrives).
+- **Today:** arrival order. When two attackers have held clicks on one victim (`classic-capped`, `neue`), connection
+  order decides who lands fresh (`neue-combat.md` §5.2).
 - **Fix (combat, netcode):** inside one server tick, apply player-vs-player attacks in order of estimated click time,
   `arrival − rttBase / 2`, instead of arrival. This adds no delay. Bound the credit by the HR-2 cap, so lagging
   doesn't buy priority. Ties across server ticks stay inherent.
 - **Proof (to add):** two `FakeClient`s with asymmetric latency (20 ms and 120 ms) click at the same real instants
   on each other 1,000 times. Measure the first-fresh-hit share: about 100/0 before, target 50 ± 3 after.
 
-### HR-11 The damage window opens after 9 or 10 server ticks — Open {#hr-11}
+### HR-11 The damage window opens 9 or 10 server ticks after a hit — Solved (not an issue under authority) {#hr-11}
 
 - **Players:** combos that feel a tick off now and then.
-- **Cause:** server phase. A victim's window decrements in the level phase. A hit applied in the packet phase opens
-  the window at `S+9`; a hit from a timer-queued window (connection phase) opens it at `S+10` (`neue-combat.md` §3).
-  1.7 processed packets after the world tick, so it was always 10.
-- **Today:** not handled.
-- **Fix (combat):** for legacy melee hits applied before this tick's level phase, set the window one tick longer, so
-  every hit opens the window 10 decrements after the tick it was applied in, as in 1.7.
-- **Proof (to add):** live test. Hits in both phases; the next fresh hit is possible exactly 10 server ticks later in
-  both cases.
+- **Cause (claimed):** server phase, as `neue-combat.md` §3 put it: a hit handled between ticks (the packet phase) and
+  one from a timer-queued window (the connection phase) would open the victim's window a tick apart.
+- **Today:** checked in the code, both phases come after the tick's level phase and before the next one. A player's
+  window counts down in `ServerPlayer.tick()`, which the level's entity tick runs (`ServerPlayer.java`, the
+  `damageCooldownTime--` in `tick()`, not `doTick()`). Queued windows run in the connection phase, after the levels
+  (`SGPLI.tick` → `AuthPlayer.onServerTick`, before that player's own `doTick`), and every other window runs as a
+  packet task between ticks. So a hit handled in or after server tick S gets its first countdown in S+1, and the
+  window reopens after the level phase of S+10 either way: always 10 ticks, as in 1.7. What stays is tick quantization
+  (a click is handled at the end of the tick it arrives in), which 1.7 had too. The classic audit refuted the claim for
+  this reason.
+- **Fix:** none.
+- **Proof:** the code order above; real client `full1` (Neue, the click buffer): every buffered click landed on the
+  tick the window opened (43/43, 48/48 and 50/50 at localhost, 80 and 150 ms), paced and queued windows alike.
 
 ---
 
@@ -326,18 +413,30 @@ is.
 - **Fix:** none.
 - **Proof (exists):** unit goldens (standing hit lifts 0.3608). In the rig, `kb_hit_still` gives three identical
   knocks `(0, 0.360801, −0.399988)`, each applied in the window of the client tick that drained it, bit-equal
-  (`README-enforce.md`).
+  (`README-enforce.md`). Every knock applied in the window the client applied it: 848 of 848 on the torture rig's steady
+  links, 53 of 53 at each condition of run `classic1`.
 
 ### KB-2 Anti-knockback and velocity cheats — Solved {#kb-2}
 
 - **Players:** velocity cheats, "0/0 KB", cancelled velocity packets ([8]: Grim #1382).
 - **Cause:** client. The server used to trust the client's position after the knock.
-- **Today:** the knock enters the simulation at its ack window. A client that ignores it is corrected. One that
-  withholds pongs has the knock force-applied at the deadline (`ceil(rttBase/50) + ack-jitter-ticks` windows), then
-  is frozen, then kicked (`auth/net/Transactions.java`, `AuthPlayer`).
-- **Fix:** none. Delaying pongs within the deadline delays one's own knock by up to about 200 ms beyond `rttBase`,
-  which is indistinguishable from jitter. NW-1's measured jitter can tighten `ack-jitter-ticks`.
-- **Proof (exists):** cheat rows 13-17 (ignore the knock, withhold pongs, delay 3 and 9 ticks, batch two knocks).
+- **Today:** the knock enters the simulation at its ack window, and a client that ignores it is corrected. One that
+  withholds pongs has the knock force-applied at the deadline (`auth/net/Transactions.java`, `AuthPlayer`):
+  - `ceil(min(rttBase, rtt-ceiling-ms) / 50) + ack-jitter-ticks` paced windows, and at most that plus
+    `max-banked-ticks` windows of any kind (torture F3);
+  - any ping as old as `max-unacked-ms` is due whatever the window counts say, and a stall can't push the stamps past
+    what the client can catch up (review 2 X2-02: before, a stall voided deadlines for as long as it had lasted);
+  - then the player is frozen, never kicked for a stall (NW-2). Skipping only the knock's ping is a kick.
+- **Fix:** none. Delaying pongs within the deadline delays one's own knock by up to about 200 ms beyond the RTT, which
+  is indistinguishable from jitter. The torture rig saw 0 forced entries on steady links up to ±30 ms with
+  `ack-jitter-ticks` 4, and keeps it. Jumping in the knock's own window is KB-10.
+- **Proof (exists):** cheat rows "anti-knockback: pongs normally, claims ignore the knock", "anti-knockback: withhold
+  every pong", "anti-knockback: delay pongs 3 ticks to choose when the knock lands" (bounded: within the deadline),
+  "anti-knockback: delay pongs 9 ticks to choose when the knock lands" (lands at +5) and "anti-knockback: batch two
+  knocks into one drain past the deadline"; cheat suite 2 "pongs: skip only the knock's ping, answer the rest"
+  (kicked) and "pongs: hold only a knock's pong 8 ticks (knock-aware lag switch), three knocks" (each at its deadline,
+  +5); unit `TransactionsTest.aPingTooOldIsDueWhateverTheWindowsSay`,
+  `ArrivalStampsTest.windowsWaitingForTheMainThreadWidenTheCredit`.
 
 ### KB-3 High-ping victims take the knock late — Open [limit] {#kb-3}
 
@@ -345,13 +444,13 @@ is.
   comboed easily" ([5], [6]; Hypixel threads say high-ping KB arrives 200-220 ms late).
 - **Cause:** protocol and client. A vanilla client applies velocity when the packet arrives (victim one-way latency),
   and keeps moving by its own input until then. Nothing a server sends can make it apply the knock earlier.
-- **Today:** the knock is exact and consistent (KB-1, KB-2): same vector, same bits. What still varies with ping is
-  when it starts. Ground prediction (`ground-prediction-distance`, KnockbackSync-style, [4]) exists for
-  non-authority players and is unnecessary under authority (KB-5).
+- **Today:** the knock is exact and consistent (KB-1, KB-2): same vector, same bits, applied in the window the client
+  applied it. What still varies with ping is when it starts. Ground prediction (`ground-prediction-distance`,
+  KnockbackSync-style, [4]) exists for non-authority players and is unnecessary under authority (KB-5).
 - **Fix:** none on a vanilla client. Make it visible instead (combat). Log each knock's apply lag (ack window minus
   the hit's window) and show its p50/p99 per ping band in `/revival auth inspect`, so balance decisions use data. A
-  client mod with rollback could apply the knock at the stamped tick (§12).
-- **Proof:** a playtest metric, not pass/fail: knock apply lag per victim against `rttBase`.
+  client mod with rollback could apply the knock at the stamped tick (§13).
+- **Proof:** a playtest metric, not pass/fail: knock apply lag per victim against `rttBase`. Not built.
 
 ### KB-4 The knock's direction comes from server positions — Partial {#kb-4}
 
@@ -359,15 +458,17 @@ is.
 - **Cause:** server. `KnockbackEngine.knockback` takes `xd`/`zd` from the attacker's and victim's server positions
   when the hit is processed. Under authority those are each player's truth after their latest processed window, at
   different real times. The attacker aimed at the mirrored box. At 100 ms and a 0.28 b/tick strafe, the two
-  disagree by about 0.8 blocks sideways, or 15-20° at 2.5 blocks.
-- **Today:** server positions, as 1.7 did.
+  disagree by about 0.8 blocks sideways, or 15-20° at 2.5 blocks (arithmetic, not measured).
+- **Today:** as 1.7: the base knock points from the attacker's server position to the victim's, and the sprint and
+  Knockback extra knock follows the attacker's yaw, which is its own aim. Unmeasured. The classic audit listed this
+  item's claim as refuted, with no reason recorded; the code is unchanged.
 - **Fix (combat, netcode):** an option `knock-direction: attacker-view`. Under authority, take `xd`/`zd` from the
   hit's own geometry: the attacker's snapshot eye to the mirrored target box at the pick tick, which `HitCheck`
   already has. Pass it through the same per-attack context the neue tipper uses (`neue-combat.md` §6.2). The
   fallback stays server positions.
-- **Proof (to add):** live `FakeClient` pair, victim strafing at sprint speed, attacker link delayed 100 ms. The
-  decoded knock yaw matches the attacker-view direction within 0.5° (LpVec3), against a 10-20° spread with server
-  positions.
+- **Proof (to add):** live `FakeClient` pair, victim strafing at sprint speed, attacker link delayed 100 ms. First
+  measure the spread with server positions; with the option, the decoded knock yaw matches the attacker-view direction
+  within 0.5° (LpVec3).
 
 ### KB-5 Ground state for the knock (on the ground client-side, airborne server-side) — Solved {#kb-5}
 
@@ -378,14 +479,15 @@ is.
   so `MotionShadow` steps with the true ground state. `motion-model: authoritative` knocks from the simulated
   velocity itself (`LegacyKnockback.motion`).
 - **Fix:** none.
-- **Proof (exists):** rig `kb_hit_sprint`. The airborne knock at t41 equals the client's velocity bits.
+- **Proof (exists):** rig `kb_hit_sprint`: the airborne knock at t41 equals the client's velocity bits; 0 corrections
+  at localhost, r80j10 and r150j30 (`full1`).
 
 ### KB-6 W-tap overflow hits pull the victim into the floor — Solved {#kb-6}
 
 - **Cause:** server. A second knock was built from falling server motion.
 - **Today:** the overflow extra knock changes only server motion and is never sent, as in 1.7
   (`LegacyKnockback.targetMovement`, PR #13, commit `624f21ee`).
-- **Proof (exists):** the unit tests from PR #13.
+- **Proof (exists):** the unit tests from PR #13; live "a w-tapped overflow hit on a falling player sends no velocity".
 
 ### KB-7 Hits in water and lava push players down — Solved {#kb-7}
 
@@ -402,22 +504,43 @@ is.
 - **Fix:** none in code. Which profile to use is a design call (config). The archived presets' authenticity can't be
   verified (README).
 
-### KB-9 Combo lock with no counterplay — Open {#kb-9}
+### KB-9 Combo lock with no counterplay — Partial {#kb-9}
 
 - **Players:** once comboed at low ping, a 1.7 player often can't escape.
 - **Cause:** gameplay. The 1.7 knock leaves the victim no input.
-- **Today:** classic is plain 1.7.
-- **Fix (combat):** neue DI (`neue-combat.md` §7): the victim's held direction bends the horizontal knock by up to
-  15°.
-- **Proof (to add):** `NeueShapeTest` goldens; the live DI test (bend 15° ± 0.05°).
+- **Today:** `classic` and `classic-capped` are plain 1.7 (live "neue enforce: classic-capped: held keys don't bend
+  the knock, no DI"). `neue` has DI: the victim's held keys bend the horizontal knock by up to 15°
+  (`combat/NeueShape`, `neue-combat.md` §7). `neue` is built and parked.
+- **Fix (combat, config):** none for classic, by design. DI is a rule-set call (`influence-degrees`).
+- **Proof (exists, `neue`):** unit `NeueShapeTest` (influence goldens); live "neue enforce: DI bends the knock toward
+  the victim's held keys"; cheat suite 2 "neue DI: strafe keys sent, claims that don't strafe" (the bend costs the
+  movement it stands for); real client, runs `full1` and `neue2` (`n_knock_recv`): the DI knock 13.167° off the plain
+  one, 0 error against the formula.
+
+### KB-10 Jump-reset macros — Partial {#kb-10}
+
+- **Players:** velocity macros that jump in the very tick a knock lands, so the knock carries less. A human can time
+  it now and then; a macro does it every time.
+- **Cause:** client. Under authority the knock reaches the truth in the window whose pong acks it, and a client that
+  reads the knock can press jump in that same window. Every packet is legal input.
+- **Today:** an alert, never an action (classic audit #8). The server counts knocks applied on the ground, those whose
+  own window pressed jump (a rising edge), and how often the player presses jump on the ground anyway
+  (`AuthPlayer`, `AuthStats`). `AuthInputAnomalyEvent` `jump-reset` fires at a share of 0.65 or more that is also 4×
+  the player's own rate, over 40 grounded knocks or more (`stats.jump-reset-*`). Holding the pong to choose the window is
+  bounded by the ack deadline (KB-2).
+- **Fix (netcode):** calibrate the thresholds on real players.
+- **Proof:**
+  - Exists: live rows "jump-reset: a macro that jumps in the window of every knock it takes on the ground" (flagged)
+    and "honest: a player who jumps on 3% of its ground ticks at random, knocked as often (control)" (not flagged).
+    Simulated: honest styles from 2% to 95% of grounded ticks, and humans hitting the exact tick a fifth of the time,
+    stay under 1 in 10,000 per 40 knocks; a macro on 95% of knocks is always flagged.
+  - To add: false positives per hour on recorded playtests.
 
 ---
 
 ## 3. Sprint and w-tap
 
 ### SP-1 Sprint state is stale or desynced at the hit — Solved {#sp-1}
-
-> **Classic audit #2 (2026-10-22):** under enforce the ledger still took STOP_SPRINTING packets, so a spoofed STOP re-armed a held sprint. Fixed: the simulation owns the ledger and follows the tick-end change ([auth-classic-audit.md](auth-classic-audit.md)).
 
 - **Players:** "my w-tap didn't register", sprint resets that don't count on high ping ([6], [12]).
 - **Cause:** server and protocol. The server took the sprint knock from its own sprint flag (the last sprint packet)
@@ -426,30 +549,47 @@ is.
 - **Today:**
   - Under authority the attack reads `AuthPlayer.combatSprinting()`: the sprint state at that attack's position in
     the client tick.
-  - `SprintLedger` arms from the simulated sprint (`LegacyKnockback.simulatedSprint`), so packets alone can't re-arm
-    it.
+  - The sprint ledger has a simulation-owned mode (`SprintLedger.simulated`). Under enforce sprint packets move
+    nothing, refused windows included; the simulation starts and stops it from the change between tick ends
+    (`sendIsSprintingIfNeeded`). A held sprint key's re-sprint after a hit is no change (1.7's held level), and a
+    double-tap player's hit leaves it stopped. Before classic audit #2, a spoofed `STOP_SPRINTING` re-armed a held
+    sprint.
   - One knock per sprint start, as in 1.7 (`combat/SprintLedger.java`, patch 1004).
 - **Fix:** none.
 - **Proof (exists):**
-  - rig `attack_sprint_hits`: the client's ×0.6 and sprint stop reproduced exactly;
-  - live: a double-tap sprint sword hit deals the same damage and knock with authority on and off (`auth-netcode.md`
-    "Testing").
+  - unit `SprintLedgerTest.underAuthorityStopPacketsMoveNothing`;
+  - cheat row "sprint knock: an honest w-tap re-arms it (control)", and the cheats in SP-3;
+  - live: "auth: a double-tap sprint sword hit and an axe hit deal the same damage and knock with authority on and
+    off";
+  - real client: `attack_sprint_hits` reproduces the client's ×0.6 and sprint stop exactly; run `classic4-bh` (real
+    client, 2026-10-22: `c_blockhit_sprint`, `attack_sprint_hits` and the block-hit scenarios) has 0 corrections and
+    100.00% exact claims at direct, r150j30, r250j30 and r300j10.
 
 ### SP-2 Sprint latch-off, FOV flicker, sprint echo — Solved {#sp-2}
 
 - **Players:** sprint drops twice, FOV flickers (MC-4098), 1.21.2+ clients stuck not sprinting ([12]).
 - **Cause:** protocol. The server echoes sprint back through entity data and attribute syncs, and the client copies
-  them.
+  them (MC-69459 for attributes).
 - **Today:**
   - Legacy hits never clear the attacker's sprint flag (patch 1004).
-  - `auth/view/SelfEcho.java` drops client-owned flags from self echoes.
-  - `PortSimulation.sprintFromState` keeps the sprint modifier on the truth only while it sprints (cheat rows 69-70,
-    fixed in the tree).
-- **Proof (exists):** rig scenarios with sprinting (0 corrections); cheat rows 69-70 on the next run (§13).
+  - `auth/view/SelfEcho.java` drops client-owned flags from self echoes, and under enforce the truth's
+    `movement_speed` has the sprint modifier only while it sprints (`PortSimulation.sprintFromState`).
+  - A self movement-speed sync that differs from what the client holds only by the sprint modifier is not sent
+    (`SelfEcho.withoutSprintOnly`, counted as `sprintSyncsDropped`). At 250-300 ms a late one undid the client's next
+    toggle, and a sprint block-hitter blocked at sprint speed while the truth walked (classic audit #15).
+  - In the working tree, a self shared-flags byte whose server-owned bits (fire, invisible, glowing) are the ones last
+    sent is left out of the echo too (`flagEchoesDropped`): at 300 ms the echo of a block-hit's sprint stop landed
+    after the re-sprint, and the next hit went out without the sprint knock (classic audit #16).
+- **Proof (exists):**
+  - cheat rows "self-echo: STOP_SPRINTING before acking the sprint attribute sync" and "self-echo: sprint dropped
+    without STOP_SPRINTING, attribute sync acked late";
+  - unit `ClientAttributesTest.aSyncThatOnlyTogglesTheSprintModifierIsNotSent`,
+    `SelfEchoTest.aByteWhoseServerBitsTheClientHasIsNotSent`, `SelfEchoTest.aServerBitChangeOrAMeantSprintStillGoesOut`;
+  - real client, 2026-10-22, run `classic4-bh`: before the attribute-sync fix, sprint block-hitting took 6 corrections
+    at r250j30 and 4 at r300j10; after it, 0 at every condition. The real-client run of the shared-flags fix is still
+    to do.
 
 ### SP-3 Keep-sprint and sprint-packet spoofing — Partial {#sp-3}
-
-> **Classic audit #2 (2026-10-22):** sprint-packet spoofing now has cheat rows (a STOP in a click's window, STOP then START with a click), blocked, with an honest w-tap control ([auth-classic-audit.md](auth-classic-audit.md)).
 
 - **Players:** KeepSprint cheats keep full speed after hitting ([8]: Grim #2849). "Auto w-tap" cheats send
   STOP/START sprint around every attack to always get the sprint knock.
@@ -457,25 +597,50 @@ is.
 - **Today:** impossible by design.
   - The simulation applies the client's own attack prediction (×0.6 x/z and sprint off on a sprinting hit on a
     player, `Simulation.clientAttack`), so a client that skips it diverges and is corrected.
-  - Sprint packets that don't match the simulated input don't change the simulated sprint, so they can't re-arm the
-    ledger.
+  - Under enforce sprint packets don't move the sprint ledger at all (SP-1).
+  - A `UseItem` and its release in one window are refused (`release-without-use`), so a block that lasts no tick
+    re-arms nothing; under authority the block re-arm comes from a tick that really ran with a legacy block up, once
+    per block (classic audit #5).
 - **Fix:** none in code.
-- **Proof (to add):** two cheat rows.
-  - Keep-sprint: skip the ×0.6 after one's own hit. Expected: the truth equals the honest reference to the bit, the
-    client is corrected, and the knock is unchanged.
-  - Spoofed STOP+START before each attack without a key change. Expected: `SprintArmEvent` does not fire, and the
-    knock uses the held level.
+- **Proof:**
+  - Exists (spoofing): cheat rows "sprint knock: a spoofed STOP_SPRINTING in a click's window, sprint key held",
+    "sprint knock: STOP_SPRINTING, then START_SPRINTING with a click (SuperKB)" and "sprint knock: a use and its
+    release in one window (a block for no tick)", with the controls "sprint knock: an honest w-tap re-arms it
+    (control)" and "sprint knock: an honest block-hit, the release a tick later, re-arms it (control)"; unit
+    `InputRulesTest.aReleaseOnlyComesFromAWindowThatStartedUsing`.
+  - To add (keep-sprint): a cheat row that skips the ×0.6 after its own hit. Expected: the truth equals the honest
+    reference to the bit, the client is corrected, and the knock is unchanged.
 
 ### SP-4 W-tap and block-hit macros — Open {#sp-4}
 
 - **Players:** macro w-taps and block-hits that are perfectly timed on every hit.
 - **Cause:** input. A macro presses real keys, so every packet is legal.
-- **Today:** nothing measures it.
+- **Today:** nothing measures it. The jump-reset alert (KB-10) is the same idea for knocks.
 - **Fix (netcode):** evidence only, like the click detector. In `InputStats`, record per attack the gap from the last
   STOP/START sprint (or block release) to the attack. Flag a gap that is fixed to the tick over 100 attacks, with
   zero spread.
 - **Proof (to add):** a synthetic-population study like `neue-combat.md` §12.3: false positives per hour on human
   timing models, detection rate on fixed-delay macros.
+
+### SP-5 Swapping to the sword: the first hits skip 1.7's attacker slowdown — Partial {#sp-5}
+
+- **Players:** after a rod, a pot or a pearl, the first sword hits keep the attacker's speed and sprint. 1.7 slowed
+  the attacker ×0.6 and stopped its sprint on every sprint hit.
+- **Cause:** client. A rod, pot or pearl is not a legacy weapon, so it keeps 26.x's attack cooldown. On the swap the
+  client learns of the sword's no-cooldown modifier only from the server's attribute update, a round trip later, so
+  its first hits count as weak (strength under 0.9) and skip the ×0.6 and the sprint stop, while the server lands a
+  full 1.7 hit with the sprint knock. The simulation follows the client, so nothing is corrected: it is a parity gap.
+- **Today:** switch `legacy-combat.hide-cooldown-on-items` (default off, per world, classic audit #11). With it on, the
+  no-cooldown modifier stays while an item with no attack speed of its own is held (a rod, a pot, a pearl, food, a
+  block; never the empty hand, so fists stay 26.x), so the client already has it when the sword comes
+  (`combat/LegacyHitRegistration`). It also takes the cooldown off those items' own hits, which is why it is a switch.
+- **Fix (config):** the user's call: on in classic worlds, or 26.x for those items.
+- **Proof:**
+  - Exists: live "hide-cooldown-on-items: the rod keeps the modifier", "hide-cooldown-on-items: an axe drops it",
+    "hide-cooldown-on-items: the empty hand drops it (fists stay 26.x)" and "hide-cooldown-on-items off: the rod drops
+    it (26.x, the default)"; real client, 2026-10-22, run `classic3-hi` (`c_rod_swap`, `c_pot_swap`, `c_pearl_swap`):
+    clean, no input-grammar rule fired.
+  - To add: on a real client with the switch on, the first sword hit after a swap slows the client ×0.6.
 
 ---
 
@@ -494,9 +659,13 @@ is.
   - A blocked hit takes `(damage + 1) × 0.5` with full knockback, as in 1.7.
   - Files: `combat/LegacySwordBlocking.java`, patch 1009, PR #14.
   - Under authority the simulation owns item use, including the screen case (the client keeps using while a screen
-    is open, until the first tick after it closes), per §15.4.
+    is open, until the first tick after it closes), per §15.4. A hotbar key and a right click in one tick block with
+    the new sword, as a vanilla client does (`Simulation.startUsingItem(hand, view)`; cheat suite 2 H2: the port used
+    to start the old item, so the server never blocked).
 - **Proof (exists):** rig `block_walk`, `block_sprint_jump` and `block_strafe_taps`: speed ×0.2 while blocking,
-  0 corrections. Live: a number-key slot switch while blocking takes the hotbar branch with no correction.
+  0 corrections at localhost, r80j10 and r150j30 (`full1`); real client, 2026-10-22, run `classic4-bh`: 0 corrections
+  in the block-hit scenarios at four conditions up to r300j10. Live: "auth: a number-key slot switch while blocking
+  takes the hotbar branch, not a correction". Cheat suite 2: "honest: take the sword and block in the same tick".
 
 ### BL-2 Autoblock and no-slow while blocking — Solved {#bl-2}
 
@@ -504,15 +673,41 @@ is.
 - **Today:**
   - `InputRules.ATTACK_WHILE_USING`: a vanilla client discards every click while using, the release tick included,
     and so did 1.7.
+  - `InputRules.RELEASE_WITHOUT_USE`: a block raised and released in one window is refused (classic audit #5).
   - The simulation applies the ×0.2 slowdown.
-- **Proof (exists):** cheat rows 61 (autoblock) and 12 (no-slow blocking: the truth equals the honest blocking walk,
-  gap 0).
+- **Proof (exists):** cheat rows "combat: attack while blocking (autoblock)", "no-slow: blocking with a sword at
+  walking speed" (the truth equals the honest blocking walk, gap 0) and "sprint knock: a use and its release in one
+  window (a block for no tick)"; live "auth: input grammar: attacks while blocking are dropped and reported"; unit
+  `InputRulesTest.anAttackOrUseWhileUsingIsDroppedIncludingTheReleaseTick`.
+
+### BL-3 A 26.3 client keeps sprinting through a sword block — Partial {#bl-3}
+
+- **Players:** blocking while sprinting moves about 30% faster than 1.7's blocking walk, and keeps the sprint-jump
+  boost. 1.7 dropped the sprint when a block started.
+- **Cause:** client. 26.3 stops a sprint only on no forward input, hunger, blindness or a hard collision; using an item
+  slows to ×0.2 of sprint speed but keeps the sprint. 1.7's blocking walk fell under the sprint threshold and stopped
+  it. Sneaking is the same (×0.3).
+- **Today:** switch `sword-blocking.stop-sprint-on-block` (default off, classic audit #6). Under enforce, a legacy
+  block stops the sprint as a server-meant write: the client gets it in the echo, the truth at the ack. Releasing the
+  block with the sprint key held sprints again and re-arms the knock itself, so `rearm-sprint-on-block` is skipped
+  while it is on. Off keeps 26.3's behaviour. Sneaking is unchanged.
+- **Fix (config):** the user's call, with the numbers below.
+- **Proof:**
+  - Exists: real client, 2026-10-22, run `classic5-stopsprint` (switch on): 0 corrections at direct and r150j30. At
+    direct the client never sprints through a block tick (0 of 189 blocking ticks, against 45 of 189 with the switch
+    off); at 150 ms the stop lands one round trip late (19 of 189). Run `classic7-stopsprint` (on, r250j30 and
+    r300j10): 0 corrections, 11 and 10 of 189 blocking ticks still sprinting, and the cost of a late stop: 1 of 4
+    landed sprint block-hits at each went out without the sprint knock, because the stop cancelled the client's
+    re-sprint in the tick of its next attack. With the switch off every landed sprint block-hit is armed at every ping
+    up to 300 ms (run `classic6`). Unit `SelfEchoTest.aServerBitChangeOrAMeantSprintStillGoesOut` (the meant stop goes
+    out).
+  - To add: a live or cheat row with the switch on; none of the suites turns it on.
 
 ---
 
 ## 5. Clicking, input and hardware
 
-### IN-1 The CPS race (drag, butterfly, jitter) — Partial {#in-1}
+### IN-1 The CPS race (drag, butterfly, jitter) — Solved (`classic-capped`, `neue`) {#in-1}
 
 - **Players:**
   - 1.7 rewards raw clicks per second: more clicks land more window openings and give more aim samples.
@@ -522,26 +717,35 @@ is.
 - **Today:**
   - `max-attacks-per-client-tick` 1 (`auth/input/InputEnvelope.java`): at most 20 attacks/s, and a second click in a
     tick (same `hitResult`) is dropped.
-  - Classic otherwise has no cap, as in 1.7.
-- **Fix (combat, netcode):** neue's 12 CPS token bucket (0.6 tokens per client tick, burst 2) with the click buffer
-  (HR-6). Together they make combo timing independent of CPS at 7 CPS or more (`neue-combat.md` §4-5, §12.1).
-- **Proof (to add):**
-  - `ClickBucketTest`: even 9 and 12 CPS lose 0 clicks; 20 CPS delivers 12.0 ± 0.2/s.
-  - Live: 40 attacks in 40 ticks deliver 24 or 25.
+  - `classic-capped` and `neue`: a 12 CPS token bucket (0.6 tokens per client tick, burst 2,
+    `auth/input/ClickBucket.java`) with the click buffer (HR-6). From about 7 CPS, combo timing no longer depends on
+    CPS. What's left is aim sampling up to the cap: in simulation, an autoclicker's edge over a 12 CPS human with
+    shaky aim falls from 7-8% to about 1% (`neue-combat.md` §5.3, §12.1).
+  - `classic` has no cap, as in 1.7.
+- **Fix:** none for `classic-capped`. Plain `classic` keeps 1.7's race on purpose.
+- **Proof (exists):**
+  - unit `ClickBucketTest` (even clickers up to the cap lose nothing; twenty a second lands twelve);
+  - live "neue enforce: classic-capped: an even 12 CPS clicker keeps every click" and "neue enforce: classic-capped: a
+    locked 20 CPS clicker delivers at most 12 a second plus the burst";
+  - cheat suite 2 "classic-capped click-cap: an even 12 CPS clicker (control)", "classic-capped click-cap: a 30 tps
+    timer, an attack in every window for 4 s" and "classic-capped click-cap: two attacks in every window for 2 s".
 
-### IN-2 Double-click mice and low debounce — Partial {#in-2}
+### IN-2 Double-click mice and low debounce — Solved {#in-2}
 
 - **Players:** worn switches or 0-4 ms debounce produce double clicks; players argue whether that is cheating ([10]).
 - **Cause:** hardware.
 - **Today:**
   - Two clicks within one client tick share one `hitResult` and the envelope drops the second, so a bounce inside a
     tick gains nothing.
-  - A bounce across a tick boundary is a real extra click (an aim sample).
-  - `InputStats` records the double-click ratio (`stats.double-click-ratio`, 1.0 since config v6: at 0.3 it flagged honest butterfly clickers, classic audit #12).
+  - A bounce across a tick boundary is a real extra click (an aim sample). In `classic-capped` the 12 CPS cap makes
+    clicks past 12 a second worthless.
+  - `InputStats` records the double-click ratio, shown in `/revival auth inspect`. Its alert
+    (`stats.double-click-ratio`) is 1.0 since config v6: at 0.3 it flagged honest butterfly clickers (classic audit
+    #12).
 - **Fix:** none needed beyond IN-1's cap. Hardware bounce and butterfly clicking are not separable at 50 ms
   resolution, and the cap makes the question moot.
-- **Proof:** `ClickBucketTest` covers it. Document in a player FAQ that double-clicks gain nothing past 12 CPS under
-  neue.
+- **Proof (exists):** `ClickBucketTest`; `RevivalConfigTest.version5DoubleClickAlertStopsFlaggingButterflyClickers`.
+  A player FAQ line, that double-clicks gain nothing past 12 CPS, is still to write.
 
 ### IN-3 Autoclickers — Partial {#in-3}
 
@@ -549,54 +753,69 @@ is.
   check unstable).
 - **Cause:** input. Every click is a legal packet.
 - **Today:**
-  - Bounded by the envelope (and by neue's cap, when built).
-  - `InputStats` (click intervals) and `AnomalyWatch` raise `AuthInputAnomalyEvent` past thresholds
-    (`auth/input/*`).
-  - There is no cadence detector.
-- **Fix (netcode):** build the `CadenceWatch` detectors from `neue-combat.md` §12.2. `click-streak` catches a 20 CPS
-  lock; `click-lock` catches any fixed rate (the least-squares residual ≤ 0.75 tick over 150 clicks). These are
-  evidence for staff, never authority. Well-randomized autoclickers (±25%) stay undetectable at tick resolution;
-  the cap is the defence.
-- **Proof (to add):**
-  - `CadenceWatchTest`.
-  - Re-run the §12.3 study on recorded playtest windows (`InputStats` intervals, RVTR traces) before trusting the
-    thresholds. Target: ≤ 0.01 false positives per hour on real players.
+  - Bounded by the envelope, and by the 12 CPS cap in `classic-capped` and `neue` (IN-1).
+  - Detector A, `click-streak` (`auth/input/CadenceWatch.java`): a run of 100 one-click ticks raises
+    `AuthInputAnomalyEvent`, which catches a 20 CPS lock. It counts `max(punches, attacks)` per window, and a window
+    with more attacks than punches is an `attack-without-punch` grammar count, so leaving out the `Punch` hides nothing
+    (cheat suite 2 L2).
+  - Detector B, `click-lock` (any fixed rate, `neue-combat.md` §12.2), is not built.
+  - `InputStats` (click intervals) and `AnomalyWatch` raise the other alerts (`auth/input/*`).
+- **Fix (netcode):** build detector B: the least-squares residual ≤ 0.75 tick over 150 clicks. These are evidence for
+  staff, never authority. Well-randomized autoclickers (±25%) stay undetectable at tick resolution; the cap is the
+  defence.
+- **Proof:**
+  - Exists (A): unit `CadenceWatchTest`; cheat suite 2 "classic-capped cadence: a 20 CPS autoclicker that leaves out
+    the Punch packet" (detected with and without the `Punch`).
+  - To add: detector B and its tests (`neue-combat.md` §12.3 lists them). Re-run the §12.3 study on recorded playtest
+    windows (`InputStats` intervals, RVTR traces) before trusting the thresholds. Target: ≤ 0.01 false positives per
+    hour on real players.
 
 ### IN-4 Aim assist and aimbot — Partial {#in-4}
 
 - **Players:** aim assist and aimbots ([8]).
 - **Cause:** input. The server can't know where a human meant to look.
 - **Today:** measured, not prevented. `InputStats` fits the sensitivity GCD of rotation deltas (`aim-gcd-miss-ratio`
-  0.5 over `aim-min-turns` 200). The rig's aim is computed, not mouse-driven, so it can't calibrate this
-  (`README-enforce.md` "Limits").
+  0.5 over `aim-min-turns` 200), with up to two sensitivities per session (a zoom) and smoothed-camera turns skipped
+  (`client-compat.md` N7). The rig's aim is computed, not mouse-driven, so it can't calibrate this; the server rightly
+  flags it as `aim-gcd` (`README-enforce.md`).
 - **Fix (netcode):** calibrate the GCD thresholds on real mouse data from known-clean players. Add snap analysis
   (rotation acceleration at target acquisition) as a second signal. Prevention stays impossible on any client.
-- **Proof (to add):** false-positive rate per hour on a recorded clean playtest (target ≤ 0.01); detection rate on
-  rotation streams from a known aim-assist client in a private test.
+- **Proof:**
+  - Exists: unit `InputStatsTest` (one mouse never misses; a zoom is the second step; a smoothed camera is skipped;
+    synthetic aim still misses).
+  - To add: false-positive rate per hour on a recorded clean playtest (target ≤ 0.01); detection rate on rotation
+    streams from a known aim-assist client in a private test.
 
-### IN-5 Pot, refill and soup macros; inventory-move — Partial {#in-5}
-
-> **Classic audit #3 (2026-10-22):** built: a hotbar change after the tick's first attack or use is refused (`slot-after-action`), an off-hand use behind a main-hand item that starts using is dropped, and a `UseItem` is aimed along the tick's rotation ([auth-classic-audit.md](auth-classic-audit.md)).
+### IN-5 Pot, refill and soup macros; inventory-move — Solved {#in-5}
 
 - **Players:** auto-pot, refill macros, inventory moves while running ([8]; Hypixel bans macros).
 - **Cause:** input and client.
-- **Today:** `InputRules`:
-  - `CLICK_WHILE_MOVING`: a container click in a tick whose input still walks is an inventory-move (cheat row 63);
-  - `ATTACK_AFTER_CLOSE`;
-  - use and attack while using.
+- **Today:** `InputRules`, under enforce:
+  - `CLICK_WHILE_MOVING`: a container click in a tick whose input still walks is an inventory-move; a click and a
+    close every tick while the keys stay down never opened a screen (review E8);
+  - `ATTACK_AFTER_CLOSE`, and attack or use while using;
+  - `SLOT_AFTER_ACTION`: a `SetCarriedItem` to another slot after the window's first attack or use is dropped, and the
+    server's slot is sent back. Hotbar keys are handled before clicks (`Minecraft.handleKeybinds`), so a one-tick
+    "switch, throw, switch back" is a modified client;
+  - `OFFHAND_AFTER_MAIN`: an off-hand use, use-on or interact is dropped when the main hand holds an item that starts
+    using (an off-hand pot behind a sword);
+  - `USE_ROTATION`: a `UseItem` is replayed with the tick's rotation, counted, never dropped, so a pot, rod or pearl
+    can't be aimed where the claims never looked (classic audit #3).
 
-  Auto-refill while running is therefore refused. A human-speed macro (switch, throw, switch back over 2-3 ticks) is
-  legal input.
-- **Fix (netcode):** one more exact rule, to verify against `Minecraft.handleKeybinds` (report 02 §2.4).
-  - Hotbar keys are handled before attack and use clicks, and a scroll's `SetCarriedItem` goes out at the start of
-    the next tick. So a vanilla window never holds a `SetCarriedItem` to a different slot after its first
-    `Attack`/`UseItem`/`UseItemOn`/`Interact`.
-  - A one-tick "switch, throw, switch back" is then a grammar violation.
-  - An AutoHotkey-style macro on a vanilla client can't do it in one tick: the client would use the item in the final
-    slot. So only modified clients trip the rule.
-- **Proof (to add):** a unit test of the rule against the client's keybind order. A cheat row: SCI(pot), `UseItem`,
-  SCI(sword) in one window. Expected: the second SCI is refused and counted. Honest control: the same over two ticks
-  passes.
+  A macro at a human's speed (switch, throw, switch back over 2-3 ticks) is legal input, as a human doing it is.
+- **Fix:** none.
+- **Proof (exists):**
+  - unit `InputRulesTest` (`noHotbarChangeAfterTheTicksFirstAttackOrUse`,
+    `noOffHandUseBehindAMainHandItemThatStartsUsing`, `aUseRotationOffTheTicksIsCountedNeverDropped`,
+    `containerClicksWhileWalkingAreAnInventoryMove`, `clickAndCloseEveryTickWhileWalkingNeverOpenedAScreen`);
+  - cheat rows "use: a pot thrown at the feet under level claims, the sword back in the same tick (silent auto-pot)",
+    "use: an off-hand pot thrown while a sword is in the main hand", "inventory-move: container click while walking",
+    with the controls "use: an off-hand pot thrown with an empty main hand (control)" and "honest: a pot refill through
+    the inventory screen mid-fight, then the throw (control)";
+  - real client, 2026-10-22, run `classic3-hi` (`c_rod_swap`, `c_pot_swap`, `c_pearl_swap`): no input-grammar rule
+    fired. Real client, 2026-10-22, run `classic6`, scenario `c_pot_refill` (E, a shift-click from the main inventory,
+    Esc, number key, the throw, the sword, twice): 0 corrections, no grammar drop, every claim exact, at localhost,
+    150, 250 and 300 ms.
 
 ### IN-6 Click and frame timing, polling rate — Open [limit] {#in-6}
 
@@ -610,63 +829,81 @@ is.
 - **Today:** the server judges each click at the client tick the client itself used, so timing is exact at tick
   resolution. It can't be finer than what the client sends.
 - **Fix:** none server-side. Client advice in the FAQ (polling ≤ 1000 Hz on vanilla, an FPS floor). A
-  click-between-ticks mod changes feel only (§12).
+  click-between-ticks mod changes feel only (§13).
 - **Proof:** none (out of the server's reach).
 
 ---
 
 ## 6. Projectiles, rods, potions, pearls
 
-### PR-1 Rod, bow and snowball hits are not lag-compensated — Open {#pr-1}
+### PR-1 Rod, bow and snowball hits depend on ping — Partial {#pr-1}
 
 - **Players:** "rod didn't hit", "rod hitbox", bow shots that pass through on ping ([16]-adjacent forum threads;
   "fixing ghost hits breaks rods in many forks", [3]).
-- **Cause:** server. Projectiles are server entities. Their collision is tested against the victim's server box (the
+- **Cause:** server. Projectiles are server entities. Their collision was tested against the victim's server box (the
   truth after their latest processed window). The shooter aimed at the mirrored display, which is RTT + about
   110 ms older.
-- **Today:**
-  - 1.7 rod and projectile rules (PR-2).
-  - Collision is plain server-side.
-  - A rod pull on a player is an exempt tick for the simulation (`auth/ExternalMovers.java`).
-- **Fix (combat, netcode):** favour-the-shooter projectile hits.
-  - For a projectile owned by a player under authority, each server tick test its swept segment against both the
-    victims' server boxes and the boxes the shooter's `MirrorBook` displays now (the stamp-based rewind, bounded by
-    the HR-2 cap).
-  - Hit if either intersects. The non-player path is unchanged.
-  - Rods, snowballs and eggs first (they are in the melee window); arrows behind an option.
-- **Proof (to add):** `FakeClient` shooter with a rod and a bow against a strafing target at 0, 100 and 200 ms RTT.
-  The hit rate at 100 and 200 ms stays within 5 points of 0 ms. Over-hit audit: no hit where the victim's own truth
-  was farther than the cap allows.
+- **Today:** the shooter's view (patch 1017, `projectiles.md` §2):
+  - For a rod, snowball or egg thrown by a player under enforce (`lag-compensation.projectiles`), each tick tests
+    other players at the box the shooter's client drew after its newest tick, while that mirror is exact and within
+    the shooter's rewind cap (HR-2), else at the server box (`combat/ProjectileHits`, `combat/ProjectileRewind`,
+    `CombatWiring` as `ProjectileViews`). "Replace, not union": the server box isn't also tested. Non-players use
+    server boxes.
+  - Arrows stay on server boxes by default: long flights are dodgeable, so ping-free bows are a choice (add
+    `minecraft:arrow`).
+  - 1.7's hit detection applies to every legacy projectile (PR-2): 26.3's growing margin gave a rod at rod range half
+    1.7's target width, the measurable part of "rod hitbox".
+  - Blocks are the server's; only pearls stop at fake walls (PR-7).
+- **Fix (combat, netcode):** built for rods, snowballs and eggs. Left: the arrow decision (config).
+- **Proof:**
+  - Exists: unit `ProjectileRewindTest` (the view after the shooter's newest tick, the inclusive cap, fallbacks) and
+    `ProjectileHitsTest`; cheat suite 2 "projectiles: an honest snowball at 6 blocks (control)" and "projectiles: an
+    honest rod at 6 blocks (control)" (still targets), "projectiles: a snowball at a target backtracked 500 ms (pongs
+    held)" and "projectiles: a rod at a target backtracked 500 ms (pongs held)" (both miss: the view is used only
+    within the cap).
+  - Exists: real client, 2026-10-22, run `classic6`, scenario `c_rod_cadence` (15 casts at a target strafing 4.5 blocks
+    off): 3 hits at localhost, 3 at r150j30, 3 at r250j30, 3 at r300j10, 0 corrections. Judged on server boxes at
+    300 ms the shooter would aim about 400 ms behind a moving target.
+  - To add: a bigger sample (the scenario is 15 casts), a snowball, and a check that no hit lands where the victim's
+    own truth was farther than the cap allows.
 
 ### PR-2 1.7 rod and projectile mechanics — Solved {#pr-2}
 
 - **Players:** 1.9+ removed rod knock ([15]: Fishing Rod); Paper drops 0-damage hits; rods feel sluggish ([14],
   PandaSpigot #339).
-- **Today:** `combat/LegacyProjectiles.java`, patch 1008:
-  - 0-damage hits land on players (knock, flash, window);
+- **Today:** `combat/LegacyProjectiles.java` (patch 1008) and, since 2026-10-22, patch 1017 (`projectiles.md`):
+  - 0-damage hits land on players (knock, flash, window), pearl hits included, as on 1.7 CraftBukkit;
   - the knock comes from the shooter, with Punch folded in;
   - rods hit on impact and hook only if the hit landed;
-  - 1.7 cast (1.5) and gravity (0.04);
+  - 1.7's cast (1.5) and hook path (`flight: legacy-1.7`);
+  - 1.7's hit detection (`hit-detection: legacy-1.7`): boxes grown by 0.3 from the first tick, 1.7's intercept, the
+    owner immune for 5 ticks;
   - the 1.7 reel pull on server motion.
 
   hcfr-core #321 (more projectile knock) is served by `knockback-profile` under `projectiles`.
-- **Proof (exists):** the unit tests from PR #9; GrimAC checklist row 6 when run (CL-3).
+- **Proof (exists):** unit `LegacyProjectilesTest` (reel pull, cast, Punch), `ProjectileHitsTest` (rod-range margins
+  by tick; 100,000 segments against `AABB.clip`), `LegacyThrowTest.legacyRodMoves17sHookPath`; live "snowball knocks
+  away from the thrower" and "rod then sword in the window: full damage, no second knock"; GrimAC checklist row 6
+  when run (CL-3).
 
-### PR-3 Thrown potions, pearls and arrows inherit the thrower's motion — Open {#pr-3}
+### PR-3 Thrown potions, pearls and arrows inherit the thrower's motion — Solved {#pr-3}
 
 - **Players:** a pot thrown down while sprinting drifts forward, and a pearl thrown while sprinting flies further,
   unlike 1.7 ([15]: Java Edition 1.9, "projectiles account for thrower motion").
 - **Cause:** server. 26.3's `Projectile.shootFromRotation` adds the shooter's known movement (its y only when
   airborne). 1.7's `EntityThrowable` and `EntityArrow` did not.
-- **Today:** 26.x for potions, pearls, arrows, snowballs and eggs. The rod cast already overrides its own motion
-  (`LegacyProjectiles.cast`).
-- **Fix (combat):** `legacy-combat.projectiles.inherit-shooter-motion: false`. After `shootFromRotation`, subtract
-  the shooter's known movement for legacy projectile types (or use 1.7's heading alone). Under authority the known
-  movement is the truth's, so the throw origin and motion are exact.
-- **Proof (to add):** unit goldens. A potion thrown at pitch 90 by a sprinting player has 1.7's velocity, and a pearl
-  thrown at pitch 0 lands where 1.7's would.
+- **Today:** `throw: legacy-1.7` (the default; `combat/LegacyThrow.shoot`, patch 1017 at the top of
+  `Projectile.shootFromRotation`). A player's throw of a legacy type (snowball, egg, pearl, splash potion, an arrow
+  from a legacy launcher) starts at 1.7's origin (eye 1.62 − 0.1, 0.16 to the side), with 1.7's heading and spread and
+  none of the thrower's motion. `flight: legacy-1.7` moves 1.7's path inside 26.x's tick (`LegacyThrow.gravity`).
+  Under authority the throw comes from the client's own tick (PR-5).
+- **Fix:** none. `throw: vanilla` and `flight: vanilla` keep 26.x.
+- **Proof (exists):** unit `LegacyThrowTest`: a pot thrown straight down is (0, −0.5, 0), nothing of the thrower's
+  motion in it; 1.7's flight in 26.x's tick order over 200 ticks at six pitches (1e-9); pearl distances by pitch (26.x
+  falls 1.4-2.1 blocks short); a self-pot heals 7 standing and 6 sprinting, as 1.7. A one-off check against a running
+  1.7.10 server is still to do (`projectiles.md` §11).
 
-### PR-4 Splash falloff and pot accuracy — Open {#pr-4}
+### PR-4 Splash falloff and pot accuracy — Partial {#pr-4}
 
 - **Players:** pot accuracy debates; HCFR asked for precision changes three times (hcfr-core #13, #53, #115, closed,
   handled in core).
@@ -674,72 +911,94 @@ is.
   (`potionAabb.distanceToSqr(entity box inflated by the margin)`), so any box touching the potion's gets full
   strength. 1.7's `EntityPotion.onImpact` measured from the potion to the entity's position (its feet), which is
   stricter, and gave full strength to the entity it hit directly.
-- **Today:** 26.x falloff, with core's own precision plugin on top.
-- **Fix (combat):** `legacy-combat.potions.splash: legacy-1.7 | vanilla`. Under `legacy-1.7`, use 1.7's point
-  distance and the direct-hit rule, inside the same effect box. Agree with core who owns precision, so the two don't
-  stack.
-- **Proof (to add):** a golden table of heal amounts at offsets 0-4 blocks for both modes, plus the RedLine pot drill
-  stats (`potionAccuracy`) before and after.
+- **Today:** `splash-potion.falloff: legacy-1.7` (the default; `combat/LegacySplash`, patch 1017): each entity's
+  strength is `1 − √d/4` from the potion's start-of-tick position to the entity's feet, and 1 for the entity it hit.
+  26.3 was a full block more forgiving at every distance (`projectiles.md` §1.1). Core's own precision plugin may still
+  run on top.
+- **Fix (combat, core):** agree with core who owns precision, so the two don't stack.
+- **Proof:**
+  - Exists: unit `LegacySplashTest` (both falloff tables, harming),
+    `LegacyThrowTest.aStandingSelfPotBurstsHalfABlockUpOn17` (heals 7 standing, 6 sprinting).
+  - To add: the RedLine pot drill stats (`potionAccuracy`) before and after, with core's precision off.
 
 ### PR-5 Pot timing on high ping — Partial [limit] {#pr-5}
 
 - **Players:** "ghost pots", high-ping players potting at five hearts ([5]).
 - **Cause:** protocol and client. The heal reaches the client one RTT after the throw, plus flight time.
 - **Today:** the `UseItem` is replayed inside its window, before that tick's movement, with the `ServerPlayer` at the
-  truth of the previous tick. So the potion spawns exactly where the client threw it. The delay is inherent.
-- **Fix:** none for the delay (§12).
-- **Proof (to add):** live. A sprinting `FakeClient` throws a potion; the potion's spawn position equals the client's
-  eye at that tick, to the bit.
+  truth of the previous tick and the tick's own rotation (`use-rotation`, classic audit #3). So the potion spawns
+  where and how the client threw it, from 1.7's origin (PR-3). The delay is inherent.
+- **Fix:** none for the delay (§13).
+- **Proof:**
+  - Exists: cheat row "use: a pot thrown at the feet under level claims, the sword back in the same tick (silent
+    auto-pot)": the pot flies along the tick's aim, not the packet's.
+  - To add: live. A sprinting `FakeClient` throws a potion; its spawn position equals 1.7's origin from the client's
+    eye at that tick, to the bit.
 
 ### PR-6 Fire, arrows and mob hits swallowed by sword combos — Partial {#pr-6}
 
 - **Players:** a fire tick turns the next sword hit into a no-knock overflow; poison and arrows vanish during combos.
 - **Cause:** server. 26.x has one damage window for everything.
 - **Today:** per-channel windows (melee, projectile, mob, other) are built (`combat/DamageWindows.java`, PR #18), but
-  `damage-windows.enabled` defaults to `false`.
+  `damage-windows.enabled` defaults to `false`. `projectiles.md` §8 recommends turning it on for HCFR combat worlds
+  after one playtest.
 - **Fix (config):** decide for HCFR, then turn it on per world after a playtest.
-- **Proof (exists, unit):** the tests from PR #18. A playtest A/B of combo length with fire aspect and bows.
+- **Proof:**
+  - Exists: unit `DamageWindowsTest`; live "windows on: fire doesn't eat the next sword hit", "windows on: an arrow
+    lands with knockback inside a sword window", "windows on: rod then sword is unchanged" and the rest of that set.
+  - To add: a playtest A/B of combo length with fire aspect and bows.
 
-### PR-7 Pearl glitching — Open {#pr-7}
+### PR-7 Pearl glitching — Partial {#pr-7}
 
 - **Players:** HCF's classic: pearls landing inside fence gates, door cracks, slabs, stairs and panes, then walking
   through. Pearling through client-only combat and claim walls. Pearls into 1×1 gaps ([16]; MC-2164).
 - **Cause:** server.
   - Vanilla teleports the owner to the pearl's hit position with no check that the player's box fits.
   - The 26.x client lets a box that starts inside a block move out of it (and pushes itself out).
-  - Fake walls exist only on the client, so the server's pearl flies through them.
-- **Today:**
-  - Server teleports are transactions. The truth takes the destination with client semantics, and the simulation
-    then moves exactly as the client would, glitch included.
-  - Fake walls are honoured for walking (WD-3), not for pearls.
-  - Nothing in RevivalPaper checks the landing.
-- **Fix (combat, with core for rules):** a `legacy-combat.pearls` section.
-  - **Safe landing:** sweep the player's box back along the pearl's last segment until it fits the collision world
-    (as the thrower's `WorldView` has it), and land there. If no position fits, refund and cancel (the HCF "taliban"
-    rule).
-  - **Pass-through list:** blocks a pearl may carry through (open fence gates, string, and so on), configurable,
-    because HCF servers allow some on purpose.
-  - **Fake walls count:** collide the pearl against the thrower's `WorldView` sent states, so combat walls stop
+  - Fake walls exist only on the client, so the server's pearl flew through them.
+- **Today:** `legacy-combat.projectiles.ender-pearl` (on by default; `combat/PearlLanding`, patch 1017,
+  `projectiles.md` §6):
+  - **Safe landing:** the pearl lands only where a standing box of the thrower fits in both the server world and the
+    thrower's client blocks. Otherwise the feet move back along the pearl's last flight in 1/16 steps, up to 1.5. If
+    nothing fits, the teleport is dropped and the pearl refunded (`no-landing: refund`).
+  - **Fake walls count:** the pearl also collides with the thrower's `WorldView`, so combat and claim walls stop
     pearls as well as feet.
-  - Owner: combat. Core supplies its region rules.
-- **Proof (to add):** a pearl suite in `AuthLiveScenarios` with 30 known glitch spots (fence gate open and closed,
-  door crack, trapdoor, slab gap, stair corner, pane, cobweb, a fake glass wall). For each spot: the truth box never
-  ends past the blocking plane, the refund fires when no spot fits, and an honest pearl onto open ground lands on
-  vanilla's spot.
+  - **Pass-through:** `pass-through` lists blocks pearls may cross (empty by default).
+  - Server teleports are transactions, held until the destination chunk is on its way (PR-8).
+  - Not covered: entity colliders (boats, shulkers) in the fit test. Core isn't told of a refund
+    (`RevivalPearlRefundEvent`, `projectile-hooks.md` A1, not added), so core's own pearl timer keeps running.
+- **Fix (combat, core):** the refund event for core. Core's region rules see the adjusted landing in
+  `PlayerTeleportEvent` (cause `ENDER_PEARL`).
+- **Proof:**
+  - Exists: unit `PearlLandingTest` (an honest landing on open ground is vanilla's; a one-block wall, a closed fence
+    gate, a closed door, a slab and a stair step, a glass pane, a ceiling hit from below, a crawl space with no fit
+    (refunded), a fake wall only the client has, pass-through blocks); cheat suite 2 "pearls: through a fake wall the
+    client dropped from its world" (the truth lands short of it) and "pearls: a throw down the lane (control)"; real
+    client `n_pearl` (`full1`, 0 corrections) and run `classic2-far` (real client, 2026-10-22: far teleports and
+    pearls, 0 divergences).
+  - To add: the pearl suite on a running server (`AuthLiveScenarios`), with the spots above plus an open fence gate, a
+    door crack, a trapdoor and cobweb: the truth box never ends past the blocking plane, and the refund fires when no
+    spot fits.
 
 ### PR-8 Teleport into a chunk the client hasn't received — Solved {#pr-8}
 
 - **Players:** a long pearl or `/tp` falls into the ground, or snaps back once.
 - **Cause:** client and server ordering. The client reads a missing chunk as void air and falls (it does on vanilla
   servers too).
-- **Today (2026-10-22):** fixed. A server teleport (`/tp`, plugin teleports, pearls) whose destination chunk under the
-  player's box is neither held by the client nor already sent to it is held in `AuthPlayer` (`HeldPacket`) until it is:
-  Moonrise usually sends it within a tick or two; after `teleport-chunk-send-ticks` (2) the netcode sends it itself, and
-  after `teleport-hold-max-ticks` (100) the teleport goes out regardless (a chunk the server can't load). The chunk then
-  reaches the client ahead of the teleport, so it never stands over void air. On the 03:03 NAS jar the chunk-seeding
-  change had made this fatal (the truth and the client fell through the gym floor together, 0 corrections).
-- **Proof:** live `auth: a 220-block teleport` and `auth: a 1000-block teleport` (the 1000 one into chunks nobody had
-  loaded): the player stands on the floor at the destination, truth and client bit for bit, no correction.
+- **Today:** a server teleport (`/tp`, plugin teleports, pearls) whose destination chunk under the player's box is
+  neither held by the client nor already sent to it is held in `AuthPlayer` (`HeldPacket`) until it is. Moonrise
+  usually sends it within a tick or two; after `teleport-chunk-send-ticks` (2) the netcode sends it itself, and after
+  `teleport-hold-max-ticks` (100) the teleport goes out regardless (a chunk the server can't load). The chunk then
+  reaches the client ahead of the teleport, so it never stands over void air. The origin's `ForgetLevelChunk`s go out
+  as they come: holding them behind the teleport was tried and reverted (`3638e753`), because the `SetChunkCacheCenter`
+  that must precede the destination's chunks already drops the origin's on the client, and the held forgets only made
+  the server's record wrong (six divergences at far teleports in `classic1`).
+- **Proof (exists):** live "auth: a 220-block teleport: the chunk arrives before the teleport, the player stands, no
+  correction" and "auth: a 1000-block teleport: the chunk arrives before the teleport, the player stands, no
+  correction" (into chunks nobody had loaded); cheat suite 2 "teleport hold: never ack a chunk batch, then a 400-block
+  teleport" (out 3 ticks later, the netcode sending the chunk) and "pearls: a long throw into a chunk the client lacks,
+  chunk batches never acked"; real client `full1` (far teleports of 218 to about 2,800 blocks, 0 corrections at three
+  conditions) and, after the revert, run `classic2-far` (real client, 2026-10-22): 0 divergences.
 
 ---
 
@@ -753,11 +1012,12 @@ is.
 - **Today:** `WorldView` predictions are admitted only if a vanilla client would make them
   (`auth/view/PredictionRules.java`). A placement the server denied is not honoured by the truth
   (`honor-denied-predictions: false`), and after a revert a truth box inside a block snaps to the prediction-time
-  position (§15.2).
+  position (§15.2). Denied breaks are WD-2.
 - **Fix:** none in code.
 - **Proof (to add):** the actual HCF case. In a cheat-suite row, an honest `FakeClient` places a block that a plugin
   cancels (`BlockPlaceEvent`), predicts it, jumps on it, and tries to climb a 2-high wall. Expected: the truth never
-  stands on it, one correction, no climb. (Row 66 covers placing without holding a block, which is a different case.)
+  stands on it, one correction, no climb. "world: place a block without holding one, stand on it" covers placing
+  without holding a block, which is a different case.
 
 ### WD-2 Ghost blocks for movement — Solved {#wd-2}
 
@@ -765,19 +1025,28 @@ is.
 - **Today:** `WorldView` is "what this client was sent":
   - persistent sent states;
   - pre-change states pinned until their broadcast is acked;
-  - predictions with an ack deadline and the revert snap.
+  - predictions with an ack deadline and the revert snap;
+  - breaks the client predicts and the server denies (a protected block) are holes in the client's world only: the
+    belief and the forecast read them, the truth never does, and the client's own restore snap at the ack is modelled
+    (the NAS block-glitch fix, 2026-10-22: a Lunar player breaking protected glass and honey was corrected every 2 ticks
+    for seconds).
 
   The simulation reads it, not the live world (`auth/view/WorldView.java`, `Authority.onBlockChanged`).
-- **Proof (exists):** the real client's 80 gym traces, bit-exact (doors, trapdoors, floor bits). Cheat rows 66-68
-  (no prediction admitted, spam with acks held, a protected break).
+- **Proof (exists):** the real client's 80 gym traces, bit-exact (doors, trapdoors, floor bits), and the gym set with 0
+  corrections at three conditions (`full1`, `classic1`); cheat rows "world: place a block without holding one, stand
+  on it", "world: spam placements with block acks held" and "world: break a protected block, walk through before the
+  revert"; the honest NAS rows "world: hold attack on a protected honey block underfoot, then walk off (honest)",
+  "world: break a protected wall block and walk into the gap (honest)" and "world: dig a protected glass pane and walk
+  into the gap (honest)".
 
 ### WD-3 Phasing through client-only combat and claim walls — Solved {#wd-3}
 
 - **Players:** walking through combat-tag glass walls with a desync or a forged packet.
 - **Today:** fake blocks sent to a player persist in their `WorldView` until replaced, so the truth collides with
-  them. A forged correction accept is now a protocol violation, and `resync()` keeps the sent states
-  (`AuthPlayer.resync`, cheat row 32 fixed in the tree).
-- **Proof:** cheat row 32 (the fake wall holds) on the next run (§13).
+  them. A forged correction accept is a protocol violation, and `resync()` keeps the sent states
+  (`AuthPlayer.resync`). Pearls stop at them too (PR-7).
+- **Proof (exists):** cheat row "teleport: accept an id never sent (correction band) to drop fake walls" (the fake wall
+  stops truth and client alike); cheat suite 2 "pearls: through a fake wall the client dropped from its world".
 
 ### WD-4 Ghost hand: interacting through walls — Partial {#wd-4}
 
@@ -785,12 +1054,12 @@ is.
   a raiding cheat.
 - **Cause:** client. The server checks interaction distance, not line of sight.
 - **Today:** predicted block changes must be on the client's crosshair (`PredictionRules`). Other interactions and
-  dig progress use Paper's checks (`auth-netcode.md` "Gaps").
+  dig progress use Paper's checks (`auth-netcode.md` "Gaps"). The classic audit re-confirmed it (tracked here).
 - **Fix (netcode):** validate every `UseItemOn` and `START_DESTROY_BLOCK` target with `PickRay`'s block pass, from the
   truth eye and the window's rotation, on the attacker's `WorldView`. The client can only touch the block its pick
   returns. Refuse others (enforce), count them.
 - **Proof (to add):** cheat rows "open a chest behind a wall" and "break a door through a wall" (refused), with honest
-  controls; zero refusals across the rig's 100 scenarios.
+  controls; zero refusals across the rig's scenarios.
 
 ---
 
@@ -801,37 +1070,46 @@ is.
 - **Players:** opponents stutter and freeze on 26.3 (MC-311974, MC-311976). RevivalPaper production moved back to
   26.2 because of it (README).
 - **Cause:** client. 26.3's stepped interpolation runs dry with vanilla's every-2-ticks cadence.
-- **Today:** K2 paths: one 2-tick stepped move per simulated client tick, a keep-alive nudge, and pre-roll
-  (`auth/replicate/PathFeed.java`, `auth/PathWiring.java`, patch 1014). They apply only within
-  `replication.exact-radius` 24 blocks. Beyond that is vanilla cadence (freezes possible), which covers bow, rod and
-  pearl aim at range.
-- **Fix (netcode):** extend K2 to every tracked player the viewer could aim at with a ranged item: the viewer holds a
-  bow, rod, pearl or snowball, and the target is within 64 blocks. Or raise `exact-radius` to 48, after SV-1 measures
-  the cost.
+- **Today:** K paths: one stepped move per simulated client tick, a keep-alive nudge, and pre-roll
+  (`auth/replicate/PathFeed.java`, `auth/PathWiring.java`, patch 1014), within `replication.exact-radius` 24 blocks.
+  K is per viewer: one whose own ack jitter stays under 25 ms for 5 s gets 1-tick steps (K1, 50-70 ms less view
+  delay), else 2 (K2). A switch continues the paths in place (review 2 PT2-06), and a target walking into range is fed
+  at the viewer's K (PT2-04). Beyond 24 blocks is vanilla cadence: in the torture rig the target froze on 97 of 6,138
+  moving ticks there (1.6%, 4% at 30 ms jitter), which covers bow, rod and pearl aim at range.
+- **Fix (netcode):** extend K paths to every tracked player the viewer could aim at with a ranged item: the viewer
+  holds a bow, rod, pearl or snowball, and the target is within 64 blocks. Or raise `exact-radius` to 48, after SV-1
+  measures the cost.
 - **Proof:**
-  - Exists: rig, 0 freezes in 2,865 moving ticks within 24 blocks.
+  - Exists: rig `full3`, 0 freezes in 2,865 moving ticks within 24 blocks; torture steady links, 0 freezes inside the
+    radius once the harness stopped respawning the target (`duelfix`); live "auth: the viewer's mirror of a walking
+    player never freezes and trails it by the K2 delay" and "auth: K per viewer: one-tick steps, the mirror exact and a
+    tick less behind".
   - To add: `view_target_strafe` at 30 and 45 blocks, 0 freezes.
 
 ### VI-2 Opponents are drawn behind (interpolation delay) — Open [limit] {#vi-2}
 
 - **Players:** "I'm hitting where he was" ([18]; MC-302347).
-- **Cause:** client. The 26.3 client shows remote players about 1.5 steps behind the newest data. Measured: a hit's
-  rewind is about RTT + 110 ms.
-- **Today:** lag compensation judges against exactly that display (HR-1), so hits are fair. The visual lag stays.
-  K = 2 is the smallest queue that never runs dry under jitter (report 03).
-- **Fix:** none on a vanilla client (§12).
-- **Proof:** none (inherent). HR-2's histogram documents it.
+- **Cause:** client. The 26.3 client shows remote players about 1.5 steps behind the newest data. Measured with a
+  real client (torture rig): what one player does reaches another's screen RTT + 135-170 ms later with K2 paths
+  (144 ms at RTT 0); a hit's rewind is about RTT + 110-135 ms.
+- **Today:** lag compensation judges against exactly that display (HR-1), so hits are fair. The visual lag stays. K1
+  takes 50-70 ms off for low-jitter viewers (VI-1); K2 is the smallest queue that never runs dry under more jitter
+  (report 03, torture K1).
+- **Fix:** none on a vanilla client (§13).
+- **Proof:** none (inherent). The torture rig's view latency table documents it.
 
 ### VI-3 Invisible or teleporting opponents after a desync — Partial {#vi-3}
 
 - **Players:** invisible players, opponents teleporting, "desynced positions".
 - **Cause:** late or force-applied packets, or big jumps.
 - **Today:**
-  - An inexact mirror is re-paired (HR-5).
+  - An inexact mirror is re-paired (HR-5), never while the viewer's own acks lag (load P0, review 2 PT2-03).
   - A jump of more than 48 blocks re-spawns the target on that viewer (`respawn-distance`).
+  - Re-pairs are counted (`AuthStats.mirrorRepairs`): 0 per 150 s window at 20 and 50 load bots, 36-86 at 100
+    (`auth-load.md`).
   - Tracking range is vanilla's.
-- **Fix (netcode):** none in mechanism. Add metrics: re-pairs per player-hour and `UNKNOWN INEXACT_TARGET` verdicts per
-  1,000 attacks, in `/revival auth inspect` and `debug.hud`.
+- **Fix (netcode):** none in mechanism. Show re-pairs per player-hour and `UNKNOWN INEXACT_TARGET` verdicts per 1,000
+  attacks in `/revival auth inspect` and `debug.hud`.
 - **Proof (to add):** playtest budgets: ≤ 1 re-pair per player-hour in fights, and ≤ 1 inexact verdict per 1,000
   attacks.
 
@@ -844,7 +1122,8 @@ is.
 - **Fix (config, netcode):** decide per mode. Measure pop-in (the extra time before a peeking player appears, against
   culling off) before turning it on for HCF.
 - **Proof:**
-  - Exists: live, a player behind a wall is removed and re-spawned when the wall goes.
+  - Exists: live "auth: visibility: a player behind a wall is not sent" and "auth: visibility: shown again as soon as
+    the wall is gone".
   - To add: a rig peek test with a strafe around a corner at 6 b/s. The appearance delay against culling off is ≤ 1
     tick at p99.
 
@@ -858,25 +1137,36 @@ is.
   the client's own inputs, and claims are compared, never trusted (`auth/sim/MovementSim.java` and the rest,
   `auth/reconcile/Reconciler.java`).
 - **Proof (exists):**
-  - cheat rows 1-12;
-  - the real client: 5,331/5,331 claims exact, 0 corrections in 100 scenarios;
-  - offline: 0 differences in 4,800,000 fuzzed ticks against vanilla's own code, and 80/80 golden client traces.
+  - cheat rows "fly: claims rising 0.25/tick", "fly: jump then hover", "speed: claims 1.5x the walk", "step: 1.0 block
+    step-up", "phase: through a wall", "phase: through a closed door", "vclip: claims 6 blocks down through the
+    floor", "spider: claims climbing a plain wall", "jesus: claims walking on water", "no-fall: claims onGround through
+    a 12-block fall", "no-slow: sneaking at walking speed", "no-slow: blocking with a sword at walking speed";
+  - the real client: 19,256 claims exact and 0 corrections over 116 scenarios at localhost, r80j10 and r150j30
+    (`full1`); 100.00% exact at three conditions (`classic1`); 35,165 of 35,165 on the torture rig's steady links;
+  - offline: 0 differences in 4,800,000 fuzzed ticks against vanilla's own code, and 80/80 golden client traces;
+  - honest eating and drinking under enforce: "honest: a golden apple eaten under enforce (control)" and "honest: a
+    Speed potion drunk under enforce, then a sprint (control)" (classic audit #9).
 
 ### MV-2 Timer, blink, lag switch — Solved {#mv-2}
 
-- **Today:** `auth/net/TickClock.java` (a Grim-style balance timer on the ack clock, bank 10, a 1 s queue cap). A
-  player who stops sending ticks freezes for everyone. A window held open past 512 packets is a protocol violation
-  (cheat row 28, fixed in the tree).
-- **Proof (exists):** cheat rows 24-27, plus row 28 on the next run.
+- **Today:** `auth/net/TickClock.java`: a Grim-style balance timer on the ack clock, bank 10. The time a stall's burst
+  forfeits is owed back, at most one bank, so an honest stall drains at once (torture F4); a window that waited past
+  `timer-queue-cap-ms` (400) is refused. A player who stops sending ticks freezes for everyone. A window past 512
+  packets overflows (a kick in enforce).
+- **Proof (exists):** cheat rows "timer: 22 tps for 4 s", "timer: 30 tps for 4 s", "timer: blink (1.2 s without
+  packets, then the burst)", "timer: 15 tps for 3 s, then a 10-tick burst", "timer: TickEnd never sent" and "timer: two
+  move claims in one window"; cheat suite 2 "timer: three fake 1.2 s stalls back to back, walking" and "timer: freeze
+  1.2 s, then run the 24 missed ticks at once".
 
 ### MV-3 Fake crits and ground spoofing — Partial {#mv-3}
 
 - **Players:** packet crits (tiny hops claimed as falls) and ground spoof.
 - **Today:** impossible by design. `onGround` comes from the simulation, and `fallDistance` follows server rules fed
-  by simulated deltas (§15.5). `LegacyAttack.canCriticalAttack` reads them.
+  by simulated deltas (§15.5). `LegacyAttack.canCriticalAttack` reads them. The classic audit re-confirmed the missing
+  row (tracked here).
 - **Proof:**
-  - Exists: row 10 (no-fall: 18 onGround lies counted, damage equal to an honest fall), and rig `attack_jump_crits`
-    (honest crits).
+  - Exists: "no-fall: claims onGround through a 12-block fall" (onGround lies counted, damage equal to an honest
+    fall), and rig `attack_jump_crits` (honest crits, 0 corrections at three conditions).
   - To add: a packet-crit cheat row (claims of +0.0625/−0.0625 hops before each attack). Expected: no crit.
 
 ### MV-4 Rubber-banding of honest players — Solved {#mv-4}
@@ -884,33 +1174,57 @@ is.
 - **Players:** setbacks and lagbacks from anticheats ([25]: Grim's setbacks need tuning; corrections that snap you
   back in time).
 - **Today:**
-  - Corrections are relative position + velocity, forecast to the client's apply tick, and absolute only when they
-    would land inside a block.
+  - Corrections are relative position + velocity, forecast to the tick the client applies them, measured from where
+    pings land (`auth/net/LandingLag.java`: the NAS glitch fix, 2026-10-22; `round(rtt / 50)` put every correction one
+    tick short at some pings). They go absolute only when they would land inside a block or keep missing.
+  - They forecast the client with every knock still on its way (torture F5), and hold while forced entries are
+    outstanding, for at most one ack deadline (review 2 X2-04: a 450 ms+ link was otherwise never corrected again).
   - The accept is checked as a claim.
-  - The correction loop after a cheat is fixed (`AuthPlayer`, `Simulation.correction`).
-- **Proof (exists):** 0 corrections in 100 real-client scenarios on localhost. Latency is NW-1.
+- **Proof (exists):** 0 corrections on a real client: on the torture rig's steady links from 0 to 250 ms with ±30 ms
+  jitter (44,519 ticks), at r80j10 and r150j30 (`full1`, `classic1`), and at r250j30 and r300j10 (real client,
+  2026-10-22, run `classic4-bh`); 0 corrections for 20 and 50 load bots (`auth-load.md`). Stalls and big fights are
+  NW-1 and SV-1.
 
 ### MV-5 Exempt states trust the client — Partial {#mv-5}
 
-> **Classic audit #4 (2026-10-22):** the piston and shulker-box band was built (review E2) but matched any 0.6 claim within 14 blocks of any event. Fixed: only inside what the event moves, only along the push, at most its travel ([auth-classic-audit.md](auth-classic-audit.md)).
-
 - **Players:** none, unless a cheater stands next to a piston, a shulker, a boat or a geyser.
-- **Cause:** sim scope. These movers need client state the server can't mirror exactly.
-- **Today:** ticks near pistons, shulker boxes, solid entities, geysers and rod pulls, and riptide ticks, are exempt:
-  the claim goes through vanilla's checks and the simulation re-seeds after (`auth/ExternalMovers.java`). Vehicles are
-  denied by default (`vehicles: deny`); under `vanilla` they are client-trusted. The design's bounded band (push ≤ 0.05
-  per pusher per tick) isn't built.
-- **Fix (sim, netcode):** build the band. During `EXTERNAL_MOVER` ticks, accept the claim only within the simulated
-  truth ± the pushers' maximum push. Count exempt ticks per reason in `inspect`.
-- **Proof (to add):** cheat rows: fly and speed while touching a piston, a shulker and a boat. Expected: bounded by
-  the band, corrected past it.
+- **Cause:** sim scope. These movers need client state the server can't always mirror exactly.
+- **Today:**
+  - Pistons and shulker boxes are banded: a push is matched only while the truth's box is in what the event moves (a
+    piston's lane, a box's lid side), and only the part of the claim along the push is adopted, with its sign, at most
+    0.51 a tick and the push's travel (a piston 1.02, a lid 0.6). Before classic audit #4, any 0.6 claim within 14
+    blocks of any event was adopted: a self-made claim-wall climb.
+  - Boats, shulkers and happy ghasts are the port's own colliders, at the boxes the client holds
+    (`auth/combat/SolidMirrors.java`). A rod pull is modelled velocity, not an exemption.
+  - Still exempt, vanilla taking the claim within `external-movers.max-move` (1.0): a solid entity in contact whose
+    client copy isn't exact (until it is re-paired) and a potent sulfur geyser (`auth/ExternalMovers.java`). Riptide is
+    exempt too (not ported). Vehicles are denied by default (`vehicles: deny`); under `vanilla`, riding is
+    client-trusted.
+- **Fix (sim, netcode):** port riptide; bound the geyser and inexact-copy windows tighter if a cheat row shows they
+  matter.
+- **Proof:**
+  - Exists: unit `ExternalMoversTest` (lane, axis, sign, travel); cheat rows "piston: pushed along its lane, the
+    claims adopted (control)", "piston: a piston 10 blocks off toggled, the claims rise 0.55 a tick (a claim-wall
+    climb)" and "piston: in the lane, the claims rise 0.55 a tick instead of moving with the push"; cheat suite 2
+    "solids: stand on a boat the server moved away (the client keeps its copy)", "solids: walk through a boat the server
+    moved into the lane (the client ignores the move)", "solids: walk through a shulker spawned ahead, pongs held (the
+    spawn's window)" and "solids: phase through a shulker the client dropped from its world" (0 mover exemptions); real
+    client `n_boat_stand`, `n_boat_slide`, `n_boat_jump` (`full1`: 0 corrections, 0 exemptions).
+  - To add: fly and speed during a geyser or inexact-copy exemption, bounded by `max-move`. "combat: attack from an
+    exempt state (riding)" covers attacks only.
 
 ### MV-6 Teleport accept spoofing and forged accepts — Solved {#mv-6}
 
 - **Today:** under enforce every teleport accept is judged as a claim, and vanilla never takes its coordinates
-  (`AuthPlayer.onTeleportAccept`). A teleport never accepted is a protocol violation past the deadline. An accept for
-  a correction never sent is a protocol violation (cheat rows 30-32, fixed in the tree).
-- **Proof:** rows 30-33 on the next run (§13).
+  (`AuthPlayer.onTeleportAccept`). An accept for a correction or a teleport never sent is a protocol violation. A
+  teleport never accepted is counted, not kicked: the truth applied it at its pong, so it gains nothing. A server
+  teleport whose pong misses the deadline is finished for the truth at the force, and its late landing re-applies
+  nothing (review 2 X2-03, X2-05: holding a pearl's pong used to hide the truth and roll it back, and relative
+  teleports were applied twice).
+- **Proof (exists):** cheat rows "teleport: accept a server teleport with spoofed coordinates", "teleport: never
+  accept a server teleport", "teleport: accept an id never sent (correction band) to drop fake walls", "teleport:
+  accept a vanilla id never sent", "non-finite: NaN accept for a server teleport", "non-finite: NaN accept for our
+  correction" and "teleport: a server teleport that reaches the client 1.2 s late, walking".
 
 ---
 
@@ -921,40 +1235,55 @@ is.
 - **Players:** Wi-Fi and long-distance players: rubber-banding, delayed knocks, freezes ([24]; "Grim is sensitive to
   poor player networks", [25]).
 - **Cause:** network. TCP head-of-line blocking turns loss into bursts.
-- **Today:** the design allows for it: ack deadlines with `ack-jitter-ticks` 4, a timer bank of 10 with a 1 s queue
-  cap, the forecast of corrections to the apply tick (`n̂ = round(rttBase/50)`). But the real client ran only on
-  localhost (RTT 0.6-15 ms, no jitter or loss: `README-enforce.md` "Limits"). The forecast with `n̂ > 1`, forced
-  entries under jitter, and freezes are unexercised.
-- **Fix (netcode):** a latency harness in the rig.
-  - A per-direction delay and jitter proxy, plus dummynet for loss.
-  - The 100 scenarios at 50, 100, 150 and 250 ms; ±10 and ±30 ms jitter; 0.5% and 2% loss.
-  - Tune `ack-jitter-ticks` and the correction forecast from the measured spread.
-- **Proof (to add), budgets:**
-  - 0 corrections and 0 forced entries at ≤ 150 ms with ±30 ms jitter;
-  - ≤ 1 correction per minute at 2% loss;
-  - every client-picked attack `VALID` (with HR-2).
+- **Today:** measured with the real client through a latency proxy (torture rig, `auth-torture.md`; the enforce-neue
+  runs):
+  - Steady links from 0 to 250 ms RTT with up to ±30 ms jitter, bandwidth caps and bursty delivery: 0 corrections, 0
+    forced entries, every claim exact, every hit `VALID`. The same for sprint block-hitting at r250j30 and r300j10, ack
+    RTT p50 9, 163, 260 and 312 ms (real client, 2026-10-22, run `classic4-bh`).
+  - Wi-Fi hiccups: after the stall fixes (torture F2-F5, review 2 X2-02 and X2-04), a 300 ms stall every 4-5 s in a
+    minute-long duel costs 0 corrections (`glitch-fix7-marathon`, seven conditions; torture `audit4`, real client,
+    2026-10-22: 0).
+  - Hitches: `audit4` took 4 corrections per hitch condition. In the run before it (`glitch-fix7-hitch`) they all came
+    from the 2 s client freeze, past `max-unacked-ms`: client hitches up to 1 s and server hitches up to 1.2 s cost 0.
+  - Hits made during a long stall can still be lost: 176 of 184 `VALID` after a 1 s stall (`stallfix3-marathon`).
+  - Real internet: the server has run on the NAS over Playit since 2026-10-21, played with Lunar; those reports
+    (block glitching, jitter) led to the block-glitch fix (WD-2, MV-4).
+  - The proxy is TCP-level, so loss shows only as what it does to TCP, a stall. No run used real loss.
+- **Fix (netcode):** make the recovery after a freeze one correction; add real loss (dummynet) to the proxy.
+- **Proof:**
+  - Exists: the torture runs above (`grid1`, `stall1`, `marathon`, `marathon2`, `hitch1`, then `stallfix3-marathon`,
+    `stallfix4-hitch`, `glitch-fix7-*`), `full1` and `classic1`, and real client, 2026-10-22, runs `classic4-bh` and
+    torture `audit4`.
+  - To add: ≤ 1 correction after a 2 s freeze; at 0.5% and 2% real loss, ≤ 1 correction per minute and every
+    client-picked attack `VALID`.
 
-### NW-2 An honest lag spike kicks the player — Open {#nw-2}
+### NW-2 An honest lag spike kicks the player — Solved {#nw-2}
 
 - **Players:** a 5-second Wi-Fi hiccup in an HCF fight disconnects you, and the combat logger dies.
-- **Cause:** policy. Past `max-unacked-ms` (1,500) the player is frozen (windows refused). At 3× (4.5 s) they are
-  kicked: "Timed out (no transaction replies)". Paper's keepalive timeout is 30 s
-  (`paper.playerconnection.keepalive`).
-- **Today:** as above (`Transactions`, `AuthPlayer.onServerTick`; cheat row 14).
-- **Fix (netcode, config):** freeze at `max-unacked-ms`, but kick only at `max-frozen-ms` (default 15,000), or at
-  Paper's keepalive timeout. A frozen player is already harmless: it doesn't move, its knocks are force-applied,
-  and it stays hittable where it froze. Keep the immediate kick for protocol violations (forged and out-of-order
-  pongs).
-- **Proof (to add):** rig with a 6 s full network block mid-walk. The client stays connected, is frozen on others'
-  screens, resumes with ≤ 1 correction, and its windows run in order.
+- **Cause:** policy. Past `max-unacked-ms` (1,500) the player was frozen and at 3× (4.5 s) kicked: "Timed out (no
+  transaction replies)". A frozen target also became unhittable once its last path step aged past the attackers' caps
+  (review 2 X2-01).
+- **Today:** a stall freezes and never kicks (`AuthPlayer.updateFrozen`, `onServerTick`). The frozen player doesn't
+  move, its knocks are force-applied at their deadline, and it stays hittable where it stopped: past the cap the judge
+  asks its truth at the capped age, which is its newest step while its `ServerPlayer` is still there and no teleport is
+  pending (`combat/TruthPaths`, `AuthPlayer.stillAt`). Paper's keep-alive timeout (30 s) disconnects a connection that
+  is really gone. Only protocol violations kick at once (forged, skipped or unknown pongs, overflow); ordering-only
+  ones kick past `client-profiles.protocol-kick-rate`.
+- **Fix:** none.
+- **Proof (exists):** cheat rows "stall: 4.5 s with nothing in or out, walking" (not kicked, frozen during the stall,
+  recovered with 1 correction), "stall: 12.0 s with nothing in or out, standing" (0 corrections), "stall: 1.0 s with a
+  server teleport sent into it" (no violation) and "combat: hit a target whose link stopped 2 s ago, where it stopped"
+  (`VALID` at 2050 ms past a 202 ms cap); the torture marathon and hitch runs: no kick after the stall fixes.
 
 ### NW-3 Tab ping doesn't match what authority judges with — Open {#nw-3}
 
 - **Players:** arguments about who is "really" lagging; ping spoofing as an excuse.
 - **Cause:** server. Tab latency comes from keepalives. Authority uses ack RTT (`rttBase`, the p10 of 256 samples,
   or of the last 32 when that is higher).
+- **Today:** tab latency is vanilla's keep-alive RTT. `debug.hud` shows the last ack RTT and the last hit's rewind,
+  and `/revival auth inspect` the base. Seconds where the ack RTT runs more than `pong-lag-ms` (150) past the
+  keep-alive are counted (`pongsBehindKeepAlive`, review E5), never acted on.
 - **Fix (netcode):** report the ack RTT (a smoothed median) as the player's latency to the tab list and the API.
-  Show `rttBase` and the rewind p50 in `debug.hud`.
 - **Proof (to add):** unit test. The tab latency equals the median ack RTT within 5 ms over a simulated stream.
 
 ---
@@ -967,26 +1296,31 @@ is.
 - **Cause:** server load.
   - Movement simulation for everyone.
   - Mirrors per viewer and target.
-  - K2 paths: one move per tick per pair within 24 blocks, against vanilla's one every 2 ticks.
+  - K paths: one move per tick per pair within 24 blocks, against vanilla's one every 2 ticks.
   - One ping bundle per connection per tick.
   - Visibility rays.
   - Death drops, potions and arrows.
-- **Today:** micro-benchmarks only:
-  - simulation 5.9-7.6 µs per player tick with 0 allocation (`auth-sim.md` §5);
-  - `MirrorBook` 66 ns per target per viewer tick;
-  - `HitValidator` 0.6 µs per attack among 20;
-  - `PathFeed` 46 ns per pair per tick (`auth-combat.md` §3.4).
-
-  No whole-server run has more than 2 players under authority.
-- **Fix (netcode):** a stress harness.
-  - 50, 100 and 200 `FakeClient`s under enforce in one 30 × 30 arena (everyone within `exact-radius`).
-  - Scripted fights: strafing, sprint hits, pots, pearls, deaths with full inventories.
-  - Plus a socket variant for real bytes.
-  - Record MSPT p50/p99, authority's share of MSPT (per-subsystem timers in `AuthStats`), outbound bytes/s per
-    connection, pongs per tick, and the GC allocation rate.
-  - A/B: `exact-radius` 24 against 0.
-- **Proof (to add), budgets:** MSPT p99 < 25 ms at 100 players; authority ≤ 15% of MSPT; bandwidth ≤ 2× vanilla
-  cadence; 0 timer refusals on honest fake clients.
+- **Today:** measured with honest bots on real TCP playing 1.7 HCF in one arena (`auth-load.md`, the merged build
+  `69b7b5f6`):
+  - 20 and 50 bots: 0 corrections, every compared claim exact, every hit `VALID` (5,466 and 17,447), 0 forced entries.
+    The server thread runs 0.09 and 0.15 cores; authority costs about 100 µs per player per tick. Down 54 KiB/s per
+    player at 50 (vanilla, `mode off`, sent 96 on the earlier jar).
+  - 100 bots (`auth-load.md`, "Stall re-run on the classic build", run `audit7-hitch100`, the current tree): MSPT mean
+    6.4 ms, p99 7.1 ms. Server hitches of 450 ms and 2.3 s were injected: every bot was back to 0 corrections within 6 s
+    and 7 s, and none looped (the 09:30 build left 5 bots looping after a 441 ms hitch and 47 after a 2.3 s one).
+    98.6% of judged hits `VALID` (the rest mostly `MISSED` inside the correction bursts). Forced entries are still about
+    700 a second, from the in-JVM bots' ack RTT.
+  - The vanilla locator bar is the largest O(N²) cost: `gamerule locator_bar false` cut bandwidth by 55% at 50.
+  - Memory: no leak; players who quit are released (review 2 PT2-02).
+- **Fix (netcode, config):**
+  - Separate the server's Netty from the bots' (bots in a second JVM, per-bot forced counts and ack-RTT p99), to see
+    whether the forced entries at 100 are the server's.
+  - `gamerule locator_bar false` on PvP servers.
+  - Re-run the matrix on the current tree, plus 50 bots at about 125 ms RTT on the new rewind cap, 100 with the locator
+    bar off, and 200.
+- **Proof, budgets:** met: at 100 players every bot back to 0 corrections within 10 s of a server hitch (6 s after
+  450 ms, 7 s after 2.3 s), MSPT p99 < 25 ms (7.1 ms), bandwidth ≤ 2× vanilla (below vanilla). To add: ≥ 99% of honest
+  hits `VALID` at 100 through a stall (98.6%), 0 `REWIND` for 50 bots at 125 ms, and 200 players.
 
 ### SV-2 Server lag eats hits — Partial {#sv-2}
 
@@ -994,21 +1328,23 @@ is.
 - **Cause:** server clock. During a stall, clients keep ticking. Their windows queue and are judged correctly, against
   the client tick each click was made in. But damage windows only count server ticks, so clicks from queued windows
   meet windows that should already have opened by real time. The knock then goes out late.
-- **Today:** verdicts are exact and the timer allows bursts (bank 10), so hits are refused for the right reason, not
-  lost to bad geometry. Damage cadence is still server-tick-based (`DamageWindows`, `damageCooldownTime`).
+- **Today:** verdicts no longer charge a hitch to the attacker: rewind ages are on the lag-compensation clock
+  (`Authority.clockMillis`, torture F6), and a stall's burst drains at once (F4). On the torture rig, server hitches of
+  0.3-1.2 s cost 0 corrections and every hit stayed `VALID` (`stallfix4-hitch`). Damage cadence is still
+  server-tick-based (`DamageWindows`, `damageCooldownTime`).
 - **Fix (combat):** for legacy melee between players, keep each victim's melee window in wall-clock milliseconds
   (`openAtMs = hitMs + windowTicks × 50`). Check it in `revivalHurtServer` in place of the tick counter, so a stall
-  doesn't stretch immunity. Leave vanilla's counter for the hurt animation and plugins. Neue's buffer (HR-6) covers
-  short stalls too.
+  doesn't stretch immunity. Leave vanilla's counter for the hurt animation and plugins. The click buffer of
+  `classic-capped` and `neue` (HR-6) covers short stalls too.
 - **Proof (to add):** lag-injection live test. A plugin sleeps the main thread 200 ms every 40 ticks while a
   `FakeClient` combos at 12 CPS. Landed fresh hits per second ≥ 1.95, against 2.00 without lag. Today, measure the
   loss first.
 
 ### SV-3 Leaf and Paper settings that drop or delay knockback — Partial {#sv-3}
 
-- **Today:** authority refuses to start with `async-entity-tracker` or `parallel-world-ticking`.
-  `reduce-entity-motion-packets` (can drop knockback), `OptimizeNonFlushPacketSending` and `use-legacy-tracker-ticking`
-  are only documented (`leaf-defaults.md` §1b-1c).
+- **Today:** authority refuses to start with `async-entity-tracker` or `parallel-world-ticking` (live "authority
+  refuses to start with Leaf's async tracker"). `reduce-entity-motion-packets` (can drop knockback),
+  `OptimizeNonFlushPacketSending` and `use-legacy-tracker-ticking` are only documented (`leaf-defaults.md` §1b-1c).
 - **Fix (config):** refuse (stay off, log once) with `reduce-entity-motion-packets` or `reduce-entity-move-packets`
   on. Warn on `OptimizeNonFlushPacketSending`.
 - **Proof (to add):** unit test of the refusal; a live run with each flag on shows `/revival auth status` refusing.
@@ -1017,36 +1353,48 @@ is.
 
 - **Players:** "Internal server error" in a fight.
 - **Cause:** a port exception outside the guarded `sim.tick` (`README-enforce.md` root cause 3).
-- **Today:** every simulation and combat call in a window falls back to the client's claim for that tick and re-seeds
-  (`auth-netcode.md` "Enforce extras").
+- **Today:** every simulation and combat call in a window (a tick, a drain entry, a correction, an attack's judge)
+  falls back to the client's claim for that tick and re-seeds (`auth-netcode.md` "Enforce extras"). Turning authority
+  off and back on no longer throws in activation (review 2 R2C-01: `ArrivalStamps`' handler is `@Sharable`, and a
+  refusing pipeline falls back to main-thread time); before, it kicked everyone online.
 - **Fix:** none in code.
-- **Proof (to add):** fault injection. A test hook throws in each guarded path (reconcile, belief, correction, apply,
-  judge, drain) once per 100 windows over a 5-minute fight: 0 kicks, re-seeds counted.
+- **Proof:**
+  - Exists (R2C-01): unit `ArrivalStampsTest.installsAgainAfterAnUninstall`.
+  - To add: fault injection. A test hook throws in each guarded path (reconcile, belief, correction, apply, judge,
+    drain) once per 100 windows over a 5-minute fight: 0 kicks, re-seeds counted.
 
 ### SV-5 Plugins and anticheats that write physics packets around the choke point — Partial {#sv-5}
 
 - **Players:** rubber-banding when another plugin teleports or knocks players.
 - **Cause:** PacketEvents, ProtocolLib or Grim writing velocity, teleports or blocks directly.
-- **Today:** `auth/net/BypassAuditor.java` notices them. Blocks get upper-bound timing; teleports and velocity mark
-  the player for resync. GrimAC's movement, velocity and setback handling must be off for players under authority.
+- **Today:** `auth/net/BypassAuditor.java` notices them (as `Packet` objects or pre-encoded). Blocks get upper-bound
+  timing; teleports and velocity mark the player for resync. GrimAC's movement, velocity and setback handling must be
+  off for players under authority (warned once when its packets show up).
 - **Fix (config, core):** route core's knockback and teleports through Bukkit (the choke point). Document the Grim
   config.
-- **Proof (to add):** live. A plugin sends `SetEntityMotion` through PacketEvents: counted, resynced, ≤ 1 correction.
+- **Proof:**
+  - Exists: unit `BypassAuditorTest` (packet level, pre-encoded, skipped expectations).
+  - To add: live. A plugin sends `SetEntityMotion` through PacketEvents: counted, resynced, ≤ 1 correction.
 
-### SV-6 Stock movement checks fight the truth — Partial {#sv-6}
+### SV-6 Stock movement checks fight the truth — Solved {#sv-6}
 
 - **Players:** a player knocked off a ledge gets "moved too quickly" setbacks in a loop (`README-enforce.md` root
   cause 4).
 - **Today:** patch 1012's `revivalApplyTruth` skips Paper's moved-too-quickly, moved-wrongly and clipped-into-block
-  checks for the truth. The last stock-checks run (`stock2`) predates that fix.
-- **Proof (to add):** re-run `enforce.py --stock-checks`. Expected: 0 setbacks on the second player in
-  `attack_sprint_hits`.
+  checks for the truth. The truth's move skips the second collision pass while the `ServerPlayer` is where the last
+  truth write left it (`Entity.revivalMoveResolved`; review 2 R2C-08: after a server push the collided branch runs).
+- **Fix:** none.
+- **Proof (exists):** live "auth: projectile knocks on a running victim reach client and truth at their ack tick"
+  checks that Paper's movement checks never judged a truth under enforce (`PlayerFailMoveEvent`: 0); `TruthPathCheck`
+  (the truth path equals the claim's branch in state, events and packets over 420 ticks); the torture and enforce-neue
+  rigs run with stock Spigot thresholds (0.0625 / 10) and `player_movement_check` on, and the second player under
+  authority took 0 corrections in `full1`.
 
 ---
 
 ## 12. Clients, mods and eligibility
 
-### CL-1 Lunar's Apollo combat options and PvP-client mods against the exact grammar — Open {#cl-1}
+### CL-1 Lunar's Apollo combat options and PvP-client mods against the exact grammar — Partial {#cl-1}
 
 - **Players:** most HCF players use Lunar. HCFR enabled Lunar's combat module on Arena (hcfr-core #34: "can not swing
   and pot or hitreg feels off").
@@ -1059,25 +1407,41 @@ is.
 
   So a Lunar player may have legit attacks dropped, or be corrected for a use the model said couldn't start. Not
   verified either way.
-- **Today:** no brand or Apollo awareness in `auth`.
+- **Today:**
+  - `auth/view/ClientProfile.java` reads the brand, the `lunar:apollo` channel, the Apollo combat options the server
+    pushed (by reflection, `client-profiles.apollo-rules: follow`) and Lunar's version and mods, shown by `inspect`.
+    No input rule reads it yet: it waits for a recorded Lunar session (`client-compat.md` §9.2).
+  - Kicks for packets a client sends outside the vanilla tick, `client-compat.md`'s top risk, are closed:
+    ordering-only violations (a pong after the tick's keybinds, a second input or sprint command) are counted and kick
+    only past `client-profiles.protocol-kick-rate` (20 in 60 s).
+  - A client claiming Lunar gets nothing for it: reach and autoblock are refused as for any client.
+  - The NAS world has been played with Lunar over the internet since 2026-10-21. Whether HCFR's Apollo combat options
+    were pushed there is not recorded.
 - **Fix (netcode, config, core):**
   1. Verify what each Apollo option changes in the packet stream (a Lunar session with `debug.log`).
-  2. Make the grammar and use prediction a function of the client's declared rule set. Read the brand and Apollo's
-     handshake, and take the options from what core itself sent through Apollo.
+  2. Make `ATTACK_AFTER_CLOSE`, and any future dig or use rule, read the profile: relaxed from the window the option
+     is first seen, tightened one pong plus the ack deadline after it goes (`client-compat.md` §7 N3, N5).
   3. Decide the fairness policy. Options differ between Lunar and vanilla players, so either keep Apollo combat off
      on authoritative servers, or accept the asymmetry openly.
-- **Proof (to add):** a Fabric stand-in mod that reproduces the Apollo options, driven by the rig: 0 grammar
-  violations, 0 corrections across the 100 scenarios. Then a 30-minute manual Lunar session: `grammar-violations`
-  and corrections both 0.
+- **Proof:**
+  - Exists: cheat rows "pongs: pong placed after a keybind packet" and "grammar: two PlayerInput packets in one tick"
+    (counted, not kicked); cheat suite 2 "client profile: claims Lunar (lunarclient brand, lunar:apollo registered)".
+  - To add: the Apollo stand-in in the rig agent (`client-compat.md` §9.1 R1: the miss-penalty and dig-use variants,
+    `whiff_then_click`, `refill_then_click`), with 0 corrections and no grammar violation except the expected
+    `attack-after-close`. Then a recorded 30-minute Lunar session with HCFR's Apollo options on: `grammar-violations`
+    and corrections both 0.
 
 ### CL-2 Non-26.3 clients bypass authority — Partial {#cl-2}
 
 - **Players:** ViaVersion-translated clients (1.8 via ViaRewind) and Geyser players play on vanilla handling: Paper's
   lenient reach, client-trusted movement, and different hit rules (1.8's 0.1 pick margin).
-- **Today:** `auth/Eligibility.java` turns authority off for them. Fail-open by design.
-- **Fix (config):** `authoritative.ineligible: allow | deny | separate`. In enforce worlds, deny, or route those
-  players to non-authoritative arenas.
-- **Proof (to add):** a join test with a Via-translated client under each policy.
+- **Today:** `auth/Eligibility.java` turns authority off for them (fail-open). `authoritative.ineligible: deny`
+  refuses them while the mode is enforce (review E4); the default is `allow`. hcfr-core deploys neither ViaVersion nor
+  Geyser, so no such player can join HCFR today (`client-compat.md` §10).
+- **Fix (config):** `deny` on authoritative servers, or a `separate` policy that routes those players to
+  non-authoritative arenas (not built). Check the K paths sent to an ineligible viewer (`client-compat.md` N9).
+- **Proof (to add):** a join test with a Via-translated client and a Geyser client under each policy, plus the N9
+  viewer check.
 
 ### CL-3 Other anticheats false-flag legit 1.7 play — Partial {#cl-3}
 
@@ -1100,7 +1464,7 @@ as it does now.
 
 | Limit | Why the server can't | What a light mod could do | Already in the ecosystem |
 |---|---|---|---|
-| Remote players drawn RTT + about 110 ms behind (VI-2) | Interpolation is client code | Render with K=1 or extrapolate; the server's mirror must then port the mod's renderer exactly | Extrapolate mods [18] |
+| Remote players drawn RTT + 135-170 ms behind with K2, 50-70 ms less with K1 (VI-2) | Interpolation is client code | Render with K=1 or extrapolate; the server's mirror must then port the mod's renderer exactly | Extrapolate mods [18] |
 | Knock applied on arrival (KB-3) | The client applies velocity when it drains it | Client-side rollback: re-run its own last N ticks with the knock at the tick the server stamped | None known |
 | Miss penalty, dropped click after a screen (HR-9) | `missTime` is client state | Disable it | Apollo `DISABLE_MISS_PENALTY` [20], HitDelayFix [1] |
 | 1.7 pick margin, crouch box (HR-7, HR-8) | Pick and box are client code (partly reachable through `attack_range` and pose rewrites) | 1.7 boxes and eye heights | Animatium `pick_inflation`, `old_sneak_height` [1] |
@@ -1113,63 +1477,64 @@ The realistic lever is Apollo: Lunar already exposes server-controlled combat op
 
 ## 14. Test backlog (the proofs to add)
 
-Grouped by harness. Each line points at its item.
+Grouped by harness. Each line points at its item. The proofs this list used to hold for HR-2, HR-6, IN-1, IN-5, PR-3,
+PR-8, NW-2 and SV-6 exist now (see each item).
 
 **Unit** (`./gradlew :leaf-server:runRevivalTests`):
 
-- rewind cap from p90 RTT (HR-2);
-- one-tick slot-switch rule (IN-5);
-- `ClickBucketTest`, `ClickBufferTest`, `NeueShapeTest`, `CadenceWatchTest` (HR-6, IN-1, IN-3, KB-9);
-- 1.7 throw motion and splash goldens (PR-3, PR-4);
+- `CadenceWatchTest` for detector B, `click-lock`, once it is built (IN-3);
 - tab latency from ack RTT (NW-3);
 - Leaf-flag refusal (SV-3).
 
-**Cheat suite** (`AuthCheatScenarios`). First re-run it and refresh the table in `auth-cheat-suite.md`: the table
-is from 21:45, and fixes for rows 28, 30-32, 53, 57, 60, 62 and 69-70 landed after it. New rows:
+**Cheat suite** (`AuthCheatScenarios`). Green on `classic-capped` (111/111; cheat suite 2 54/54); the table in
+`auth-cheat-suite.md` predates the classic-audit rows. New rows:
 
-- toggled fake lag (HR-2, HR-3);
-- keep-sprint and sprint-packet spoofing (SP-3);
+- keep-sprint (SP-3);
 - packet crits (MV-3);
 - the HCF block glitch with a cancelled placement (WD-1);
 - ghost-hand chest and door (WD-4);
-- one-tick pot switch (IN-5);
-- exempt-band fly and speed by a piston, a shulker and a boat (MV-5);
-- PacketEvents velocity bypass (SV-5).
+- fly and speed during a geyser or inexact-copy exemption (MV-5);
+- PacketEvents velocity bypass (SV-5);
+- `stop-sprint-on-block` on (BL-3).
 
 **Live** (`AuthLiveScenarios`):
 
 - asymmetric-latency trade order (HR-10);
-- damage-window phase (HR-11);
 - knock direction at 100 ms (KB-4);
-- rod and bow at 0/100/200 ms (PR-1);
-- pearl glitch suite (PR-7);
-- potion spawn origin (PR-5);
+- rod and snowball at 0/100/200 ms on a strafing target (PR-1);
+- the pearl glitch suite on a running server (PR-7);
+- potion spawn origin, to the bit (PR-5);
 - lag injection (SV-2);
-- fault injection (SV-4).
+- fault injection (SV-4);
+- Via and Geyser joins under each `ineligible` policy (CL-2).
 
-**Real client** (`~/Developer/tools/auth-rig/enforce`):
+**Real client** (`~/Developer/tools/auth-rig/enforce-neue`, `torture`):
 
-- the latency, jitter and loss harness over all 100 scenarios (NW-1, HR-2);
-- a 6 s network block (NW-2);
-- a dedicated far teleport (PR-8);
-- the K2 view at 30 and 45 blocks (VI-1);
+- real packet loss at 0.5% and 2%, and a 2 s freeze that recovers with ≤ 1 correction (NW-1);
+- the K view at 30 and 45 blocks (VI-1);
 - a sneaking target's box (HR-8);
 - `ATTACK_RANGE` picks (HR-7);
 - the peek test (VI-4);
-- a `--stock-checks` re-run (SV-6);
-- the Apollo stand-in mod (CL-1);
-- `whiff_then_click` reference counts (HR-9).
+- the Apollo stand-in (R1) with `whiff_then_click` and `refill_then_click` (CL-1, HR-9);
+- the first sword hit after a swap, with `hide-cooldown-on-items` on (SP-5);
+- the shared-flags echo fix at 300 ms (SP-2).
 
-**Load:** the 50/100/200-player stress harness with MSPT, bytes and GC budgets (SV-1).
+**Load** (`~/Developer/tools/auth-rig/load`): re-run on the current tree; 100 bots recovering from a 500 ms hitch,
+with the bots in a second JVM; 50 at about 125 ms RTT; 100 with the locator bar off; 200 (SV-1).
 
 **Playtest** (with `debug.hud`):
 
-- rewind and knock-apply-lag histograms per ping band (HR-2, KB-3);
+- knock-apply-lag per ping band (KB-3);
+- the victim-side rewind metric (HR-3);
 - re-pairs and inexact verdicts (VI-3);
 - damage-window split A/B (PR-6);
-- real click and rotation data to calibrate IN-3 and IN-4;
+- RedLine `potionAccuracy` before and after the legacy falloff, core's precision off (PR-4);
+- real click, rotation and jump data to calibrate IN-3, IN-4 and KB-10;
 - the GrimAC checklist (CL-3);
-- a Lunar session (CL-1).
+- a recorded Lunar session with HCFR's Apollo options on (CL-1).
+
+**1.7.10 reference** (once): a stationary straight-down Health II pot heals 7, sprinting 6; a level pearl from
+standing lands 15.3 blocks out (PR-3, PR-4; `projectiles.md` §11).
 
 ## Sources
 
@@ -1210,7 +1575,8 @@ code exists):
 18. Interpolation delay and extrapolation: https://github.com/CCPCT/Extrapolate
 19. Mouse polling: https://www.mado-hosting.com/minecraft-mods/raw-input-buffer , MC-124743
 20. Lunar Apollo combat module: https://lunarclient.dev/apollo/developers/modules/combat
-21. Mojira: MC-311974, MC-311976 (26.3 stutter), MC-302347 (visual delay), MC-297196 (knockback delay).
+21. Mojira: MC-311974, MC-311976 (26.3 stutter), MC-302347 (visual delay), MC-297196 (knockback delay), MC-69459
+    (the client copies attribute syncs).
 22. Client-side hit prediction: https://modrinth.com/project/DsL0pTWX
 23. PandaSpigot (tracker flush consolidation, tick loop): https://github.com/hpfxd/PandaSpigot
 24. Ping spikes on chunk loads: https://github.com/Tuinity/Tuinity/issues/34
@@ -1222,5 +1588,11 @@ Repository and project:
 - RevivalPaper PRs #3-#19 (issues are disabled on `hcfrevival/RevivalPaper`). hcfr-core issues #13, #34, #53, #54
   (true 1.7 crits, "not fixing"; `LegacyAttack.canCriticalAttack` already follows 1.7.10), #109, #115, #321, #354.
 - `docs/revival/auth-research/02` (client clicks and screens), `03` (interpolation), `06` (prior art).
-- Real-client evidence: `~/Developer/tools/auth-rig/README-enforce.md`, `enforce/runs/full3/probe.jsonl` (rewind
-  ages).
+- Audits and reviews: `auth-classic-audit.md` (2026-10-22, the classic lens on this checklist), `auth-review-2.md`,
+  `auth-cheat-suite-2.md`.
+- Real-client evidence: `~/Developer/tools/auth-rig/README-enforce.md` (runs `full3`, `stock2`; enforce-neue `full1`,
+  `neue2`, `classic1`), `enforce/runs/full3/probe.jsonl` (rewind ages), `auth-torture.md` (the torture rig's runs).
+  Runs of 2026-10-22 not yet written up, cited as "real client, 2026-10-22": `classic2-far`, `classic3-hi`,
+  `classic4-bh`, `classic5-stopsprint` (enforce-neue on `classic-capped`) and torture `audit4`.
+- Load: `auth-load.md` (bots on real TCP, `~/Developer/tools/auth-rig/load/runs/`).
+- Real network: the authoritative server on the NAS over Playit since 2026-10-21, played with Lunar.

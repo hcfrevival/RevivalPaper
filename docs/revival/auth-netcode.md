@@ -88,7 +88,12 @@ it decides **when** the client saw what, and feeds the simulation and the mirror
      server's own recomputation is skipped. A change the server makes on purpose marks the field "meant": its self echo
      goes out as is and the simulation takes it at the ack; every other self echo of a client-owned field says what the
      client already has. The truth's `movement_speed` has the sprint modifier only while it sprints; a sync on its way
-     that says the opposite is followed by a fresh one.
+     that says the opposite is followed by a fresh one. A self attribute sync that differs from what the client holds
+     only by the sprint modifier is not sent at all (`SelfEcho.withoutSprintOnly`, counted as `sprintSyncsDropped`): the
+     client copies any sync (MC-69459), and at 250 ms a stale one left a sprint block-hitter blocking at sprint speed.
+     Likewise a self shared-flags byte whose server-owned bits (fire, invisible, glowing) are the ones last sent is left
+     out of the echo (`flagEchoesDropped`): at 300 ms the echo of a block-hit's sprint stop landed after the re-sprint and
+     undid it in the tick of the next hit, which went out without the sprint knock.
    - The server's motion is the simulation's (written with the truth, except while a server velocity waits for the
      tracker): `getVelocity`, 26.x knockback and the move checks read it; `motion-model: authoritative` knocks from it.
      The sprint knock arms from the simulated sprint, and the attack reads the sprint the client attacked with.
@@ -162,8 +167,9 @@ it decides **when** the client saw what, and feeds the simulation and the mirror
   (its pong already cleared it, but the client applies it in that tick: torture r80down300w, a knock forced one window
   before its pong was corrected as if the client would never have it, and five corrections chased the double). Corrections forecast the client with
   every knock still on its way to it (logged-unacked, torture F5), and an absolute one is held while any is. Once every forced entry has landed, the next correction is absolute and the viewer's mirrors are
-  re-paired (load P0: never while its acks lag). Past `max-unacked-ms` the player is frozen (windows refused); three times that, kicked in
-  enforce. `rttBase` (`RttBaseline`) is the 10th percentile of the last 256 ack round trips, or of the last 32 when
+  re-paired (load P0: never while its acks lag). Past `max-unacked-ms` the player is frozen (windows refused) for as long as
+  the stall lasts, and never kicked for it (pvp-issues NW-2: in HCF a kick is a combat-logger death); Paper's keep-alive
+  timeout still applies. `rttBase` (`RttBaseline`) is the 10th percentile of the last 256 ack round trips, or of the last 32 when
   that is higher: a ping that went up (Wi-Fi, a route change) is followed once 29 of the last 32 acks are above the
   base, about 1.5 s, instead of the 12 s the long window alone took (every entry force-applied meanwhile, mirrors
   inexact, hits UNKNOWN). It falls through the long window, once a tenth of its samples are lower; a lone spike moves
@@ -188,7 +194,7 @@ it decides **when** the client saw what, and feeds the simulation and the mirror
 | 1011 | `SCPLI.handlePong` | `Authority.onPong` (re-enqueue ours onto the main packet queue, then ack) |
 | 1011 | `SCPLI.send` | `Authority.send` in place of `connection.send` |
 | 1011 | `SCPLI.suspendFlushing` / `resumeFlushing` | per-tick bundle open / sent (or heartbeat) |
-| 1011 | `SGPLI.tick` | `onServerTick` (queued windows, unanswered-ping freeze/kick) |
+| 1011 | `SGPLI.tick` | `onServerTick` (queued windows, the unanswered-ping freeze) |
 | 1011 | `SGPLI.handle{PlayerInput, MovePlayer, PlayerCommand, ClientTickEnd, AcceptPlayerLoad, SetCarriedItem, PlayerAction, UseItem, UseItemOn, Interact, Punch, PickItemFromBlock, PickItemFromEntity, PlayerAbilities, ContainerClick, ContainerButtonClick, SetCreativeModeSlot, BundleItemSelected, ClientCommand}` | `if (revivalAuth.intercept(packet)) return;` |
 | 1011 | `SGPLI.handleAcceptTeleportPacket` | `onTeleportAccept` (our correction ids skip vanilla) |
 | 1011 | `SGPLI.internalTeleport` | `onTeleportSent` (server teleports are transactions) |
@@ -266,7 +272,7 @@ All under `authoritative.` (defaults in brackets):
 | `mirror-history-ticks` [16] | lag compensation history per viewer-target pair; hits read their own tick's box and measure the rewind from its stamp, so 16 outlasts the 12-tick rewind cap (64 before config v4, migrated; review PT-16) |
 | `external-movers.block-window-ticks` [12], `block-range` [14], `band` [0.6], `drift-cap` [1.6], `entity-range` [0.1], `max-move` [1.0], `geyser-depth` [24] | pushes (pistons, shulker boxes, shulker lids) while the truth's box is in what they move (a piston's lane, `block-range` long, a box's lid side): of a claim within the band only the part along the push, with its sign, at most 0.51 a tick and the push's travel (a piston 1.02, a lid 0.6), drift-capped (classic audit #4); a solid entity in contact whose client copy isn't exact, and geysers, exempt, vanilla's claim within `max-move` |
 | `visibility.enabled` [false], `always-visible-distance` [8], `check-interval-ticks` [2], `hide-after-checks` [2], `max-speed` [1.0], `max-checks-per-tick` [512], `effect-reach` [1.5] | anti-ESP; the check budget is server-wide |
-| `stats.anomaly-alerts` [true], `double-click-ratio` [1.0: 0.3 flagged butterfly clickers, classic audit #12; config v6 moves 0.3 up], `double-click-min-attack-ticks` [40], `aim-gcd-miss-ratio` [0.5], `aim-min-turns` [200], `click-streak-ticks` [100], `grammar-violations` [3], `pong-lag-ms` [150] | `AuthInputAnomalyEvent` thresholds; seconds of pongs behind the keep-alive (counted) |
+| `stats.anomaly-alerts` [true], `double-click-ratio` [1.0: 0.3 flagged butterfly clickers, classic audit #12; config v6 moves 0.3 up], `double-click-min-attack-ticks` [40], `aim-gcd-miss-ratio` [0.5], `aim-min-turns` [200], `click-streak-ticks` [100], `grammar-violations` [3], `jump-reset-share` [0.65], `jump-reset-base-ratio` [4.0], `jump-reset-min-knocks` [40], `pong-lag-ms` [150] | `AuthInputAnomalyEvent` thresholds (jump-reset: the share of grounded knocks whose own window pressed jump, at or past `jump-reset-share` and `jump-reset-base-ratio` times the player's own grounded jump rate, classic audit #8); seconds of pongs behind the keep-alive (counted) |
 | `trace.directory` [`traces`], `debug.hud` [false], `debug.hud-interval-ticks` [5], `debug.log` [false] | |
 
 Knockback profiles take `motion-model: authoritative` (knock a player under authority from its simulated motion; others
