@@ -290,9 +290,11 @@ public final class WorldView implements gg.hcfrevival.revival.auth.sim.SimWorld,
     /**
      * Whether a box's footprint touches a chunk the server has loaded that the client's chunk record lacks: our
      * bookkeeping, almost certainly, for a player claiming to stand there (the client holds its own chunk before it
-     * reports itself loaded).
+     * reports itself loaded). Only a chunk the server has sent ({@code sentChunkKeys}, Moonrise's set; null when not
+     * known) counts: a client that holds back its chunk-batch acks stops getting chunks while the server keeps loading
+     * them, and walking into one it was never sent must not hand its ticks to vanilla's checks.
      */
-    public boolean unknownChunkUnder(final net.minecraft.world.phys.AABB box) {
+    public boolean unknownChunkUnder(final net.minecraft.world.phys.AABB box, final it.unimi.dsi.fastutil.longs.@Nullable LongSet sentChunkKeys) {
         if (!this.chunksKnown || this.level == null) {
             return false;
         }
@@ -302,7 +304,8 @@ public final class WorldView implements gg.hcfrevival.revival.auth.sim.SimWorld,
         final int maxZ = net.minecraft.util.Mth.floor(box.maxZ) >> 4;
         for (int cx = minX; cx <= maxX; cx++) {
             for (int cz = minZ; cz <= maxZ; cz++) {
-                if (!this.hasChunk(cx, cz) && this.level.getChunkSource().getChunkAtIfLoadedImmediately(cx, cz) != null) {
+                if (!this.hasChunk(cx, cz) && this.level.getChunkSource().getChunkAtIfLoadedImmediately(cx, cz) != null
+                    && (sentChunkKeys == null || sentChunkKeys.contains(ca.spottedleaf.moonrise.common.util.CoordinateUtils.getChunkKey(cx, cz)))) {
                     return true;
                 }
             }

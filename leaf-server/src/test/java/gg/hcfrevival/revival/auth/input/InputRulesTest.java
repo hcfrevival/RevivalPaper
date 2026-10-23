@@ -60,6 +60,24 @@ class InputRulesTest {
     }
 
     @Test
+    void anAttackAfterACloseIsFineWhenTheServerTurnedTheMissPenaltyOff() {
+        // client-compat L1: Lunar with Apollo's disable-miss-penalty (pushed by the server) may land that click
+        final InputRules rules = new InputRules();
+        rules.screenEatsClick(false);
+        rules.startWindow(false);
+        assertEquals(OK, rules.check(CONTAINER_CLOSE, false));
+        assertEquals(OK, rules.check(ATTACK, false));
+        // the other rules still hold for it
+        rules.startWindow(false);
+        assertEquals(OK, rules.check(USE, false));
+        assertEquals(InputRules.ATTACK_AFTER_USE, rules.check(ATTACK, false));
+        rules.screenEatsClick(true);
+        rules.startWindow(false);
+        assertEquals(OK, rules.check(CONTAINER_CLOSE, false));
+        assertEquals(InputRules.ATTACK_AFTER_CLOSE, rules.check(ATTACK, false));
+    }
+
+    @Test
     void clickAndCloseEveryTickWhileWalkingNeverOpenedAScreen() {
         // Review E8: [click, close] in every window with the keys held down is an inventory move
         final InputRules rules = new InputRules();

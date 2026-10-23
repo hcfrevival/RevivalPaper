@@ -11,11 +11,15 @@ package gg.hcfrevival.revival.config;
  * @param ignoreArmorBypassingDamage fall, fire ticks, magic and other armor-bypassing damage isn't reduced, as in 1.7.10
  * @param useSpeedMultiplier movement speed while blocking, sent to clients with the decoration
  * @param rearmSprintOnBlock starting a block re-arms the sprint knock, like the 1.7 block-hit
- * @param stopSprintOnBlock under authority (enforce), a legacy block stops the player's sprint, as 1.7 did (its blocking
- *                          walk, x0.2, fell under the 0.8 sprint threshold): a 26.3 client keeps sprinting through a block
- *                          (about 30% faster than 1.7's blocking walk, and the sprint-jump boost). Releasing the block with
- *                          the sprint key held sprints again, which re-arms the sprint knock itself (the 1.7 block-hit),
- *                          so the emulated re-arm above is skipped while this is on. Off by default (classic audit #6)
+ * @param stopSprintOnBlock under authority (enforce), a legacy block held {@code stopSprintAfterTicks} stops the player's
+ *                          sprint, as 1.7 did (its blocking walk, x0.2, fell under the 0.8 sprint threshold): a 26.3 client
+ *                          keeps sprinting through a block (about 30% faster than 1.7's blocking walk, and the sprint-jump
+ *                          boost). Off by default (classic audit #6)
+ * @param stopSprintAfterTicks the block's tick that stops the sprint. The stop is a server write the client gets a round
+ *                             trip later; sent at a block-hit's first tick, it landed after the release at 250-300 ms and
+ *                             cancelled the re-sprint in the tick of the next hit, which went out without the sprint knock
+ *                             (1 in 4). A block-hit shorter than this keeps 26.3's sprint for its tick or two and gets its
+ *                             knock from {@code rearmSprintOnBlock}; a block held longer walks as in 1.7
  */
 public record SwordBlockingSettings(
     boolean enabled,
@@ -25,7 +29,8 @@ public record SwordBlockingSettings(
     boolean ignoreArmorBypassingDamage,
     double useSpeedMultiplier,
     boolean rearmSprintOnBlock,
-    boolean stopSprintOnBlock
+    boolean stopSprintOnBlock,
+    int stopSprintAfterTicks
 ) {
 
     static final String PATH = "sword-blocking.";
@@ -39,7 +44,8 @@ public record SwordBlockingSettings(
             reader.getBoolean(PATH + "ignore-armor-bypassing-damage", true),
             Math.clamp(reader.getDouble(PATH + "use-speed-multiplier", 0.2), 0.0, 1.0),
             reader.getBoolean(PATH + "rearm-sprint-on-block", true),
-            reader.getBoolean(PATH + "stop-sprint-on-block", false)
+            reader.getBoolean(PATH + "stop-sprint-on-block", false),
+            Math.max(1, reader.getInt(PATH + "stop-sprint-after-ticks", 4))
         );
     }
 }

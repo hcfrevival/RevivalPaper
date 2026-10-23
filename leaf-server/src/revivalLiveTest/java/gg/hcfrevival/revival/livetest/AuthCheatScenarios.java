@@ -101,6 +101,7 @@ import org.bukkit.event.EventPriority;
 import org.bukkit.event.HandlerList;
 import org.bukkit.event.Listener;
 import org.bukkit.event.block.BlockBreakEvent;
+import org.bukkit.event.block.BlockPlaceEvent;
 import org.bukkit.event.inventory.InventoryClickEvent;
 import org.bukkit.event.player.PlayerKickEvent;
 import org.bukkit.event.player.PlayerMoveEvent;
@@ -172,6 +173,12 @@ final class AuthCheatScenarios {
     private final Map<UUID, String> kicks = new HashMap<>();
     private final Map<UUID, java.util.Set<String>> anomalies = new HashMap<>();
     private final Set<Long> protectedBlocks = new HashSet<>();
+    // Placements a plugin cancels (BlockPlaceEvent), by position: HCF claims and combat walls
+    private final Set<Long> deniedPlacements = new HashSet<>();
+    // What the honest control of a cheat row measured, for the cheat to be judged against (null or NaN until it ran)
+    private @Nullable Vec3 keepSprintTruth;
+    private @Nullable Vec3 keepSprintKnock;
+    private float honestHitDamage = Float.NaN;
     private double moveMaxY;
     private double moveMinY;
     private double moveMaxZ;
@@ -193,7 +200,7 @@ final class AuthCheatScenarios {
         // Joins (load-test regression 2026-10-22: truths fell through the floor of a crowd joining together)
         this.crowdJoin(5, 0.0, "5 players join 2 ticks apart on a floor, then walk");
         this.crowdJoin(1, 160.0, "a player joins into chunks still being sent, then walks");
-        this.crowdJoin(3, 320.0, "3 bots that report loaded before their chunk arrives join, then walk (the load-test regression)", true);
+        this.crowdJoin(3, 320.0, "3 bots that report loaded once their chunk is sent, before it arrives, join, then walk (the load-test regression)", true);
 
         // Movement
         this.fly();
@@ -293,6 +300,11 @@ final class AuthCheatScenarios {
         this.jumpReset("honest: a player who jumps on 3% of its ground ticks at random, knocked as often (control)", false);
         // Classic audit #13: a pot refill through the inventory screen mid-fight, as an honest client does it
         this.potRefill();
+        // pvp-issues SP-3, MV-3: cheats authority closes by design, each against its honest control
+        this.keepSprint("keep-sprint: an honest sprint hit (control)", false);
+        this.keepSprint("keep-sprint: the client skips its own x0.6 and sprint stop after a sprint hit", true);
+        this.packetCrit("crits: an honest hit standing on the ground (control)", false);
+        this.packetCrit("crits: claims a 0.0625 hop off the ground before the hit (packet criticals)", true);
         // Classic audit #9: eating and drinking under enforce, as an honest client does them
         this.consume("honest: a golden apple eaten under enforce (control)", false);
         this.consume("honest: a Speed potion drunk under enforce, then a sprint (control)", true);
@@ -310,6 +322,11 @@ final class AuthCheatScenarios {
         this.honeyUnderfoot();
         this.protectedWallHonest(false);
         this.protectedWallHonest(true);
+        // pvp-issues WD-1: HCF's block glitch, a cancelled placement climbed over a 2-high wall, against the same block allowed
+        this.blockGlitch("world: a block placed in front of a 2-high wall, climbed and over (control)", false);
+        this.blockGlitch("world: a block a plugin cancels, its ghost climbed over a 2-high wall (block glitch)", true);
+        this.unsentChunkWalk();
+        this.neverLoaded();
 
         // Self echo
         this.sprintEcho("self-echo: STOP_SPRINTING before acking the sprint attribute sync", false);
@@ -2535,6 +2552,240 @@ final class AuthCheatScenarios {
         this.finish(id);
     }
 
+    // pvp-issues SP-3: KeepSprint skips the client's own x0.6 and sprint stop after its sprint hit (Player.attack). The truth
+    // makes them anyway (Simulation.clientAttack): the claims run ahead of it and are corrected, and the knock is the one an
+    // honest hit gives. The control runs first and leaves its truth and knock as the reference.
+    private void keepSprint(final String id, final boolean cheat) {
+        this.combatJoin(id);
+        this.step(1, id + ": a sword, the victim ahead, sprint", () -> {
+            this.open(id);
+            this.give(this.c, new ItemStack(Items.DIAMOND_SWORD));
+            this.place(0.0, 3.4);
+            this.c.forcePosition = true;
+            this.c.keys = FORWARD_SPRINT;
+        });
+        this.step(5, id + ": the hit", () -> {
+            this.base = this.snap(this.c);
+            this.c.noAttackPrediction = cheat;
+            this.v.lastKnock = null;
+            this.attack(this.c, 1);
+        });
+        this.step(4, id + ": let go", () -> this.c.keys = NONE);
+        this.judge(1, id, () -> {
+            final Snap d = this.delta(this.c);
+            final Simulation s = this.c.auth.simulation();
+            final Vec3 truth = new Vec3(s.x(), s.y(), s.z());
+            final Vec3 knock = this.v.lastKnock;
+            this.note("knock " + (knock == null ? "none" : f(knock.horizontalDistance()) + " across, " + f(knock.y) + " up") + ", corrections "
+                + d.corrections());
+            if (!cheat) {
+                this.label = "CONTROL";
+                this.honestExpect(knock != null && knock.horizontalDistance() > 0.85, "the armed sprint knock landed");
+                this.honestExpect(d.corrections() == 0, "no correction (" + d.corrections() + ")");
+                this.keepSprintTruth = truth;
+                this.keepSprintKnock = knock;
+                return;
+            }
+            this.expect(d.corrections() >= 1, "the client that skipped its slowdown was corrected (" + d.corrections() + ")");
+            if (this.keepSprintTruth != null && this.keepSprintKnock != null && knock != null) {
+                final double gap = truth.distanceTo(this.keepSprintTruth);
+                this.expect(gap <= EPS, "the truth is the honest hit's, x0.6 and all (gap " + f(gap) + ")");
+                this.expect(knock.distanceTo(this.keepSprintKnock) <= 1.0E-6, "the knock is the honest hit's (" + f(knock.horizontalDistance()) + " across)");
+            } else {
+                this.expect(false, "the control ran first (truth " + this.keepSprintTruth + ", knock " + this.keepSprintKnock + ", this knock " + knock + ")");
+            }
+        });
+        this.honestAfter(id, NONE, 0);
+        this.finish(id);
+    }
+
+    // pvp-issues MV-3: packet criticals claim a small hop (y +0.0625, then back down, not on the ground) in the ticks before
+    // the hit, so a server that trusts claims has the attacker falling when the attack (sent ahead of its tick's move) lands:
+    // a critical. The truth never left the ground: no crit, the damage is the honest hit's, the hop is corrected.
+    private void packetCrit(final String id, final boolean cheat) {
+        this.combatJoin(id);
+        this.step(1, id + ": a sword, the victim in reach", () -> {
+            this.open(id);
+            this.give(this.c, new ItemStack(Items.DIAMOND_SWORD));
+            this.place(0.0, 2.8);
+            this.c.forcePosition = true;
+            this.c.keys = NONE;
+        });
+        final float[] health = new float[1];
+        this.step(5, id + ": the hop and the hit", () -> {
+            this.base = this.snap(this.c);
+            this.track = new Track();
+            this.probe = () -> this.track.sample(this.c);
+            health[0] = this.v.player.getHealth();
+            final int[] k = {0};
+            this.c.before = x -> {
+                final int t = k[0]++;
+                if (cheat && t < 2) {
+                    x.moveOverride = new ServerboundMovePlayerPacket.Pos(new Vec3(x.model.x(), x.model.y() + (t == 0 ? 0.0625 : 0.0), x.model.z()), false, false);
+                }
+                if (t == 2) {
+                    this.attack(x, 1);
+                    x.before = null;
+                }
+            };
+        });
+        this.judge(10, id, () -> {
+            final Snap d = this.delta(this.c);
+            final float dealt = health[0] - this.v.player.getHealth();
+            this.note("dealt " + f(dealt) + ", truth up to y +" + f(this.track.truthMaxY - this.gy) + ", corrections " + d.corrections());
+            if (!cheat) {
+                this.label = "CONTROL";
+                this.honestExpect(dealt > 0.0F, "the hit landed");
+                this.honestExpect(d.corrections() == 0, "no correction (" + d.corrections() + ")");
+                this.honestHitDamage = dealt;
+                return;
+            }
+            this.expect(this.track.truthMaxY <= this.gy + EPS, "the truth never left the ground (y +" + f(this.track.truthMaxY - this.gy) + ")");
+            this.expect(!Float.isNaN(this.honestHitDamage) && Math.abs(dealt - this.honestHitDamage) < 1.0E-4F,
+                "no critical: the damage is the honest hit's (" + f(dealt) + " against " + f(this.honestHitDamage) + ")");
+            this.expect(d.corrections() >= 1, "the hop was corrected (" + d.corrections() + ")");
+        });
+        this.honestAfter(id, NONE, 0);
+        this.finish(id);
+    }
+
+    // pvp-issues WD-1, HCF's block glitch: place a block where a plugin cancels the placement (a claim, a combat wall) and climb
+    // the client's ghost of it over a 2-high wall. The truth never stands on a placement the server denied
+    // (honor-denied-predictions false), so it stays behind the wall; the control places the same block for real and climbs
+    // over. The cheat keeps its ghost past the server's ack, the way a slow ack or a modified client would.
+    private void blockGlitch(final String id, final boolean denied) {
+        this.begin(id, () -> this.wall(2, 2, Blocks.STONE.defaultBlockState()));
+        final BlockPos[] spot = new BlockPos[1];
+        this.step(1, id + ": stone", () -> {
+            this.give(this.c, new ItemStack(Items.STONE, 16));
+            // the crosshair on the top face of the floor block one ahead (eye 1.62 above it, 1.0 away)
+            this.c.pitch = (float) Math.toDegrees(Math.atan2(1.62, 1.0));
+        });
+        this.arm(id, () -> {
+            spot[0] = new BlockPos(this.ox, this.gy, this.oz + 1);
+            if (denied) {
+                this.deniedPlacements.add(spot[0].asLong());
+            }
+            this.c.forcePosition = true;
+            this.c.keepGhostBlocks = denied;
+            final BlockPos floor = spot[0].below();
+            final int[] k = {0};
+            this.c.before = x -> {
+                final int t = k[0]++;
+                if (t == 0) {
+                    final int sequence = ++x.sequence;
+                    x.actions.add(new ServerboundUseItemOnPacket(InteractionHand.MAIN_HAND,
+                        new BlockHitResult(new Vec3(floor.getX() + 0.5, this.gy, floor.getZ() + 0.5), Direction.UP, floor, false), sequence));
+                    x.predictPlace(spot[0], Blocks.STONE.defaultBlockState(), sequence);
+                } else if (t == 2) {
+                    x.pitch = 0.0F;
+                    x.keys = new Input(true, false, false, false, true, false, false); // forward and jump: onto it, then over the wall
+                }
+            };
+        });
+        this.judge(40, id, () -> {
+            final Snap d = this.delta(this.c);
+            final boolean placed = !this.level.getBlockState(spot[0]).isAir();
+            this.note("the block " + (placed ? "placed" : "not placed") + "; truth up to y +" + f(this.track.truthMaxY - this.gy) + ", z +"
+                + f(this.track.truthMaxZ - this.oz) + "; claims up to y +" + f(this.track.claimMaxY - this.gy) + "; corrections " + d.corrections());
+            if (!denied) {
+                this.label = "CONTROL";
+                this.honestExpect(placed, "the block was placed");
+                this.honestExpect(this.track.truthMaxY >= this.gy + 2.0 - EPS, "the truth climbed onto the wall (y +" + f(this.track.truthMaxY - this.gy) + ")");
+                this.honestExpect(d.corrections() == 0, "no correction (" + d.corrections() + ")");
+                return;
+            }
+            this.expect(!placed, "the plugin cancelled the placement");
+            this.expect(this.track.claimMaxY >= this.gy + 1.0 - EPS, "the client stood on its ghost (claims up to y +" + f(this.track.claimMaxY - this.gy) + ")");
+            this.expect(this.track.truthMaxY <= this.gy + 1.2523 + 1.0E-3, "the truth only jumped from the floor (y +" + f(this.track.truthMaxY - this.gy) + ")");
+            this.expect(this.track.truthMaxZ < this.oz + 2.0 - 0.3 + EPS, "the truth stayed behind the wall (z +" + f(this.track.truthMaxZ - this.oz) + ")");
+            this.expect(d.corrections() >= 1, "the client was corrected (" + d.corrections() + ")");
+            this.expect(!this.c.kicked, "not kicked");
+        });
+        this.honestAfter(id, NONE, 0);
+        this.finish(id);
+    }
+
+    // A client that never acks a chunk batch stops getting chunks while the server keeps loading them around it. Teleported
+    // next to a chunk border (the hold sends the chunk under it, nothing else), it walks into the loaded chunk it was never
+    // sent while claiming 3 blocks a tick on the ground. The chunk-unknown exemption is for our record missing a chunk the
+    // client holds: it mustn't hand ticks over a chunk Moonrise never sent to vanilla's checks
+    private void unsentChunkWalk() {
+        final String id = "chunks: never acks a chunk batch, walks into a loaded chunk it was never sent, claiming 3 blocks a tick";
+        this.begin(id, () -> {
+        });
+        final double[] start = new double[1];
+        final double[] far = {Double.NEGATIVE_INFINITY, Double.NEGATIVE_INFINITY};
+        final long[] exempt = new long[1];
+        this.arm(id, () -> {
+            this.c.noChunkAcks = true;
+            this.c.forcePosition = true;
+        });
+        this.step(5, id + ": teleport 1.5 short of a chunk border", () ->
+            this.c.player.connection.teleport(this.ox + 400.5, this.gy, Math.floorDiv(this.oz, 16) * 16 + 14.5, 0.0F, 0.0F));
+        this.step(40, id + ": walk across, the claims racing ahead", () -> {
+            final Simulation s = this.c.auth.simulation();
+            start[0] = s.z();
+            exempt[0] = this.c.auth.stats().exempt(AuthStats.EXEMPT_CHUNK_UNKNOWN);
+            this.c.keys = FORWARD;
+            final double[] claim = {s.z()};
+            this.c.cheat = x -> {
+                claim[0] += 3.0;
+                x.moveOverride = new ServerboundMovePlayerPacket.Pos(new Vec3(x.model.x(), this.gy, claim[0]), true, false);
+            };
+            this.probe = () -> {
+                far[0] = Math.max(far[0], this.c.auth.simulation().z());
+                far[1] = Math.max(far[1], this.c.player.getZ());
+            };
+        });
+        this.judge(12, id, () -> {
+            final long chunkUnknown = this.c.auth.stats().exempt(AuthStats.EXEMPT_CHUNK_UNKNOWN) - exempt[0];
+            this.note("the truth up to z +" + f(far[0] - start[0]) + ", the server's position up to z +" + f(far[1] - start[0])
+                + ", chunk-unknown ticks " + chunkUnknown);
+            this.expect(far[1] - start[0] < 4.0, "the server never took the claims (z +" + f(far[1] - start[0]) + " in 12 ticks)");
+            this.expect(chunkUnknown == 0, "no chunk-unknown tick over a chunk Moonrise never sent (" + chunkUnknown + ")");
+            this.c.cheat = null;
+            this.c.noChunkAcks = false;
+        });
+        this.finish(id);
+    }
+
+    // A client that never reports PlayerLoaded: the server's client-load timeout (ServerPlayer.tick → tickClientLoadTimeout)
+    // takes it as loaded anyway, and vanilla handles its moves from then on. Authority must judge them too, not leave the
+    // client exempt ("not loaded") for good with every move on vanilla's checks. It claims a flight of 0.5 a tick
+    private void neverLoaded() {
+        final String id = "load: never sends PlayerLoaded, then claims a flight of 0.5 a tick past the server's load timeout";
+        this.step(1, id + ": arena and join", () -> {
+            this.open(id);
+            this.probe = () -> {
+            };
+            this.track = new Track();
+            this.resetMoves();
+            this.clearArena();
+            this.c = new Cheater(this.next("Cheat"), this.ox + 0.5, this.gy, this.oz + 0.5, 0.0F);
+            this.c.neverLoads = true;
+        });
+        final double[] y0 = new double[1];
+        final double[] top = {Double.NEGATIVE_INFINITY};
+        this.step(WARM + 80, id + ": past the timeout, fly", () -> {
+            this.base = this.snap(this.c);
+            y0[0] = this.c.player.getY();
+            final double[] claim = {y0[0]};
+            this.c.cheat = x -> {
+                claim[0] += 0.5;
+                x.moveOverride = new ServerboundMovePlayerPacket.Pos(new Vec3(this.ox + 0.5, claim[0], this.oz + 0.5), false, false);
+            };
+            this.probe = () -> top[0] = Math.max(top[0], this.c.player.getY());
+        });
+        this.judge(20, id, () -> {
+            this.note("the server takes the client as loaded: " + this.c.player.connection.hasClientLoaded() + "; not-loaded ticks "
+                + this.c.auth.stats().exempt(AuthStats.EXEMPT_NOT_LOADED) + "; the server's position up to y +" + f(top[0] - y0[0]));
+            this.expect(top[0] - y0[0] < 1.0, "the server never took the flight (y +" + f(top[0] - y0[0]) + " in 20 ticks)");
+            this.c.cheat = null;
+        });
+        this.finish(id);
+    }
+
     // Walking with the sword, the player opens its inventory (no packet; KeyMapping.releaseAll, so the next input is
     // empty), shift-clicks a pot from the main inventory into the hotbar, closes the screen, walks again, takes the pot
     // with its number key and throws it: every packet is a vanilla client's, so no grammar drop and no correction
@@ -2900,6 +3151,12 @@ final class AuthCheatScenarios {
                 this.moveMaxZ = Math.max(this.moveMaxZ, move.getTo().getZ());
             }
         }, this.tests);
+        plugins.registerEvent(BlockPlaceEvent.class, this.listener, EventPriority.LOWEST, (ignored, event) -> {
+            if (event instanceof final BlockPlaceEvent placed && this.deniedPlacements.contains(BlockPos.asLong(placed.getBlock().getX(),
+                placed.getBlock().getY(), placed.getBlock().getZ()))) {
+                placed.setCancelled(true);
+            }
+        }, this.tests);
         plugins.registerEvent(BlockBreakEvent.class, this.listener, EventPriority.LOWEST, (ignored, event) -> {
             if (event instanceof final BlockBreakEvent broken && this.protectedBlocks.contains(BlockPos.asLong(broken.getBlock().getX(), broken.getBlock().getY(),
                 broken.getBlock().getZ()))) {
@@ -3056,6 +3313,7 @@ final class AuthCheatScenarios {
         this.c = null;
         this.v = null;
         this.protectedBlocks.clear();
+        this.deniedPlacements.clear();
     }
 
     private void expect(final boolean ok, final String what) {
@@ -3369,6 +3627,16 @@ final class AuthCheatScenarios {
         final List<Packet<? super ServerGamePacketListener>> extraMoves = new ArrayList<>();
         boolean noTickEnd;
         boolean noUsePrediction;
+        /** KeepSprint: the client skips its own x0.6 and sprint stop after a sprint hit (Player.attack). */
+        boolean noAttackPrediction;
+        /** The block glitch: the client keeps the blocks it predicted placing when the server's ack says otherwise. */
+        boolean keepGhostBlocks;
+        /** Never acks a chunk batch ({@code ChunkBatchReceived}), so the server stops sending it chunks. */
+        boolean noChunkAcks;
+        /** Never reports {@code PlayerLoaded}: the server's client-load timeout decides it loaded instead. */
+        boolean neverLoads;
+        /** The last knock ({@code SetEntityMotion} for itself), decoded. */
+        @Nullable Vec3 lastKnock;
         boolean suppressSprintStop;
         /** {@code BlockEvent}s handled (a piston moving, a shulker box opening). */
         int blockEvents;
@@ -3393,7 +3661,11 @@ final class AuthCheatScenarios {
         private boolean lastCollision;
         private int reminder;
         private boolean loaded;
-        /** Reports itself loaded at once, chunk or not, and stands on the server's floor (the load-test bot). */
+        /**
+         * Reports itself loaded once the server has sent its chunk, before it arrives, and stands on the server's floor (the
+         * load-test bot's timing). Before the chunk is sent a client can't have it, and a vanilla one stays on its loading
+         * screen: no physics, no moves the server takes.
+         */
         boolean loadEarly;
 
         int ticks;
@@ -3493,7 +3765,7 @@ final class AuthCheatScenarios {
                 this.drained.clear();
             }
             final int drainEnd = out.size();
-            if (!this.loaded && (this.loadEarly || this.fake.chunks.contains(net.minecraft.world.level.ChunkPos.pack(net.minecraft.util.Mth.floor(this.model.x()) >> 4,
+            if (!this.loaded && !this.neverLoads && (this.loadEarly && this.chunkSent() || this.fake.chunks.contains(net.minecraft.world.level.ChunkPos.pack(net.minecraft.util.Mth.floor(this.model.x()) >> 4,
                 net.minecraft.util.Mth.floor(this.model.z()) >> 4)))) {
                 // A vanilla client reports PlayerLoaded once its loading screen has the chunk it stands in
                 out.add(new ServerboundPlayerLoadedPacket());
@@ -3608,7 +3880,11 @@ final class AuthCheatScenarios {
         // The client's own effects of its keybind actions
         private void predict(final Packet<? super ServerGamePacketListener> action) {
             switch (action) {
-                case final ServerboundAttackPacket ignored -> this.model.clientAttack(true, this.view);
+                case final ServerboundAttackPacket ignored -> {
+                    if (!this.noAttackPrediction) {
+                        this.model.clientAttack(true, this.view);
+                    }
+                }
                 case final ServerboundUseItemPacket use -> {
                     if (!this.noUsePrediction && Boolean.TRUE.equals(this.view.predictsUse(this.view.items.hand(use.hand())))) {
                         this.model.startUsingItem(use.hand(), this.view);
@@ -3627,6 +3903,26 @@ final class AuthCheatScenarios {
 
         // destroyBlock inside startPredicting: retainKnownServerState (the first state and player position stay), then the
         // block's fluid, or air
+        // Whether the server has sent the chunk the model stands in (Moonrise's per-player set; main thread, as the suite runs)
+        private boolean chunkSent() {
+            final ca.spottedleaf.moonrise.patches.chunk_system.player.RegionizedPlayerChunkLoader.PlayerChunkLoaderData loader =
+                this.player.moonrise$getChunkLoader();
+            return loader != null && loader.getSentChunksRaw().contains(ca.spottedleaf.moonrise.common.util.CoordinateUtils.getChunkKey(
+                net.minecraft.util.Mth.floor(this.model.x()) >> 4, net.minecraft.util.Mth.floor(this.model.z()) >> 4));
+        }
+
+        // MultiPlayerGameMode.useItemOn under BlockStatePredictionHandler: the client places at once and keeps the server's
+        // updates for that position until the ack puts them back
+        void predictPlace(final BlockPos pos, final BlockState state, final int sequence) {
+            final Object[] kept = this.retained.get(pos.asLong());
+            if (kept != null) {
+                kept[0] = sequence;
+            } else {
+                this.retained.put(pos.asLong(), new Object[] {sequence, this.world.blockState(pos), new Vec3(this.model.x(), this.model.y(), this.model.z())});
+            }
+            this.world.onBlockUpdate(pos, state);
+        }
+
         private void predictBreak(final BlockPos pos, final int sequence) {
             final BlockState state = this.world.blockState(pos);
             if (state.isAir()) {
@@ -3663,7 +3959,7 @@ final class AuthCheatScenarios {
                 iterator.remove();
                 final BlockPos pos = BlockPos.of(entry.getKey());
                 final BlockState state = (BlockState) entry.getValue()[1];
-                if (this.world.blockState(pos) == state) {
+                if (this.world.blockState(pos) == state || this.keepGhostBlocks) {
                     continue;
                 }
                 this.world.onBlockUpdate(pos, state);
@@ -3739,7 +4035,7 @@ final class AuthCheatScenarios {
                 return;
             }
             if (packet instanceof ClientboundChunkBatchFinishedPacket) {
-                if (!this.kicked) {
+                if (!this.kicked && !this.noChunkAcks) {
                     this.fake.deliver(new ServerboundChunkBatchReceivedPacket(20.0F));
                 }
                 return;
@@ -3826,9 +4122,10 @@ final class AuthCheatScenarios {
                 case final ClientboundPlayerPositionPacket position -> this.teleport(position);
                 case final ClientboundSetEntityMotionPacket motion when motion.id() == self -> {
                     this.knocksSeen++;
+                    final double[] decoded = new double[3];
+                    Wire.lpVec3(motion.movement().x, motion.movement().y, motion.movement().z, decoded);
+                    this.lastKnock = new Vec3(decoded[0], decoded[1], decoded[2]);
                     if (!this.ignoreMotion && this.seeded) {
-                        final double[] decoded = new double[3];
-                        Wire.lpVec3(motion.movement().x, motion.movement().y, motion.movement().z, decoded);
                         this.model.setVelocity(decoded[0], decoded[1], decoded[2]);
                     }
                 }
@@ -3935,6 +4232,12 @@ final class AuthCheatScenarios {
             this.acceptNaN = false;
             this.acceptCorrectionNaN = false;
             this.noUsePrediction = false;
+            this.noAttackPrediction = false;
+            this.noChunkAcks = false;
+            if (this.keepGhostBlocks) {
+                this.keepGhostBlocks = false;
+                this.world.clear(); // its ghosts go: an honest client starts from the server's world again
+            }
             this.suppressSprintStop = false;
             this.injectSprint = null;
             this.noTickEnd = false;

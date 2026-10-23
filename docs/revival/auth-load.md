@@ -709,7 +709,22 @@ How to read it:
   that RTT is the server's Netty and how much the bots'.
 - `MISSED` (370) still follows the correction bursts: a bot being corrected picks from an eye the server doesn't use.
 
-Still not run: 100 bots with the locator bar off, 50 at about 125 ms RTT on the current rewind cap, and 200.
+### 50 bots at about 125 ms, and 200 bots (2026-10-22 21:50)
+
+Same build (audit7), same harness, no JFR.
+
+- **50 bots at about 125 ms RTT** (`runs/audit7-n50-125ms`, `--set latencyMs=55 --set jitterMs=15`: each way 55 ms
+  plus up to 15; the bots' mean ack RTT was 129 ms base, 138 ms last). **Exact**: 150,248 of 150,248 claims bit-exact,
+  0 corrections, 0 forced entries, 18,426 hits accepted and 3 rejected (`MISSED`), **0 `REWIND`** (finding 3 is closed
+  by the per-attacker rewind cap). TPS 20.00, MSPT mean 2.21 ms, p99 3.25 ms. 53.4 KiB/s down per player.
+- **200 bots, locator bar off** (`runs/audit7-n200-nolocator`, `--max-load 16`): **the harness saturates, not a
+  measure of the server.** The bots acked pings 413 ms late on average on localhost (up to 1,187 pings outstanding on
+  one connection), with the server JVM at 900% CPU: 200 in-JVM clients decode about 6,000 packets a second each
+  (about 1.2 million a second on 4 receive threads, next to the server). So the server force-applied 23.7 million
+  entries at their deadlines, and 37,162 corrections and 66,190 `MISSED` hits follow from that. MSPT mean 30.9 ms,
+  p99 191 ms on a machine with no headroom left. Measuring 200 needs the bots on another machine.
+
+Still not run: 100 bots with the locator bar off, and 200 with the bots on a second machine.
 
 ## Reproduce
 

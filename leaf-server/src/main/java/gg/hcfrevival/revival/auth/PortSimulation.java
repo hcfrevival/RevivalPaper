@@ -633,7 +633,15 @@ public final class PortSimulation implements Simulation {
         alternative.copyFrom(this.beforeAttack);
         // The attack as the port ran it (MovementSim.clientAttack, Player.java:1799-1801 and 1867-1871), then flipped
         final float delay = (float) (1.0 / alternative.attributes.attackSpeed.value() * 20.0);
-        final boolean fullStrength = Mth.clamp((alternative.attackStrengthTicker + 0.5F) / delay, 0.0F, 1.0F) > 0.9F;
+        final int ticker = alternative.attackStrengthTicker;
+        final boolean fullStrength = fullStrength(ticker, delay);
+        // Only to a strength the client's ticker could have had: the port's one tick either way (the threshold), or reset (an
+        // item change the port saw a tick off). A legacy sword's maxed attack speed is full strength at any ticker, so a
+        // client that skips its own x0.6 after a sprint hit (KeepSprint) isn't explained by a weak hit (pvp-issues SP-3)
+        if (fullStrength(0, delay) == fullStrength && fullStrength(ticker + 1, delay) == fullStrength
+            && (ticker == 0 || fullStrength(ticker - 1, delay) == fullStrength)) {
+            return false;
+        }
         final float base = (float) alternative.attributes.attackKnockback.value();
         final boolean slowed = base + (alternative.sprinting && fullStrength ? 0.5F : 0.0F) > 0.0F;
         final boolean flipped = base + (alternative.sprinting && !fullStrength ? 0.5F : 0.0F) > 0.0F;
@@ -649,6 +657,11 @@ public final class PortSimulation implements Simulation {
         alternative.itemSwapTicker = 0;
         this.sync(alternative, view);
         return this.keepIfClaimed(alternative, view, world, claimX, claimY, claimZ);
+    }
+
+    // Player.getAttackStrengthScale(0.5F) > 0.9 with the attack strength ticker at {@code ticker}
+    private static boolean fullStrength(final int ticker, final float delay) {
+        return Mth.clamp((ticker + 0.5F) / delay, 0.0F, 1.0F) > 0.9F;
     }
 
     // Runs the last tick's input on the alternative; keeps it when it lands exactly on the claim

@@ -155,7 +155,8 @@ Melee keeps the entity's real window, so the no-damage-ticks API and plugins tha
 | `ignore-armor-bypassing-damage` | `true` | Blocking doesn't reduce damage that bypasses armor. |
 | `use-speed-multiplier` | `0.2` | Movement speed while blocking (0 to 1). |
 | `rearm-sprint-on-block` | `true` | Blocking re-arms the sprint knock, as releasing W would. |
-| `stop-sprint-on-block` | `false` | Under authority (enforce), a block stops the sprint as 1.7's did (a 26.3 client keeps sprinting through a block: about 30% faster than 1.7's blocking walk, plus the sprint-jump boost). Releasing the block with the sprint key held sprints again and re-arms the sprint knock itself, so `rearm-sprint-on-block` is skipped while this is on. |
+| `stop-sprint-on-block` | `false` | Under authority (enforce), a block held `stop-sprint-after-ticks` stops the sprint as 1.7's did (a 26.3 client keeps sprinting through a block: about 30% faster than 1.7's blocking walk, plus the sprint-jump boost). |
+| `stop-sprint-after-ticks` | `4` | The block's tick that stops the sprint. The stop reaches the client a round trip later, so a block-hit shorter than this keeps its sprint for its tick or two (its knock comes from `rearm-sprint-on-block`); sent at a block-hit's first tick, it landed after the release at high ping and cost the next hit its sprint knock. |
 
 ### Knockback profiles
 

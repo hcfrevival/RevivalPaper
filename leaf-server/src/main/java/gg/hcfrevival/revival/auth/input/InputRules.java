@@ -12,7 +12,9 @@ package gg.hcfrevival.revival.auth.input;
  *   <li>{@link #ATTACK_AFTER_CLOSE}: a screen eats the clicks made while it is open, and closing it adds none: every
  *       tick the screen was open set {@code missTime = 10000}, so the next tick's {@code startAttack} drops every
  *       click until {@code continueAttack} clears it (report 02 §2.3, {@code Minecraft.java:1816-1826, 1658}). An
- *       attack in the tick a container closed means a click no screen saw;</li>
+ *       attack in the tick a container closed means a click no screen saw. Not for a player whose miss penalty the
+ *       server turned off through Lunar's Apollo ({@code ClientProfile.missPenaltyDisabled}, server truth): Lunar may
+ *       land that click, and the server chose to let it (client-compat L1);</li>
  *   <li>{@link #CLICK_WHILE_MOVING}: opening a screen releases every key ({@code KeyMapping.releaseAll}) and keys pressed
  *       over a screen don't reach the game, so a container click in a tick whose sent input still walks or jumps is an
  *       inventory move. The exception is a container that closed after the click (closing re-reads the held keys, and
@@ -76,6 +78,8 @@ public final class InputRules {
 
     private final long[] counts = new long[RULES];
     private boolean usingAtKeybinds;
+    // ATTACK_AFTER_CLOSE holds: the client's screens eat the next tick's first click, as vanilla's missTime does
+    private boolean screenEatsClick = true;
     private boolean walking;
     private boolean used;
     private boolean closed;
@@ -106,6 +110,14 @@ public final class InputRules {
      * (design §15.8) may relax one where a client provably behaves differently. */
     public static boolean drops(final int rule) {
         return rule != OK && rule != ATTACK_WITHOUT_PUNCH && rule != USE_ROTATION;
+    }
+
+    /**
+     * Whether this player's client eats the first click after a screen ({@code missTime = 10000}): false while the
+     * server has turned its miss penalty off through Apollo, so {@link #ATTACK_AFTER_CLOSE} doesn't hold for it.
+     */
+    public void screenEatsClick(final boolean eats) {
+        this.screenEatsClick = eats;
     }
 
     /** The window's keybinds start (after its drain and screens): {@code using}, the client uses an item now. */
@@ -172,7 +184,8 @@ public final class InputRules {
             return AFTER_MOVE;
         }
         return switch (action) {
-            case ATTACK -> this.usingAtKeybinds ? ATTACK_WHILE_USING : this.used ? ATTACK_AFTER_USE : this.closed ? ATTACK_AFTER_CLOSE : OK;
+            case ATTACK -> this.usingAtKeybinds ? ATTACK_WHILE_USING : this.used ? ATTACK_AFTER_USE
+                : this.closed && this.screenEatsClick ? ATTACK_AFTER_CLOSE : OK;
             case USE -> this.usingAtKeybinds ? USE_WHILE_USING : OK;
             case RELEASE -> this.usingAtKeybinds ? OK : RELEASE_WITHOUT_USE;
             case CONTAINER_CLICK -> this.walking && !(closesLater && this.keysReleasedSinceClose) ? CLICK_WHILE_MOVING : OK;

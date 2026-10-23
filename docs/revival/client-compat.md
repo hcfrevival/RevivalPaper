@@ -34,7 +34,8 @@ Top risks, ranked by severity times likelihood:
 2. **`disable-miss-penalty` against `ATTACK_AFTER_CLOSE` (L1).** HCFR turns the option on in Arena and Factions. If
    Lunar's version also removes the dropped first click after closing a screen, every pot refill followed by a hit in
    the same tick is dropped and counted. Three counts raise `AuthInputAnomalyEvent`, so staff get false alerts on the
-   most common HCF action. Lunar's implementation: [?].
+   most common HCF action. Lunar's implementation: [?]. Since 2026-10-22 the rule doesn't hold for a player whose
+   miss penalty the server turned off (N5), so neither the drop nor the alert can happen.
 3. **Lunar input features the simulation may not see (L5, L6, L8).** Toggle sprint that sets sprint without the
    `Input` sprint bit means speed divergence and corrections. Fly boost means corrections whenever a player flies
    (certain if it is on). Smooth Teleport, if it moves the player rather than the camera, means every pearl, teleport
@@ -213,7 +214,7 @@ Lunar session.
 
 | # | Client / feature | What changes on the wire or in physics | Effect on the authority | Required change | Owner | Test |
 |---|---|---|---|---|---|---|
-| L1 | Lunar, Apollo `disable-miss-penalty` (**on**) | [inf] No `missTime = 10` on a miss: after a whiff with the button down, clicks vanilla eats are sent. [?] whether the dropped first click after a screen goes too. | Miss part: none (no rule models it; the server can't see the button). Screen part, if it goes: refill-then-hit in one tick is `ATTACK_AFTER_CLOSE`, dropped (as vanilla would) and counted; 3 counts make a staff alert. No correction (the client's attack prediction still runs). | Profile (N1-N3). If S4 shows Lunar lands that click: `ATTACK_AFTER_CLOSE` off for profiles with `missPenaltyDisabled` (N5). Profile-relaxed rules never feed anomaly counts. Fairness decision (K3). | netcode, core | S3, S4, R1 |
+| L1 | Lunar, Apollo `disable-miss-penalty` (**on**) | [inf] No `missTime = 10` on a miss: after a whiff with the button down, clicks vanilla eats are sent. [?] whether the dropped first click after a screen goes too. | Miss part: none (no rule models it; the server can't see the button). Screen part, if it goes: refill-then-hit in one tick is `ATTACK_AFTER_CLOSE`, dropped (as vanilla would) and counted; 3 counts make a staff alert. No correction (the client's attack prediction still runs). | Profile (N1-N3). Done 2026-10-22: `ATTACK_AFTER_CLOSE` off while the server has `missPenaltyDisabled` on for the player (N5), so the click is neither dropped nor counted; S4 still tells whether Lunar lands it. Fairness decision (K3). | netcode, core | S3, S4, R1 |
 | L2 | Lunar, Apollo `allow-dig-and-use` (**on**) | [inf] `UseItem`/`UseItemOn` while mining. Mining packets and `Punch` every tick while using with attack held on a block. Attack clicks while using still discarded. | None found: no gate on use while destroying, dig predictions admitted while using, `InputRules` ignores `PlayerAction`/`Punch` [src]. | None now. Any future dig/use rule (for example "use while destroying") must be off for this profile (N5). | netcode | S5, S6, R1 |
 | L3 | Lunar, Apollo `disable-block-miss-penalty` (off) | [?] | As L1 if turned on. | Keep off, or run S3 with it on first. | core | S3 |
 | L4 | Lunar 1.7 Visuals (**forced on**) | `always-swing`: visual, no packet [inf]. `use-item-while-digging`: [?] behaviour like L2, chosen by the player. 1.7 sneak animation: [?] camera only, or the entity's eye height. | None if visual. A player-chosen L2 behaviour is fine today (L2). An entity eye change would wrongly reject crouched attacks. | Core pins `use-item-while-digging` to `allow-dig-and-use`, so the server, not the player, decides (K1). PickRay eye variant only if S7 proves an eye change (C2). | core, combat | S6, S7 |
@@ -275,8 +276,11 @@ Lunar session.
     thread), skipped or unknown pongs, overflow and forged accepts.
   - This changes design §15.1 and needs the maintainer's sign-off.
 - **N5. `InputRules` reads the profile.**
-  - `ATTACK_AFTER_CLOSE` is off when `missPenaltyDisabled` **and** S4 proves Lunar lands the post-screen click.
-    Otherwise nothing changes.
+  - `ATTACK_AFTER_CLOSE` is off when `missPenaltyDisabled` (built 2026-10-22, `InputRules.screenEatsClick`, read each
+    window from the profile; unit `InputRulesTest.anAttackAfterACloseIsFineWhenTheServerTurnedTheMissPenaltyOff`).
+    It didn't wait for S4: if Lunar keeps vanilla's screen drop, the rule never fires for those players anyway, and if
+    Lunar lands the click, the server that pushed the option meant it to land. A client faking Lunar gains one click a
+    tick earlier after a screen. S4 still tells which of the two Lunar does.
   - `ATTACK_WHILE_USING`, `USE_WHILE_USING`, `ATTACK_AFTER_USE`, `CLICK_WHILE_MOVING` and `AFTER_MOVE` stay for every
     profile. They hold under 1.7 semantics and under every Apollo option as documented. Relax one only on S6 evidence.
   - Any new dig/use rule is off for `digAndUse` or `useItemWhileDigging`.

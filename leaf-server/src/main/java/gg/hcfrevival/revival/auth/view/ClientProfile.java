@@ -22,9 +22,11 @@ import org.jspecify.annotations.Nullable;
  *       each with the window it was first seen in;</li>
  *   <li>the Lunar version and installed mods from the Apollo handshake (client-claimed).</li>
  * </ul>
- * Informational for now: no input rule reads it until the manual Lunar session shows how Lunar behaves (client-compat
- * §9.2). Only "this is Lunar" is client-claimed; faking it gets the rules a Lunar player has, nothing looser. Main
- * thread, one per player.
+ * One input rule reads it: {@code ATTACK_AFTER_CLOSE} doesn't hold while the server has turned the miss penalty off
+ * through Apollo (client-compat L1: Lunar may land the first click after a screen, and the server chose to let it).
+ * The rest is informational until a recorded Lunar session shows how Lunar behaves (client-compat §9.2). Only "this
+ * is Lunar" is client-claimed; faking it gets the rules a Lunar player has, nothing looser. Main thread, one per
+ * player.
  */
 public final class ClientProfile {
 

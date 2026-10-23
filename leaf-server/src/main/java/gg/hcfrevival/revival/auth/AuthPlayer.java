@@ -912,6 +912,13 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
     private int heldSince;
 
     // Whether a chunk under the player's box (where the server put it) is neither held by the client nor sent to it yet
+    // The chunks Moonrise has sent this client; null when it can't tell
+    private it.unimi.dsi.fastutil.longs.@Nullable LongSet sentChunks() {
+        final ca.spottedleaf.moonrise.patches.chunk_system.player.RegionizedPlayerChunkLoader.PlayerChunkLoaderData loader =
+            this.player.moonrise$getChunkLoader();
+        return loader != null ? loader.getSentChunksRaw() : null;
+    }
+
     private boolean destinationUnsent() {
         final ServerLevel level = (ServerLevel) this.player.level();
         if (this.world.level() != level || !this.world.chunksKnown()) {
@@ -1578,6 +1585,7 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
         final boolean usingAtStart = this.simulation.seeded() && this.simulation.usingItem();
         // The input grammar (§15.4) judges each action against the input the tick ends with
         this.rules.startWindow(InputRules.walking(sentInput != null ? sentInput : this.stream.input()));
+        this.rules.screenEatsClick(!this.profile.missPenaltyDisabled()); // client-compat L1: Apollo's option, server truth
 
         boolean simulated = false;
         boolean rotationResolved = false;
@@ -1827,7 +1835,11 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
                 this.replay(packet);
             }
             case final ServerboundMovePlayerPacket move -> {
-                if (!refused && (this.mode == AuthMode.OBSERVE || this.lastExempt != AuthStats.EXEMPT_NONE)) {
+                // Not loaded: a vanilla client runs no physics until it reports PlayerLoaded (LocalPlayer.tick returns at
+                // once), so its claims are nobody's. Replayed, they'd reach vanilla's checks for good once Paper's client-load
+                // timeout takes the client as loaded, for a client that never reports it
+                if (!refused && (this.mode == AuthMode.OBSERVE
+                    || this.lastExempt != AuthStats.EXEMPT_NONE && this.lastExempt != AuthStats.EXEMPT_NOT_LOADED)) {
                     if (this.mode == AuthMode.ENFORCE && this.lastExempt == EXEMPT_EXTERNAL_MOVER && move.hasPosition()
                         && !withinMove(move.getX(0.0) - this.player.getX(), move.getY(0.0) - this.player.getY(), move.getZ(0.0) - this.player.getZ(),
                         settings.externalMoverMaxMove())) {
@@ -2088,8 +2100,9 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
     private boolean combatSprinting;
     // The sprint state the client's last simulated tick ended with: what its sendIsSprintingIfNeeded compares against
     private boolean reportedSprint;
-    // This use of a legacy block already re-armed the sprint knock
+    // This use of a legacy block already re-armed the sprint knock; the simulated ticks it has been up
     private boolean blockRearmed;
+    private int blockTicks;
 
     /**
      * The client's sprint state for combat while the simulation owns it (§15.5): during an attack's replay, the state the
@@ -2288,7 +2301,7 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
             sim.attachedRockets(this.rocketsOnSelf.size());
             exempt = sim.unsupported(this.view);
             if (exempt == AuthStats.EXEMPT_NONE && (claim != null ? claim.isOnGround() : this.clientOnGround)
-                && this.world.unknownChunkUnder(sim.seeded() ? sim.box() : this.player.getBoundingBox())) {
+                && this.world.unknownChunkUnder(sim.seeded() ? sim.box() : this.player.getBoundingBox(), this.sentChunks())) {
                 // The client says it stands on ground in a chunk our record says it lacks (and the server has): our
                 // bookkeeping, not the client, so no fall through its floor. A client that really lacks the chunk (a far
                 // teleport) falls with the truth and says so
@@ -2332,23 +2345,27 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
                     gg.hcfrevival.revival.combat.LegacyKnockback.simulatedSprint(this.player, sim.sprinting(), wasOnGround);
                 }
                 final gg.hcfrevival.revival.config.SwordBlockingSettings blocking = Revival.settings().swordBlocking();
-                if (sim.usingItem() && !this.blockRearmed && gg.hcfrevival.revival.combat.LegacySwordBlocking.isBlockingWeapon(sim.useItem())) {
-                    this.blockRearmed = true;
-                    if (blocking.stopSprintOnBlock()) {
-                        // 1.7's block stopped the sprint (classic audit #6): a server write, so the client gets it as
-                        // meant and the truth takes it at the ack; the release re-sprints and re-arms by itself
-                        if (sim.sprinting()) {
-                            this.player.setSprinting(false);
+                if (sim.usingItem() && gg.hcfrevival.revival.combat.LegacySwordBlocking.isBlockingWeapon(sim.useItem())) {
+                    this.blockTicks++;
+                    if (!this.blockRearmed) {
+                        this.blockRearmed = true;
+                        if (blocking.rearmSprintOnBlock()) {
+                            // The 1.7 block-hit: a tick with a legacy block up re-arms a held sprint, once per block (#5)
+                            this.player.revivalSprintLedger.rearm(wasOnGround);
                         }
-                    } else if (blocking.rearmSprintOnBlock()) {
-                        // The 1.7 block-hit: a tick with a legacy block up re-arms a held sprint, once per block (#5)
-                        this.player.revivalSprintLedger.rearm(wasOnGround);
+                    }
+                    if (blocking.stopSprintOnBlock() && this.blockTicks == blocking.stopSprintAfterTicks() && sim.sprinting()) {
+                        // 1.7's block stopped the sprint (classic audit #6): a server write, so the client gets it as meant
+                        // and the truth takes it at the ack. Only a block held this long: a block-hit's would land after the
+                        // release and cancel the re-sprint in the tick of the next hit
+                        this.player.setSprinting(false);
                     }
                 }
             }
             this.reportedSprint = sim.sprinting();
             if (!sim.usingItem()) {
                 this.blockRearmed = false;
+                this.blockTicks = 0;
             }
             if (this.mode == AuthMode.ENFORCE && wasSprinting != sim.sprinting()) {
                 if (this.speedSyncsPending > 0 && this.speedSyncSprint != sim.sprinting()) {
