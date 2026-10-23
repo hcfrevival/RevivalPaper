@@ -54,9 +54,11 @@ Every such path, checked:
 
 ## Already tracked
 
-- Off-crosshair placing and digging (ghost hand through walls): pvp-issues WD-4.
+- Off-crosshair placing and digging (ghost hand through walls): pvp-issues WD-4, solved 2026-10-23 (grammar rule
+  `unseen-target`).
 - Crouching and swimming shrink the judged hitbox to 1.5 and 0.6: pvp-issues HR-8.
-- Packet crits, keep-sprint and the cancelled-placement block glitch have no cheat rows: MV-3, SP-3, WD-1. SP-3 now has its rows (item 2).
+- Packet crits, keep-sprint and the cancelled-placement block glitch had no cheat rows (MV-3, SP-3, WD-1). All three
+  have them now; the keep-sprint rows found #17.
 - Classic autoclicking is bounded at 20/s, and randomized or hit-select clickers are undetectable: IN-1, IN-3, HR-6. The NAS world's `classic-capped` caps at 12 with the buffer.
 
 ## Refuted

@@ -40,6 +40,12 @@ package gg.hcfrevival.revival.auth.input;
  *       sends its slot first ({@code ensureHasSentCarriedItem}), so no {@code SetCarriedItem} to another slot follows the
  *       tick's first attack or use: a pot thrown and the sword back in hand in one tick (pvp-issues IN-5, classic audit
  *       #3). The client is sent its slot back.</li>
+ *   <li>{@link #UNSEEN_TARGET}: {@code useItemOn} and {@code startDestroyBlock} act on the block {@code Minecraft.hitResult}
+ *       is on, the first block along the client's crosshair, so another block's outline never stands between its eye and
+ *       the point a use names, nor hides every point of the face a dig names: a door, a chest or a block worked through a
+ *       wall (ghost hand, pvp-issues WD-4). Judged on the client's own world, so a block it broke and still lacks is no
+ *       wall. The block on the crosshair passes; failing that, the line of sight does, so a click off the tick's rotation
+ *       still passes.</li>
  * </ul>
  * In enforce, an action that breaks a rule is not handled; the client's own prediction of it still updates the model.
  * One instance per player, main thread.
@@ -58,7 +64,8 @@ public final class InputRules {
     public static final int USE_ROTATION = 9;
     public static final int OFFHAND_AFTER_MAIN = 10;
     public static final int SLOT_AFTER_ACTION = 11;
-    public static final int RULES = 12;
+    public static final int UNSEEN_TARGET = 12;
+    public static final int RULES = 13;
 
     // What a packet does, as far as the rules care
     public static final int OTHER = 0;
@@ -74,7 +81,7 @@ public final class InputRules {
 
     private static final String[] NAMES = {"ok", "attack-while-using", "use-while-using", "attack-after-use", "attack-after-close",
         "click-while-moving", "after-move", "attack-without-punch", "release-without-use",
-        "use-rotation", "offhand-after-main", "slot-after-action"};
+        "use-rotation", "offhand-after-main", "slot-after-action", "unseen-target"};
 
     private final long[] counts = new long[RULES];
     private boolean usingAtKeybinds;
@@ -214,6 +221,12 @@ public final class InputRules {
             return SLOT_AFTER_ACTION;
         }
         return OK;
+    }
+
+    /** A block use or dig on a block another block hides from the client's eye: {@link #UNSEEN_TARGET} (counted). */
+    public int unseen() {
+        this.counts[UNSEEN_TARGET]++;
+        return UNSEEN_TARGET;
     }
 
     /** A {@code UseItem} whose rotation isn't the tick's (rewritten to it, never dropped). */

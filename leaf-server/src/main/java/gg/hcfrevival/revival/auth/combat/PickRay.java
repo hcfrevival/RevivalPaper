@@ -181,6 +181,19 @@ public final class PickRay {
     // The cast
     // ------------------------------------------------------------------------------------------------------------------
 
+    /**
+     * A line of sight: {@code BlockGetter.clip} with OUTLINE shapes from {@code from} to {@code to}, as {@link #cast}'s block
+     * pass runs it. The first block hit, or the miss at {@code to}, is left in {@code block*} ({@link #blockHit},
+     * {@link #blockPosX}...): pvp-issues WD-4, a block worked through another.
+     */
+    public void clipTo(final PickWorld world, final double fromX, final double fromY, final double fromZ, final double toX, final double toY,
+                       final double toZ) {
+        this.fromX = fromX;
+        this.fromY = fromY;
+        this.fromZ = fromZ;
+        this.clipBlocks(world, toX, toY, toZ);
+    }
+
     /** {@code LocalPlayer.pick(camera, blockRange, entityRange, 1.0F)} (:1292-1311), up to the entity scan. */
     public void cast(final AttackerSnapshot attacker, final PickWorld world) {
         this.blockRange = attacker.blockRange();

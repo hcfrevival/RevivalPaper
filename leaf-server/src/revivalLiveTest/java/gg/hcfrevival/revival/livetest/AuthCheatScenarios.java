@@ -327,6 +327,12 @@ final class AuthCheatScenarios {
         this.blockGlitch("world: a block a plugin cancels, its ghost climbed over a 2-high wall (block glitch)", true);
         this.unsentChunkWalk();
         this.neverLoaded();
+        // pvp-issues WD-4: ghost hand, a chest opened and a block dug through a wall, each against its in-sight control
+        this.ghostChest("honest: opens a chest in sight (control)", false);
+        this.ghostChest("ghost hand: opens a chest behind a wall", true);
+        this.ghostDig("honest: starts digging a block in sight (control)", false);
+        this.ghostDig("ghost hand: starts digging a block behind a wall", true);
+        this.lecternTop("honest: right-clicks a lectern's top, above its cube (control)");
 
         // Self echo
         this.sprintEcho("self-echo: STOP_SPRINTING before acking the sprint attribute sync", false);
@@ -2783,6 +2789,106 @@ final class AuthCheatScenarios {
             this.expect(top[0] - y0[0] < 1.0, "the server never took the flight (y +" + f(top[0] - y0[0]) + " in 20 ticks)");
             this.c.cheat = null;
         });
+        this.finish(id);
+    }
+
+    // pvp-issues WD-4, ghost hand: a chest 3 blocks ahead, behind a 2-high wall or not; the client names a point on the
+    // chest's front face (vanilla's handler checks the distance and that the point is near the block, never the sight)
+    private void ghostChest(final String id, final boolean walled) {
+        final BlockPos[] chest = new BlockPos[1];
+        this.begin(id, () -> {
+            chest[0] = new BlockPos(this.ox, this.gy, this.oz + 3);
+            this.set(chest[0].getX(), chest[0].getY(), chest[0].getZ(), Blocks.CHEST.defaultBlockState());
+            if (walled) {
+                this.wall(2, 2, Blocks.STONE.defaultBlockState());
+            }
+        });
+        final long[] unseen = new long[1];
+        this.arm(id, () -> {
+            unseen[0] = this.c.auth.inputRules().count(InputRules.UNSEEN_TARGET);
+            this.c.forcePosition = true;
+            final Vec3 front = new Vec3(chest[0].getX() + 0.5, chest[0].getY() + 0.4, chest[0].getZ() + 0.0625);
+            this.c.actions.add(new ServerboundUseItemOnPacket(InteractionHand.MAIN_HAND, new BlockHitResult(front, Direction.NORTH, chest[0], false),
+                ++this.c.sequence));
+        });
+        this.judge(5, id, () -> {
+            final boolean opened = this.c.player.containerMenu != this.c.player.inventoryMenu;
+            final long counted = this.c.auth.inputRules().count(InputRules.UNSEEN_TARGET) - unseen[0];
+            this.note("chest " + (opened ? "opened" : "not opened") + ", unseen-target " + counted);
+            if (!walled) {
+                this.label = "CONTROL";
+                this.honestExpect(opened, "the chest opened");
+                this.honestExpect(counted == 0, "no unseen-target (" + counted + ")");
+            } else {
+                this.expect(!opened, "the chest behind the wall stayed shut");
+                this.expect(counted == 1, "unseen-target counted (" + counted + ")");
+            }
+            this.c.player.closeContainer();
+        });
+        this.honestAfter(id, NONE, 0);
+        this.finish(id);
+    }
+
+    // pvp-issues WD-4, ghost hand: a dig started on a block 3 ahead, behind a 2-high wall or not
+    private void ghostDig(final String id, final boolean walled) {
+        final BlockPos[] dirt = new BlockPos[1];
+        this.begin(id, () -> {
+            dirt[0] = new BlockPos(this.ox, this.gy, this.oz + 3);
+            this.set(dirt[0].getX(), dirt[0].getY(), dirt[0].getZ(), Blocks.DIRT.defaultBlockState());
+            if (walled) {
+                this.wall(2, 2, Blocks.STONE.defaultBlockState());
+            }
+        });
+        final long[] unseen = new long[1];
+        this.arm(id, () -> {
+            unseen[0] = this.c.auth.inputRules().count(InputRules.UNSEEN_TARGET);
+            this.c.forcePosition = true;
+            // the crosshair on it: eye 1.62 above the floor, its centre 3.0 ahead and 0.5 up
+            this.c.pitch = (float) Math.toDegrees(Math.atan2(1.12, 3.0));
+            this.c.actions.add(new ServerboundPlayerActionPacket(ServerboundPlayerActionPacket.Action.START_DESTROY_BLOCK, dirt[0], Direction.NORTH,
+                ++this.c.sequence));
+        });
+        this.judge(5, id, () -> {
+            final long counted = this.c.auth.inputRules().count(InputRules.UNSEEN_TARGET) - unseen[0];
+            this.note("unseen-target " + counted);
+            if (!walled) {
+                this.label = "CONTROL";
+                this.honestExpect(counted == 0, "no unseen-target (" + counted + ")");
+            } else {
+                this.expect(counted == 1, "the dig behind the wall is unseen-target (" + counted + ")");
+            }
+            this.c.actions.add(new ServerboundPlayerActionPacket(ServerboundPlayerActionPacket.Action.ABORT_DESTROY_BLOCK, dirt[0], Direction.NORTH,
+                ++this.c.sequence));
+            this.c.pitch = 0.0F;
+        });
+        this.honestAfter(id, NONE, 0);
+        this.finish(id);
+    }
+
+    // pvp-issues WD-4: a lectern's book rest rises 2 pixels above its cube, and a click there is on its outline (the crosshair
+    // passes over it: the point's sight decides)
+    private void lecternTop(final String id) {
+        final BlockPos[] lectern = new BlockPos[1];
+        this.begin(id, () -> {
+            lectern[0] = new BlockPos(this.ox, this.gy, this.oz + 3);
+            this.set(lectern[0].getX(), lectern[0].getY(), lectern[0].getZ(), Blocks.LECTERN.defaultBlockState());
+        });
+        final long[] unseen = new long[1];
+        this.arm(id, () -> {
+            unseen[0] = this.c.auth.inputRules().count(InputRules.UNSEEN_TARGET);
+            this.c.forcePosition = true;
+            // Facing north, the rest's top is 18 pixels up and 9.7 to 14 back from the lectern's north side
+            final Vec3 top = new Vec3(lectern[0].getX() + 0.5, lectern[0].getY() + 1.125, lectern[0].getZ() + 0.75);
+            this.c.actions.add(new ServerboundUseItemOnPacket(InteractionHand.MAIN_HAND, new BlockHitResult(top, Direction.UP, lectern[0], false),
+                ++this.c.sequence));
+        });
+        this.judge(5, id, () -> {
+            final long counted = this.c.auth.inputRules().count(InputRules.UNSEEN_TARGET) - unseen[0];
+            this.note("unseen-target " + counted);
+            this.label = "CONTROL";
+            this.honestExpect(counted == 0, "no unseen-target (" + counted + ")");
+        });
+        this.honestAfter(id, NONE, 0);
         this.finish(id);
     }
 

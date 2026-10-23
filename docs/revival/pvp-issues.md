@@ -1,8 +1,8 @@
 # 1.7 PvP issues: the checklist
 
-Status: 2026-10-22, branch `revival/authoritative` at commit `fa179ece` (the classic audit, `auth-classic-audit.md`:
-the jump-reset alert, the two parity switches as the user set them, the stale self-echo fixes, the keep-sprint and
-never-loaded holes closed). The live suites are green on `classic-capped`, both trackers: cheat suite 119/119, cheat suite 2 54/54. The
+Status: 2026-10-23, branch `revival/authoritative` (the classic audit, `auth-classic-audit.md`: the jump-reset alert,
+the two parity switches as the user set them, the stale self-echo fixes, the keep-sprint and never-loaded holes closed;
+then the ghost-hand rule, WD-4). The live suites are green on `classic-capped`, both trackers: cheat suite 124/124, cheat suite 2 54/54. The
 real client (run `classic6`) is exact with every hit `VALID` at localhost, 150, 250 and 300 ms. This is a list of every problem 1.7 PvP
 is known to have, checked against the authoritative RevivalPaper server. It draws on the community's own record
 (sources at the end) and on this repo's design, code, tests and real-client runs.
@@ -52,15 +52,15 @@ policy in `revival.yml` and server configs), **core** (the HCFR plugins, outside
 
 | | Count |
 |---|---|
-| Solved | 36 |
-| Partial | 24 |
+| Solved | 37 |
+| Partial | 23 |
 | Accepted | 8 (5 of them [limit]) |
 | Open | 1 |
 | Items | 69 |
 
-Since the last refresh (2026-10-21, `a7a84a06`): 12 items moved to Solved (HR-2, HR-6, IN-1, IN-2, IN-5, PR-3, NW-2,
-SV-6; SP-3, MV-3 and WD-1 once their cheat rows ran, one of which found a hole; and HR-11, which was never an issue
-under authority) and 5 from Open to Partial (KB-9, PR-1, PR-4, PR-7, CL-1). The classic audit added 3 items, all
+Since the last refresh (2026-10-21, `a7a84a06`): 13 items moved to Solved (HR-2, HR-6, IN-1, IN-2, IN-5, PR-3, NW-2,
+SV-6; SP-3, MV-3 and WD-1 once their cheat rows ran, one of which found a hole; WD-4, the ghost-hand rule, on
+2026-10-23; and HR-11, which was never an issue under authority) and 5 from Open to Partial (KB-9, PR-1, PR-4, PR-7, CL-1). The classic audit added 3 items, all
 Partial: BL-3, SP-5 and KB-10.
 
 Solved today, in short:
@@ -80,6 +80,7 @@ Solved today, in short:
 - 1.7 throws and flight.
 - The 26.3 interpolation stutter near the fight.
 - Ghost blocks and phasing through fake walls.
+- Ghost hand: chests, doors and digs through walls.
 - A stalled player: frozen, never kicked, still hittable where it stopped.
 - Far teleports and pearls into chunks the client lacks.
 - Paper's movement checks fighting the truth.
@@ -107,22 +108,21 @@ Solved items are left out.
 | 7 | [KB-4](#kb-4) | Partial | combat, netcode | The base knock points between server positions, not along what the attacker saw; unmeasured at ping. |
 | 8 | [VI-1](#vi-1) | Partial | netcode | Paths are exact within 24 blocks; beyond, the 26.3 stutter shows on 1.6-4% of moving ticks, at bow, rod and pearl range. |
 | 9 | [IN-4](#in-4) | Partial | netcode | Aim assist is measured (yaw GCD), with thresholds never tuned on real mouse data. |
-| 10 | [WD-4](#wd-4) | Partial | netcode | Ghost hand: doors, chests and digs are not ray-checked against walls (only predicted block changes are). |
-| 11 | [KB-10](#kb-10) | Partial | netcode | Jump-reset macros raise an alert, on thresholds from simulated players only. |
-| 12 | [IN-3](#in-3) | Partial | netcode | Autoclickers are capped at 12 CPS and a 20 CPS lock is flagged; the fixed-rate detector (`click-lock`) isn't built. |
-| 13 | [PR-4](#pr-4) | Partial | combat, core | 1.7's splash falloff is on; core's own pot precision may stack on it, and no pot drill compares them. |
-| 14 | [MV-5](#mv-5) | Partial | sim, netcode | Geysers, riptide, `vehicles: vanilla` and solid copies that went inexact still trust the client, within 1 block. |
-| 15 | [CL-2](#cl-2) | Partial | config | ViaVersion and Geyser players play client-trusted unless `ineligible: deny`; hcfr-core runs neither today. |
-| 16 | [CL-3](#cl-3) | Partial | config | GrimAC false flags on legit 1.7 play; the GrimAC checklist was never run with a real client. |
-| 17 | [PR-6](#pr-6) | Partial | config | Split damage windows are built and live-tested but off by default, so fire ticks and arrows still eat sword hits. |
-| 18 | [VI-4](#vi-4) | Partial | config, netcode | Anti-ESP is built but off by default, and pop-in when it is on is unmeasured. |
-| 19 | [SV-5](#sv-5) | Partial | netcode | Plugins that write velocity or teleports around the choke point get upper-bound timing and corrections. |
-| 20 | [SV-3](#sv-3) | Partial | config | Leaf options that drop or delay knockback are documented but not refused. |
-| 21 | [SV-4](#sv-4) | Partial | netcode | An exception in authority code falls back to the claim, but no fault-injection test proves it never kicks. |
-| 22 | [VI-3](#vi-3) | Partial | netcode | Invisible or teleporting opponents after a desync are re-paired and counted, with no playtest budget yet. |
-| 23 | [HR-7](#hr-7) | Partial | combat, netcode | The 26.3 client picks the bare box, without 1.7's +0.1 margin; spear hits on players never land under enforce. |
-| 24 | [SP-4](#sp-4) | Open | netcode | W-tap and block-hit macros are not measured. |
-| 25 | [KB-9](#kb-9) | Partial | combat | Classic keeps 1.7's combo lock by design; DI is built in `neue`, which is parked. |
+| 10 | [KB-10](#kb-10) | Partial | netcode | Jump-reset macros raise an alert, on thresholds from simulated players only. |
+| 11 | [IN-3](#in-3) | Partial | netcode | Autoclickers are capped at 12 CPS and a 20 CPS lock is flagged; the fixed-rate detector (`click-lock`) isn't built. |
+| 12 | [PR-4](#pr-4) | Partial | combat, core | 1.7's splash falloff is on; core's own pot precision may stack on it, and no pot drill compares them. |
+| 13 | [MV-5](#mv-5) | Partial | sim, netcode | Geysers, riptide, `vehicles: vanilla` and solid copies that went inexact still trust the client, within 1 block. |
+| 14 | [CL-2](#cl-2) | Partial | config | ViaVersion and Geyser players play client-trusted unless `ineligible: deny`; hcfr-core runs neither today. |
+| 15 | [CL-3](#cl-3) | Partial | config | GrimAC false flags on legit 1.7 play; the GrimAC checklist was never run with a real client. |
+| 16 | [PR-6](#pr-6) | Partial | config | Split damage windows are built and live-tested but off by default, so fire ticks and arrows still eat sword hits. |
+| 17 | [VI-4](#vi-4) | Partial | config, netcode | Anti-ESP is built but off by default, and pop-in when it is on is unmeasured. |
+| 18 | [SV-5](#sv-5) | Partial | netcode | Plugins that write velocity or teleports around the choke point get upper-bound timing and corrections. |
+| 19 | [SV-3](#sv-3) | Partial | config | Leaf options that drop or delay knockback are documented but not refused. |
+| 20 | [SV-4](#sv-4) | Partial | netcode | An exception in authority code falls back to the claim, but no fault-injection test proves it never kicks. |
+| 21 | [VI-3](#vi-3) | Partial | netcode | Invisible or teleporting opponents after a desync are re-paired and counted, with no playtest budget yet. |
+| 22 | [HR-7](#hr-7) | Partial | combat, netcode | The 26.3 client picks the bare box, without 1.7's +0.1 margin; spear hits on players never land under enforce. |
+| 23 | [SP-4](#sp-4) | Open | netcode | W-tap and block-hit macros are not measured. |
+| 24 | [KB-9](#kb-9) | Partial | combat | Classic keeps 1.7's combo lock by design; DI is built in `neue`, which is parked. |
 
 ---
 
@@ -1055,18 +1055,30 @@ Solved items are left out.
 - **Proof (exists):** cheat row "teleport: accept an id never sent (correction band) to drop fake walls" (the fake wall
   stops truth and client alike); cheat suite 2 "pearls: through a fake wall the client dropped from its world".
 
-### WD-4 Ghost hand: interacting through walls — Partial {#wd-4}
+### WD-4 Ghost hand: interacting through walls — Solved {#wd-4}
 
 - **Players:** opening doors, chests and gates through walls; freecam door breaks ([17]: Grim #1800). In HCF this is
   a raiding cheat.
 - **Cause:** client. The server checks interaction distance, not line of sight.
-- **Today:** predicted block changes must be on the client's crosshair (`PredictionRules`). Other interactions and
-  dig progress use Paper's checks (`auth-netcode.md` "Gaps"). The classic audit re-confirmed it (tracked here).
-- **Fix (netcode):** validate every `UseItemOn` and `START_DESTROY_BLOCK` target with `PickRay`'s block pass, from the
-  truth eye and the window's rotation, on the attacker's `WorldView`. The client can only touch the block its pick
-  returns. Refuse others (enforce), count them.
-- **Proof (to add):** cheat rows "open a chest behind a wall" and "break a door through a wall" (refused), with honest
-  controls; zero refusals across the rig's scenarios.
+- **Today:** under enforce, a `UseItemOn` (a door, chest or gate opened, a block placed) or a `START_DESTROY_BLOCK`
+  that a vanilla client couldn't have aimed is the input grammar's `unseen-target` (`AuthPlayer.handRule`). A click
+  passes when its block is on the client's crosshair: the server's pick from the tick's eye and rotation on the
+  client's own `WorldView`, as for predictions. Failing that, it passes when its point is on the block's outline and no
+  other block's outline stands between the eye and the point (`PickRay.clipTo`). The outline counts where it leaves
+  the cube (a lectern's top, a piston's arm, an open shulker's lid). A point merely near the block isn't enough:
+  vanilla's handler takes any point within a block of its centre, and one beside the wall would be in sight while the
+  block behind it isn't. A dig names no point, so it passes on the crosshair or when the face's centre or a point 0.4
+  toward any of its corners is in sight. An `unseen-target` is not handled. Its sequence is still acked, so the client's
+  prediction reverts, and it counts toward `stats.grammar-violations`. A dig is only checked at its start: vanilla
+  finishes no dig it never started. Entity interactions are not checked.
+- **Fix:** none in code.
+- **Proof (exists):** cheat rows "ghost hand: opens a chest behind a wall" (the chest stays shut, `unseen-target` 1)
+  and "ghost hand: starts digging a block behind a wall" (`unseen-target` 1). Their controls, "honest: opens a chest
+  in sight (control)", "honest: starts digging a block in sight (control)" and "honest: right-clicks a lectern's top,
+  above its cube (control)", count 0. Unit `InputRulesTest.anUnseenTargetIsCountedAndDropped`. Real client, 2026-10-23, run `classic10-blocks`
+  (localhost and r150j30): 97 block clicks and 24 dig starts per condition, none `unseen-target`, 0 corrections, every
+  claim exact. The clicks: a door toggled across a sweep of its wall, a chest, a lectern's top, a trapdoor, placements
+  across a sweep, a 4-block sneaking backward bridge, and digs across a sweep of a wall.
 
 ---
 
@@ -1514,13 +1526,9 @@ PR-8, NW-2 and SV-6 exist now (see each item).
 - tab latency from ack RTT (NW-3);
 - Leaf-flag refusal (SV-3).
 
-**Cheat suite** (`AuthCheatScenarios`). Green on `classic-capped` (111/111; cheat suite 2 54/54); the table in
+**Cheat suite** (`AuthCheatScenarios`). Green on `classic-capped` (124/124; cheat suite 2 54/54); the table in
 `auth-cheat-suite.md` predates the classic-audit rows. New rows:
 
-- keep-sprint (SP-3);
-- packet crits (MV-3);
-- the HCF block glitch with a cancelled placement (WD-1);
-- ghost-hand chest and door (WD-4);
 - fly and speed during a geyser or inexact-copy exemption (MV-5);
 - PacketEvents velocity bypass (SV-5);
 - `stop-sprint-on-block` on (BL-3).

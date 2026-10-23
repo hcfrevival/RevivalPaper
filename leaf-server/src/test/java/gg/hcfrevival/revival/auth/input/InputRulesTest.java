@@ -78,6 +78,17 @@ class InputRulesTest {
     }
 
     @Test
+    void anUnseenTargetIsCountedAndDropped() {
+        // pvp-issues WD-4: a block use or dig on a block another block hides (the sight test is AuthPlayer's)
+        final InputRules rules = new InputRules();
+        assertEquals(InputRules.UNSEEN_TARGET, rules.unseen());
+        assertEquals(1, rules.count(InputRules.UNSEEN_TARGET));
+        assertEquals(1, rules.total());
+        assertTrue(InputRules.drops(InputRules.UNSEEN_TARGET));
+        assertEquals("unseen-target", InputRules.name(InputRules.UNSEEN_TARGET));
+    }
+
+    @Test
     void clickAndCloseEveryTickWhileWalkingNeverOpenedAScreen() {
         // Review E8: [click, close] in every window with the keys held down is an inventory move
         final InputRules rules = new InputRules();

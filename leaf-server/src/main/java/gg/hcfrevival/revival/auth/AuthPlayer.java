@@ -1867,12 +1867,96 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
     private int handRule(final Packet<?> packet) {
         return switch (packet) {
             case final ServerboundUseItemPacket use -> this.rules.hand(use.hand() == InteractionHand.OFF_HAND, this.mainStartsUsing());
-            case final ServerboundUseItemOnPacket useOn -> this.rules.hand(useOn.hand() == InteractionHand.OFF_HAND, this.mainStartsUsing());
+            case final ServerboundUseItemOnPacket useOn -> {
+                final int hand = this.rules.hand(useOn.hand() == InteractionHand.OFF_HAND, this.mainStartsUsing());
+                final BlockHitResult hit = useOn.hitResult();
+                final BlockPos pos = hit.getBlockPos();
+                final Vec3 at = hit.getLocation();
+                // The block on the client's crosshair, else its point in sight. The point must be on the block's outline
+                // (vanilla's handler takes any point within a block of its centre: one beside a wall would be in sight while
+                // the block behind it isn't)
+                yield hand != InputRules.OK || this.onCrosshair(pos) || this.onOutline(pos, at) && this.inSight(pos, at.x, at.y, at.z)
+                    ? hand : this.rules.unseen();
+            }
+            case final ServerboundPlayerActionPacket action when action.getAction() == ServerboundPlayerActionPacket.Action.START_DESTROY_BLOCK ->
+                this.onCrosshair(action.getPos()) || this.faceInSight(action.getPos(), action.getDirection()) ? InputRules.OK : this.rules.unseen();
             case final net.minecraft.network.protocol.game.ServerboundInteractPacket interact ->
                 this.rules.hand(interact.hand() == InteractionHand.OFF_HAND, this.mainStartsUsing());
             case final ServerboundSetCarriedItemPacket carried -> this.rules.carried(carried.getSlot() != this.view.items.selected());
             default -> InputRules.OK;
         };
+    }
+
+    // pvp-issues WD-4: no other block's outline between the client's eye and (x, y, z) on block pos, on the client's own
+    // world (the first block its crosshair meets is the one it works). Not before the truth is seeded: no eye yet
+    private boolean inSight(final BlockPos pos, final double x, final double y, final double z) {
+        if (!this.simulation.seeded()) {
+            return true;
+        }
+        final gg.hcfrevival.revival.auth.combat.AttackerSnapshot eye = CombatWiring.snapshot(this);
+        final gg.hcfrevival.revival.auth.combat.PickRay ray = this.pickRay;
+        this.world.readAsClient(true);
+        try {
+            ray.clipTo(this.world, eye.eyeX(), eye.eyeY(), eye.eyeZ(), x, y, z);
+        } finally {
+            this.world.readAsClient(false);
+        }
+        return !ray.blockHit() || ray.blockPosX() == pos.getX() && ray.blockPosY() == pos.getY() && ray.blockPosZ() == pos.getZ();
+    }
+
+    // A dig names no point: the face is in sight when its centre or a point 0.4 toward any of its corners is (a block half
+    // behind another is still dug, as its crosshair may be on the visible half)
+    private boolean faceInSight(final BlockPos pos, final net.minecraft.core.Direction face) {
+        final double cx = pos.getX() + 0.5 + face.getStepX() * 0.5;
+        final double cy = pos.getY() + 0.5 + face.getStepY() * 0.5;
+        final double cz = pos.getZ() + 0.5 + face.getStepZ() * 0.5;
+        // Across the face: u is y on an x face, else x; v is y on a z face, else z
+        final net.minecraft.core.Direction.Axis axis = face.getAxis();
+        final boolean xFace = axis == net.minecraft.core.Direction.Axis.X;
+        final boolean zFace = axis == net.minecraft.core.Direction.Axis.Z;
+        for (int i = 0; i < 5; i++) {
+            final double a = i == 0 ? 0.0 : i <= 2 ? 0.4 : -0.4;
+            final double b = i == 0 ? 0.0 : i % 2 == 1 ? 0.4 : -0.4;
+            final double x = cx + (xFace ? 0.0 : a);
+            final double y = cy + (xFace ? a : 0.0) + (zFace ? b : 0.0);
+            final double z = cz + (zFace ? 0.0 : b);
+            if (this.inSight(pos, x, y, z)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // Within the block's outline as the client holds it, to a hair (an outline hit's location is computed on the block's own
+    // shape): its cube, or the bounds of an outline that leaves it (a lectern's top, a piston's arm). The view reads a
+    // shulker box closed, so one counts with its lid fully open
+    private boolean onOutline(final BlockPos pos, final Vec3 at) {
+        final double eps = 1.0E-4;
+        final double x = at.x - pos.getX();
+        final double y = at.y - pos.getY();
+        final double z = at.z - pos.getZ();
+        if (x >= -eps && x <= 1.0 + eps && y >= -eps && y <= 1.0 + eps && z >= -eps && z <= 1.0 + eps) {
+            return true;
+        }
+        final BlockState state;
+        final net.minecraft.world.phys.shapes.VoxelShape shape;
+        this.world.readAsClient(true);
+        try {
+            state = this.world.blockState(pos);
+            shape = this.world.outlineShape(state, pos);
+        } finally {
+            this.world.readAsClient(false);
+        }
+        final net.minecraft.world.phys.AABB box;
+        if (state.getBlock() instanceof net.minecraft.world.level.block.ShulkerBoxBlock) {
+            box = net.minecraft.world.entity.monster.Shulker.getProgressAabb(1.0F, state.getValue(net.minecraft.world.level.block.ShulkerBoxBlock.FACING),
+                0.5F, new Vec3(0.5, 0.0, 0.5));
+        } else if (shape.isEmpty()) {
+            return false;
+        } else {
+            box = shape.bounds();
+        }
+        return x >= box.minX - eps && x <= box.maxX + eps && y >= box.minY - eps && y <= box.maxY + eps && z >= box.minZ - eps && z <= box.maxZ + eps;
     }
 
     // The main hand holds an item the client starts using, so startUseItem's main-hand use consumed the click

@@ -36,7 +36,7 @@ it decides **when** the client saw what, and feeds the simulation and the mirror
 | `auth.reconcile.RebaseGuard` | With `rebase-epsilon` on: signed drift cap per axis per window of ticks |
 | `auth.input.InputEnvelope`, `InputStats` | Attack cap; click and yaw-GCD statistics (two sensitivities, smoothed-camera turns skipped) |
 | `auth.input.ClickBucket`, `CadenceWatch` | Neue's click cap (neue-combat §4.3) and the click-streak detector (§12.2 A) |
-| `auth.input.InputRules` | The in-tick input grammar of a vanilla client (attack/use while using, attack after use, attack after a container close, container click while walking, anything after the move claim) |
+| `auth.input.InputRules` | The in-tick input grammar of a vanilla client (attack/use while using, attack after use, attack after a container close, container click while walking, anything after the move claim, a block clicked or dug out of sight) |
 | `auth.input.AnomalyWatch` | `AuthInputAnomalyEvent` once per threshold crossing |
 | `auth.net.BypassAuditor` | Netty handlers around the encoder: physics packets written around the choke point (as `Packet` objects or pre-encoded) |
 | `auth.view.PredictionRules` | Which block changes a vanilla client predicts (a held block item, the block on its crosshair) |
@@ -80,7 +80,10 @@ it decides **when** the client saw what, and feeds the simulation and the mirror
 4. **Enforce extras.**
    - The input grammar (`InputRules`): an attack or use while the client uses an item (the release tick included), an
      attack after a use or after a container close in the same tick, a container click while the tick's input walks,
-     anything after the move claim: not handled (the client's own prediction still runs), counted, logged, and past
+     anything after the move claim, a block click or dig start the client couldn't have aimed (`unseen-target`,
+     pvp-issues WD-4: the block isn't on its crosshair, and another block's outline stands between its eye and the
+     clicked point, or every sampled point of the dug face): not handled (the client's own prediction still runs, and
+     reverts at the ack), counted, logged, and past
      `stats.grammar-violations` an `AuthInputAnomalyEvent`. A second move claim, input or sprint command in one tick, a
      pong after the tick's keybinds, more than 512 packets in one tick, a forged correction accept and a server
      teleport never accepted are protocol violations (kick).
@@ -330,6 +333,7 @@ second run) authority refuses.
 
 - Prediction admission follows a vanilla client's held item and crosshair; dig progress per tick is left to Paper's
   own break checks. Every sequence-carrying packet is acked when its window runs, even when Paper then drops it.
+  Block clicks and dig starts are checked for sight (`unseen-target`); entity interactions are not.
 - World border lerp is not modelled. Boats, shulkers and happy ghasts are the port's colliders at the boxes the client
   holds (`SolidMirrors`, auth-combat §3.5); a tick touching one whose copy isn't exact (until a re-pair), or over a
   potent sulfur geyser, is exempt (vanilla takes the claim within `external-movers.max-move`, a re-seed after).
