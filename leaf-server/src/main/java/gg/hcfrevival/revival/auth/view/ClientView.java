@@ -274,6 +274,11 @@ public final class ClientView {
         this.tabGameMode = mode;
     }
 
+    /** {@code Player.isCreative()} on the client: the tab list's game mode (AbstractClientPlayer.java:32-35). */
+    public boolean creative() {
+        return this.tabGameMode == GameType.CREATIVE;
+    }
+
     /** {@code SetPlayerTeam}, as {@code ClientPacketListener.handleSetPlayerTeamPacket} applies it. */
     public void team(final net.minecraft.network.protocol.game.ClientboundSetPlayerTeamPacket packet) {
         final String name = packet.getName();

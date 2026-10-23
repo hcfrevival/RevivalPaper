@@ -184,6 +184,21 @@ Mutation check: half-open `contains` made closed caught; the `nearest == 0.0` qu
 `x` instead of `xo + (x - xo)` caught; `<` vs `<=` against the block distance caught by the coplanar scenes. Two
 survivors are float-edge guards kept for exactness (the traversal's -1e-7 end pull and `dd < maxDistanceSq`).
 
+`SpearVerify` (2026-10-23) does the same for an attack-range item's pick, `PickRay.castAttackRange` (pvp-issues HR-7),
+against the client's own `AttackRange.getClosesetHit` (the real `getHitEntitiesAlong` and `getManyEntityHitResult` on
+a mocked level) and `raycastHitResult`'s block filter: head yaws apart from the body's, known movements along and
+against the look, random reaches and margins (0, 0.125, 0.3, random), boxes nudged within and just past the margin.
+It compares the result, the entity (the first nearest in the candidates' order) and the hit's bits, and checks
+`canPickAlong` against every candidate order. The camera is a mannequin, so its reach is `minReach * mobFactor`
+(mobFactor 1 here). One slip it caught by reading, before its first run: the line starts at `getEyePosition()` (the
+position) while the nearest hit is measured from `getEyePosition(1.0F)` (the lerp), an ulp apart.
+
+```
+~/Developer/tools/auth-rig/combat/build.sh SpearVerify 1000000 11
+OK: 1,000,000 scenes (260,567 entity, 58,862 of them by the margin; 521,282 block, 218,151 miss), 260,567 with every
+    candidate order checked, 0 mismatches, 21.6 s
+```
+
 `PickRayTest.blockClipMatchesTheServersVoxelShapeClip` checks the block pass against the server's Moonrise-patched
 `VoxelShape.clip` and `toAabbs` for every fifth block state (the port reads only `toAabbs()`, which Moonrise caches but
 does not change).

@@ -141,6 +141,9 @@ public final class InputRules {
     public static int action(final net.minecraft.network.protocol.Packet<?> packet) {
         return switch (packet) {
             case final net.minecraft.network.protocol.game.ServerboundAttackPacket ignored -> ATTACK;
+            // A spear's attack: Minecraft.startAttack sends it in place of the Attack, under the same keybinds (pvp-issues HR-7)
+            case final net.minecraft.network.protocol.game.ServerboundPlayerActionPacket action
+                when action.getAction() == net.minecraft.network.protocol.game.ServerboundPlayerActionPacket.Action.STAB -> ATTACK;
             case final net.minecraft.network.protocol.game.ServerboundUseItemPacket ignored -> USE;
             case final net.minecraft.network.protocol.game.ServerboundUseItemOnPacket ignored -> USE;
             case final net.minecraft.network.protocol.game.ServerboundInteractPacket ignored -> USE;

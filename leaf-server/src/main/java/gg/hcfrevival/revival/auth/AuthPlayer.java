@@ -181,6 +181,7 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
     private boolean kicked;
     private int runningTick;
     private float tickYRot;
+    private float headYRot;
     private float tickXRot;
     private int attacksThisTick;
     private double lastClaimX;
@@ -316,6 +317,11 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
     /** The rotation of tick {@code T}: the attack ray's direction (report 02 §2.2). */
     public float tickYRot() {
         return this.tickYRot;
+    }
+
+    /** {@code getYHeadRot()} at tick {@code T}'s keybinds: tick {@code T-1}'s yaw (an attack-range item's pick). */
+    public float headYRot() {
+        return this.headYRot;
     }
 
     public float tickXRot() {
@@ -2005,6 +2011,7 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
 
     // The rotation tick T ran with: its claim's (rotation is sent whenever it changed), or the one the client holds
     private void resolveRotation(final @Nullable ServerboundMovePlayerPacket claim) {
+        this.headYRot = this.tickYRot; // Player.aiStep set yHeadRot to the last tick's yaw: the head at this tick's keybinds
         if (claim != null && claim.hasRotation()) {
             this.stream.setRotation(claim.getYRot(0.0F), claim.getXRot(0.0F));
         }

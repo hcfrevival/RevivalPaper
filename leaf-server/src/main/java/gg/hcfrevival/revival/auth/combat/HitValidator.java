@@ -61,7 +61,7 @@ public final class HitValidator {
      */
     public HitCheck validate(final AttackerSnapshot attacker, final int targetId, final MirrorBook book, final int tick, final List<Candidate> others,
                              final PickWorld world, final long nowMillis, final long maxRewindMillis) {
-        if (attacker.attackRangeItem() || attacker.riding()) {
+        if (attacker.riding() || attacker.attackRangeItem() && attacker.reach() == null) {
             return new HitCheck(HitCheck.Verdict.UNKNOWN, HitCheck.Reason.UNSUPPORTED, Double.NaN, 0L);
         }
         if (!book.knows(targetId)) {
@@ -99,6 +99,25 @@ public final class HitValidator {
         for (int i = 0, size = others.size(); i < size; i++) {
             final Candidate other = others.get(i);
             ray.add(other.id(), other.box(), other.pickRadius(), other.pickableFromInside(), other.exact());
+        }
+        if (attacker.attackRangeItem()) {
+            // pvp-issues HR-7: a spear picks along its reach first (LocalPlayer.raycastHitResult); a miss there picks as usual
+            ray.castAttackRange(attacker, world);
+            if (ray.rangeKind() == PickRay.Kind.BLOCK) {
+                return new HitCheck(HitCheck.Verdict.INVALID, HitCheck.Reason.BLOCKED, Double.NaN, rewind, capped);
+            }
+            if (ray.rangeKind() == PickRay.Kind.ENTITY) {
+                final double along = ray.touched(target) ? Math.sqrt(ray.distanceSq(target)) : Double.NaN;
+                if (!targetExact) {
+                    return new HitCheck(HitCheck.Verdict.UNKNOWN, HitCheck.Reason.INEXACT_TARGET, along, rewind, false);
+                }
+                final boolean pickedAlong = ray.canPickAlong(target, true);
+                if (pickedAlong != ray.canPickAlong(target, false)) {
+                    return new HitCheck(HitCheck.Verdict.UNKNOWN, HitCheck.Reason.INEXACT_BLOCKER, along, rewind, capped);
+                }
+                return pickedAlong ? new HitCheck(HitCheck.Verdict.VALID, HitCheck.Reason.PICKED, along, rewind, capped)
+                    : new HitCheck(HitCheck.Verdict.INVALID, ray.touched(target) ? HitCheck.Reason.OCCLUDED : HitCheck.Reason.MISSED, along, rewind, capped);
+            }
         }
         ray.cast(attacker, world);
 

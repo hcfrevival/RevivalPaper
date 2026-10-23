@@ -121,7 +121,7 @@ Solved items are left out.
 | 17 | [VI-4](#vi-4) | Partial | config, netcode | Anti-ESP is built but off by default, and pop-in when it is on is unmeasured. |
 | 18 | [SV-5](#sv-5) | Partial | netcode | Plugins that write velocity or teleports around the choke point get upper-bound timing and corrections. |
 | 19 | [VI-3](#vi-3) | Partial | netcode | Invisible or teleporting opponents after a desync are re-paired and counted, with no playtest budget yet. |
-| 20 | [HR-7](#hr-7) | Partial | combat, netcode | The 26.3 client picks the bare box, without 1.7's +0.1 margin; spear hits on players never land under enforce. |
+| 20 | [HR-7](#hr-7) | Partial | combat, netcode | The 26.3 client picks the bare box, without 1.7's +0.1 margin; spear stabs land under enforce but aren't lag-compensated. |
 | 21 | [SP-4](#sp-4) | Open | netcode | W-tap and block-hit macros are not measured. |
 | 22 | [KB-9](#kb-9) | Partial | combat | Classic keeps 1.7's combo lock by design; DI is built in `neue`, which is parked. |
 
@@ -299,8 +299,14 @@ Solved items are left out.
 - **Cause:** client. The 26.3 client picks the bare 0.6 × 1.8 box (`getPickRadius() = 0`).
 - **Today:**
   - The box is kept by decision (`neue-combat.md` §1, §9): reach at the edge is about 0.1 shorter per side than 1.7.
-  - Separate gap: `HitValidator` returns `UNKNOWN UNSUPPORTED` for an attacker holding an item with
-    `ATTACK_RANGE` (vanilla spears), so under enforce spear hits on players never land.
+  - Spears (2026-10-23, corrected): a vanilla spear has `PIERCING_WEAPON`, so its attack is a stab
+    (`Minecraft.startAttack` sends `PlayerAction STAB`, never an `Attack`), which the server runs along its own line
+    (`PiercingWeapon.attack`, `getHitEntitiesAlong` from the attacker's truth): it lands under enforce, but on the
+    targets' current boxes, not lag-compensated. The input grammar takes a stab as an attack (a stab while charging the
+    spear is `attack-while-using`). An `Attack` from an item with `ATTACK_RANGE` and no piercing (a datapack weapon) is
+    judged on the client's own attack-range pick (`PickRay.castAttackRange`, `AttackRange.getClosesetHit`: the head's
+    last-tick yaw, the reach from the minimum to the maximum plus the known movement, the margin), falling back to the
+    usual pick as the client does; before, it was `UNKNOWN UNSUPPORTED` and never landed on a player.
 - **Fix (combat, netcode):**
   - Option A (keep): document that legacy reach is measured to the bare box.
   - Option B (restore): add `attack_range { max_reach: 3.0, hitbox_margin: 0.1 }` to the client decoration of legacy
@@ -309,11 +315,20 @@ Solved items are left out.
     - it adds `max(0, knownMovement · look)` to the reach (sprinting at someone reaches about 0.28 further);
     - it uses the head look angle and the nearest hit location.
 
-    So B is "1.7 margin plus a lunge", and `PickRay` must port that path bit for bit (it returns `UNSUPPORTED`
-    today). Port it either way, so spears work under enforce.
-- **Proof (to add):** extend `PickVerify` to the `ATTACK_RANGE` path against the real client (0 mismatches in 10^6
-  scenes). For B, the rig's `attack_ranges` at eye-to-box distances 2.95-3.15 with and without sprinting, all
-  `VALID` iff the client picked.
+    So B is "1.7 margin plus a lunge", and `PickRay` ports that path now (`castAttackRange`).
+  - Spears' stabs: lag-compensate them as attacks are (the hits the attacker's client saw along its line, on the
+    mirrors), which means taking `STAB` off vanilla's server-side line.
+- **Proof:**
+  - Exists: unit `PickRayTest` (the attack-range pick: past a sword's reach, under the minimum reach the usual pick, the
+    margin, the nearest hit, the known movement, a block before the minimum reach, the head's yaw);
+    `InputRulesTest.aSpearsStabIsAnAttack`; cheat rows "spear: an honest stab at 3.9 blocks, past a sword's reach
+    (control)" and "spear: a stab at 5.5 blocks, past the spear's reach".
+  - Exists: rig `SpearVerify` (2026-10-23), `castAttackRange` against the client's own `AttackRange.getClosesetHit`
+    and `raycastHitResult`'s block filter: 10^6 random scenes, 0 mismatches in the result, the entity and the hit's
+    bits (260,567 entity results, 58,862 of them through the margin; 521,282 block, 218,151 miss), and `canPickAlong`
+    against every candidate order in each entity scene.
+  - To add: for B, the rig's `attack_ranges` at eye-to-box distances 2.95-3.15 with and without sprinting, all `VALID`
+    iff the client picked; for the stabs, lag compensation and its rows.
 
 ### HR-8 Modern poses shrink the hitbox — Accepted (the modern box) {#hr-8}
 

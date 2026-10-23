@@ -78,6 +78,18 @@ class InputRulesTest {
     }
 
     @Test
+    void aSpearsStabIsAnAttack() {
+        // Minecraft.startAttack sends a STAB for a piercing weapon where it would send the Attack: handleKeybinds discards
+        // both while the client uses an item (charging the spear)
+        final net.minecraft.network.protocol.game.ServerboundPlayerActionPacket stab = new net.minecraft.network.protocol.game.ServerboundPlayerActionPacket(
+            net.minecraft.network.protocol.game.ServerboundPlayerActionPacket.Action.STAB, net.minecraft.core.BlockPos.ZERO, net.minecraft.core.Direction.DOWN);
+        assertEquals(ATTACK, InputRules.action(stab));
+        final InputRules rules = new InputRules();
+        rules.keybinds(true);
+        assertEquals(InputRules.ATTACK_WHILE_USING, rules.check(InputRules.action(stab), false));
+    }
+
+    @Test
     void anUnseenTargetIsCountedAndDropped() {
         // pvp-issues WD-4: a block use or dig on a block another block hides (the sight test is AuthPlayer's)
         final InputRules rules = new InputRules();

@@ -83,7 +83,19 @@ public final class CombatWiring implements ViewerMirrors, AttackJudge, Projectil
         return new AttackerSnapshot(sim.xo() + ox, sim.yo() + oy, sim.zo() + oz, sim.x() + ox, sim.y() + oy, sim.z() + oz,
             sim.eyeHeight(), attacker.tickYRot(), attacker.tickXRot(), ox == 0.0 && oy == 0.0 && oz == 0.0 ? sim.box() : sim.box().move(ox, oy, oz),
             attacker.view().attributes.value(Attributes.BLOCK_INTERACTION_RANGE), attacker.view().attributes.value(Attributes.ENTITY_INTERACTION_RANGE),
-            attacker.view().items.mainHand().has(DataComponents.ATTACK_RANGE), attacker.view().passenger());
+            attacker.view().items.mainHand().has(DataComponents.ATTACK_RANGE), attacker.view().passenger(),
+            reach(attacker, sim.vx(), sim.vy(), sim.vz()));
+    }
+
+    // An attack-range item's pick inputs (LocalPlayer.raycastHitResult reads getActiveItem: the main hand unless using)
+    private static AttackerSnapshot.@Nullable Reach reach(final AuthPlayer attacker, final double vx, final double vy, final double vz) {
+        final net.minecraft.world.item.component.AttackRange range = attacker.view().items.mainHand().get(DataComponents.ATTACK_RANGE);
+        if (range == null) {
+            return null;
+        }
+        final boolean creative = attacker.view().creative();
+        return new AttackerSnapshot.Reach(attacker.headYRot(), vx, vy, vz, creative ? range.minCreativeReach() : range.minReach(),
+            creative ? range.maxCreativeReach() : range.maxReach(), range.hitboxMargin());
     }
 
     /**
@@ -96,7 +108,7 @@ public final class CombatWiring implements ViewerMirrors, AttackJudge, Projectil
         return new AttackerSnapshot(p.getX(), p.getY(), p.getZ(), p.getX(), p.getY(), p.getZ(), p.getEyeHeight(), attacker.tickYRot(), attacker.tickXRot(),
             p.getBoundingBox(), attacker.view().attributes.value(Attributes.BLOCK_INTERACTION_RANGE),
             attacker.view().attributes.value(Attributes.ENTITY_INTERACTION_RANGE), attacker.view().items.mainHand().has(DataComponents.ATTACK_RANGE),
-            attacker.view().passenger());
+            attacker.view().passenger(), reach(attacker, p.getDeltaMovement().x, p.getDeltaMovement().y, p.getDeltaMovement().z));
     }
 
     private final MirrorBook.Sample capSample = new MirrorBook.Sample();

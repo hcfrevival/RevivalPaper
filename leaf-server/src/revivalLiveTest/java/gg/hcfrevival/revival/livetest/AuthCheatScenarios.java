@@ -305,6 +305,9 @@ final class AuthCheatScenarios {
         this.keepSprint("keep-sprint: the client skips its own x0.6 and sprint stop after a sprint hit", true);
         this.keepSprintAxe("keep-sprint: an honest sprint hit with an axe, one cooldown after the last (control)", false);
         this.keepSprintAxe("keep-sprint: the same axe hit, the client skipping its own x0.6 and sprint stop", true);
+        // pvp-issues HR-7: a vanilla spear stabs (PlayerAction STAB); the server hits along its own line
+        this.spearStab("spear: an honest stab at 3.9 blocks, past a sword's reach (control)", 3.9, true);
+        this.spearStab("spear: a stab at 5.5 blocks, past the spear's reach", 5.5, false);
         this.packetCrit("crits: an honest hit standing on the ground (control)", false);
         this.packetCrit("crits: claims a 0.0625 hop off the ground before the hit (packet criticals)", true);
         // Classic audit #9: eating and drinking under enforce, as an honest client does them
@@ -2649,6 +2652,37 @@ final class AuthCheatScenarios {
                 this.honestExpect(d.corrections() == 0, "no correction (" + d.corrections() + ")");
             } else {
                 this.expect(d.corrections() >= 1, "the client that skipped its slowdown was corrected (" + d.corrections() + ")");
+            }
+        });
+        this.honestAfter(id, NONE, 0);
+        this.finish(id);
+    }
+
+    // pvp-issues HR-7: a vanilla spear's attack is a stab (Minecraft.startAttack: PIERCING_WEAPON sends PlayerAction STAB,
+    // never an Attack), which the server runs along its own line (PiercingWeapon.attack: getHitEntitiesAlong from the
+    // attacker's truth, reach 2.0 to 4.5). Under enforce it lands within the spear's reach and not past it
+    private void spearStab(final String id, final double dz, final boolean inReach) {
+        this.combatJoin(id);
+        this.step(1, id + ": a spear, the victim ahead", () -> {
+            this.open(id);
+            this.give(this.c, new ItemStack(Items.IRON_SPEAR));
+            this.place(0.0, dz);
+            this.c.forcePosition = true;
+            this.c.keys = NONE;
+        });
+        final float[] health = new float[1];
+        this.step(30, id + ": the stab", () -> {
+            health[0] = this.v.player.getHealth();
+            this.c.actions.add(new ServerboundPlayerActionPacket(ServerboundPlayerActionPacket.Action.STAB, BlockPos.ZERO, Direction.DOWN));
+        });
+        this.judge(5, id, () -> {
+            final float dealt = health[0] - this.v.player.getHealth();
+            this.note("dealt " + dealt);
+            if (inReach) {
+                this.label = "CONTROL";
+                this.honestExpect(dealt > 0.0F, "the stab landed");
+            } else {
+                this.expect(dealt == 0.0F, "nothing past the spear's reach");
             }
         });
         this.honestAfter(id, NONE, 0);

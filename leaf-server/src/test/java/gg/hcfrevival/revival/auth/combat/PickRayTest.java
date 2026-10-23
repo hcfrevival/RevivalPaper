@@ -46,6 +46,86 @@ class PickRayTest {
         return ray;
     }
 
+    // A spear (AttackRange.java via Item.java:556: reach 2.0-4.5, margin 0.125) at (0.5, 64, 0.5), pitch 0
+    private static AttackerSnapshot spear(final float yRot, final float headYRot, final double knownZ) {
+        final AttackerSnapshot base = attacker(0.5, 64.0, 0.5, yRot, 0.0F, 4.5, 3.0);
+        return new AttackerSnapshot(base.xo(), base.yo(), base.zo(), base.x(), base.y(), base.z(), base.eyeHeight(), base.yRot(), base.xRot(), base.box(),
+            base.blockRange(), base.entityRange(), true, false, new AttackerSnapshot.Reach(headYRot, 0.0, 0.0, knownZ, 2.0F, 4.5F, 0.125F));
+    }
+
+    private static PickRay castAlong(final AttackerSnapshot attacker, final PickWorld world, final AABB... boxes) {
+        final PickRay ray = new PickRay();
+        for (int i = 0; i < boxes.length; i++) {
+            ray.add(i, boxes[i], 0.0F, true, true);
+        }
+        ray.castAttackRange(attacker, world);
+        return ray;
+    }
+
+    @Test
+    void aSpearReachesPastASwordsReach() {
+        // Its face 3.8 from the eye: past the 3.0 entity range, inside the spear's 4.5 (pvp-issues HR-7)
+        final AABB target = player(0.5, 64.0, 4.6);
+        final PickRay along = castAlong(spear(0.0F, 0.0F, 0.0), new CombatScenes.Blocks2(), target);
+        assertEquals(PickRay.Kind.ENTITY, along.rangeKind());
+        assertTrue(along.canPickAlong(0, false));
+        assertEquals(3.8 * 3.8, along.distanceSq(0), 1.0E-6); // the box is float-wide (0.3F)
+        assertFalse(cast(attacker(0.5, 64.0, 0.5, 0.0F, 0.0F, 4.5, 3.0), new CombatScenes.Blocks2(), target).kind() == PickRay.Kind.ENTITY);
+    }
+
+    @Test
+    void underTheMinimumReachTheClientPicksAsUsual() {
+        // The line starts 2.0 out: a box 0.8 from the eye is behind its start, a miss, and the client's usual pick takes it
+        final AABB target = player(0.5, 64.0, 1.6);
+        final PickRay along = castAlong(spear(0.0F, 0.0F, 0.0), new CombatScenes.Blocks2(), target);
+        assertEquals(PickRay.Kind.MISS, along.rangeKind());
+        assertEquals(PickRay.Kind.ENTITY, cast(spear(0.0F, 0.0F, 0.0), new CombatScenes.Blocks2(), target).kind());
+    }
+
+    @Test
+    void theMarginCatchesABoxTheLineJustMisses() {
+        // The line runs at x 0.5; the box starts at x 0.6, within the 0.125 margin, and nothing stands before its centre
+        final AABB target = new AABB(0.6, 64.0, 3.7, 1.2, 65.8F, 4.3);
+        final PickRay along = castAlong(spear(0.0F, 0.0F, 0.0), new CombatScenes.Blocks2(), target);
+        assertEquals(PickRay.Kind.ENTITY, along.rangeKind());
+        assertTrue(along.canPickAlong(0, false));
+        final AABB beyond = new AABB(0.7, 64.0, 3.7, 1.3, 65.8F, 4.3); // 0.2 off: outside the margin
+        assertEquals(PickRay.Kind.MISS, castAlong(spear(0.0F, 0.0F, 0.0), new CombatScenes.Blocks2(), beyond).rangeKind());
+    }
+
+    @Test
+    void theNearestHitTakesIt() {
+        final PickRay along = castAlong(spear(0.0F, 0.0F, 0.0), new CombatScenes.Blocks2(), player(0.5, 64.0, 4.6), player(0.5, 64.0, 3.6));
+        assertTrue(along.canPickAlong(1, false));
+        assertFalse(along.canPickAlong(0, false), "the nearer box takes the hit");
+    }
+
+    @Test
+    void movingTowardTheTargetReachesFurther() {
+        // getKnownMovement · look adds to the far end: a face 4.7 out is past 4.5 standing, inside it moving at 0.3
+        final AABB target = player(0.5, 64.0, 5.5);
+        assertEquals(PickRay.Kind.MISS, castAlong(spear(0.0F, 0.0F, 0.0), new CombatScenes.Blocks2(), target).rangeKind());
+        assertEquals(PickRay.Kind.ENTITY, castAlong(spear(0.0F, 0.0F, 0.3), new CombatScenes.Blocks2(), target).rangeKind());
+        assertEquals(PickRay.Kind.MISS, castAlong(spear(0.0F, 0.0F, -0.3), new CombatScenes.Blocks2(), target).rangeKind(), "moving away adds nothing");
+    }
+
+    @Test
+    void aBlockBeforeTheMinimumReachEndsIt() {
+        // A block face 0.5 ahead, nearer than the line's start: the client's hit is that block, no entity
+        final CombatScenes.Blocks2 world = new CombatScenes.Blocks2().set(0, 65, 1, Blocks.STONE.defaultBlockState());
+        final PickRay along = castAlong(spear(0.0F, 0.0F, 0.0), world, player(0.5, 64.0, 4.6));
+        assertEquals(PickRay.Kind.BLOCK, along.rangeKind());
+    }
+
+    @Test
+    void theHeadsYawSteersItNotTheTicks() {
+        // At the keybinds the head still has the last tick's yaw (Player.aiStep sets it after the move): south here, while
+        // this tick's yaw turned 30 degrees away
+        final AABB target = player(0.5, 64.0, 4.6);
+        assertEquals(PickRay.Kind.ENTITY, castAlong(spear(30.0F, 0.0F, 0.0), new CombatScenes.Blocks2(), target).rangeKind());
+        assertEquals(PickRay.Kind.MISS, castAlong(spear(0.0F, 30.0F, 0.0), new CombatScenes.Blocks2(), target).rangeKind());
+    }
+
     @Test
     void viewVectorIsTheClientsTableSine() {
         final Random random = new Random(3L);

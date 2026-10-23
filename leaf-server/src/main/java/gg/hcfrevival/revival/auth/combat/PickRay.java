@@ -314,6 +314,231 @@ public final class PickRay {
     }
 
     // ------------------------------------------------------------------------------------------------------------------
+    // Attack-range items (spears)
+    // ------------------------------------------------------------------------------------------------------------------
+
+    /**
+     * {@code LocalPlayer.raycastHitResult} for an attack-range item, its first part (LocalPlayer.java:1272-1281):
+     * {@code AttackRange.getClosesetHit} (AttackRange.java:58-82) → {@code ProjectileUtil.getHitEntitiesAlong}
+     * (ProjectileUtil.java:38-47, 86-101) and {@code getManyEntityHitResult} (:204-247), on the attacker's
+     * {@link AttackerSnapshot#reach}. The line runs from the minimum reach to the maximum (plus the known movement along
+     * it) along the head's look; a candidate counts by its bounding box (no pick radius), or, missed, by the box grown by
+     * the margin when no block stands between that hit and the box's centre. Its distance is the eye's to the hit. After
+     * it: {@link #rangeKind}; ENTITY candidates answer {@link #canPickAlong}; MISS means the client then picks as usual
+     * ({@link #cast}). Shortcut: the world border's clamp ({@code clipIncludingBorder}) isn't modelled.
+     */
+    public void castAttackRange(final AttackerSnapshot attacker, final PickWorld world) {
+        final AttackerSnapshot.Reach reach = java.util.Objects.requireNonNull(attacker.reach());
+        this.blockRange = attacker.blockRange();
+        // getHeadLookAngle() = calculateViewVector(getXRot(), getYHeadRot()) (Entity.java:2687-2689)
+        final float realXRot = attacker.xRot() * 0.017453292F;
+        final float realYRot = -reach.headYRot() * 0.017453292F;
+        final float yCos = Mth.cos(realYRot);
+        final float ySin = Mth.sin(realYRot);
+        final float xCos = Mth.cos(realXRot);
+        final float xSin = Mth.sin(realXRot);
+        final double lookX = ySin * xCos;
+        final double lookY = -xSin;
+        final double lookZ = yCos * xCos;
+        // The line starts at getEyePosition() (no partial tick: the position itself), while the nearest hit is measured
+        // from getEyePosition(partial) (Mth.lerp(1.0, xo, x)): an ulp apart at most, kept apart as vanilla does
+        final double originX = attacker.x();
+        final double originY = attacker.y() + attacker.eyeHeight();
+        final double originZ = attacker.z();
+        final double eyeX = attacker.eyeX();
+        final double eyeY = attacker.eyeY();
+        final double eyeZ = attacker.eyeZ();
+        final double min = reach.min();
+        final double fromX = originX + lookX * min;
+        final double fromY = originY + lookY * min;
+        final double fromZ = originZ + lookZ * min;
+        // knownMovement.dot(look), then the reach: effectiveMaxRange + max(0, that)
+        final double movement = reach.knownX() * lookX + reach.knownY() * lookY + reach.knownZ() * lookZ;
+        final double max = reach.max() + Math.max(0.0, movement);
+        double toX = originX + lookX * max;
+        double toY = originY + lookY * max;
+        double toZ = originZ + lookZ * max;
+
+        // clipIncludingBorder(new ClipContext(origin, to, OUTLINE, NONE, source)): a block before the minimum reach ends it
+        this.clipTo(world, originX, originY, originZ, toX, toY, toZ);
+        this.rangeKind = Kind.MISS;
+        final boolean blockAlong = this.blockHit; // the margin clips below reuse the block fields
+        if (blockAlong) {
+            toX = this.blockX;
+            toY = this.blockY;
+            toZ = this.blockZ;
+            if (RemoteMirror.distanceToSqr(originX, originY, originZ, toX, toY, toZ)
+                < RemoteMirror.distanceToSqr(originX, originY, originZ, fromX, fromY, fromZ)) {
+                // Either.left(block), then raycastHitResult's filterHitResult (from getEyePosition(partial)): out of the
+                // block range, a miss
+                this.rangeKind = RemoteMirror.distanceToSqr(eyeX, eyeY, eyeZ, toX, toY, toZ) < this.blockRange * this.blockRange ? Kind.BLOCK : Kind.MISS;
+                this.markAllOutside();
+                return;
+            }
+        }
+
+        // AABB.ofSize(from, margin, margin, margin).expandTowards(to - from).inflate(1.0)
+        final double margin = reach.margin();
+        final double dx = toX - fromX;
+        final double dy = toY - fromY;
+        final double dz = toZ - fromZ;
+        double aMinX = fromX - margin / 2.0;
+        double aMinY = fromY - margin / 2.0;
+        double aMinZ = fromZ - margin / 2.0;
+        double aMaxX = fromX + margin / 2.0;
+        double aMaxY = fromY + margin / 2.0;
+        double aMaxZ = fromZ + margin / 2.0;
+        if (dx < 0.0) {
+            aMinX += dx;
+        } else if (dx > 0.0) {
+            aMaxX += dx;
+        }
+        if (dy < 0.0) {
+            aMinY += dy;
+        } else if (dy > 0.0) {
+            aMaxY += dy;
+        }
+        if (dz < 0.0) {
+            aMinZ += dz;
+        } else if (dz > 0.0) {
+            aMaxZ += dz;
+        }
+        final double searchMinX = Math.min(aMinX, aMaxX) - 1.0;
+        final double searchMinY = Math.min(aMinY, aMaxY) - 1.0;
+        final double searchMinZ = Math.min(aMinZ, aMaxZ) - 1.0;
+        final double searchMaxX = Math.max(aMinX, aMaxX) + 1.0;
+        final double searchMaxY = Math.max(aMinY, aMaxY) + 1.0;
+        final double searchMaxZ = Math.max(aMinZ, aMaxZ) + 1.0;
+
+        boolean any = false;
+        for (int i = 0; i < this.count; i++) {
+            final int r = i * 6;
+            this.kinds[i] = OUTSIDE;
+            if (!(this.raw[r] < searchMaxX && this.raw[r + 3] > searchMinX && this.raw[r + 1] < searchMaxY && this.raw[r + 4] > searchMinY
+                && this.raw[r + 2] < searchMaxZ && this.raw[r + 5] > searchMinZ)) {
+                continue;
+            }
+            final double minX = this.raw[r];
+            final double minY = this.raw[r + 1];
+            final double minZ = this.raw[r + 2];
+            final double maxX = this.raw[r + 3];
+            final double maxY = this.raw[r + 4];
+            final double maxZ = this.raw[r + 5];
+            final int h = i * 3;
+            if (fromX >= minX && fromX < maxX && fromY >= minY && fromY < maxY && fromZ >= minZ && fromZ < maxZ) {
+                // includeFromEntity: the hit is from itself
+                this.hits[h] = fromX;
+                this.hits[h + 1] = fromY;
+                this.hits[h + 2] = fromZ;
+            } else if (this.clipFrom(fromX, fromY, fromZ, minX, minY, minZ, maxX, maxY, maxZ, dx, dy, dz)) {
+                this.hits[h] = fromX + this.clipScale * dx;
+                this.hits[h + 1] = fromY + this.clipScale * dy;
+                this.hits[h + 2] = fromZ + this.clipScale * dz;
+            } else if (margin > 0.0 && this.clipFrom(fromX, fromY, fromZ, minX - margin, minY - margin, minZ - margin, maxX + margin, maxY + margin,
+                maxZ + margin, dx, dy, dz)) {
+                final double outX = fromX + this.clipScale * dx;
+                final double outY = fromY + this.clipScale * dy;
+                final double outZ = fromZ + this.clipScale * dz;
+                // towardsTarget = entityBB.getCenter(), cut short by a block on the way (OUTLINE, as the caller's clip)
+                double towardX = minX + 0.5 * (maxX - minX);
+                double towardY = minY + 0.5 * (maxY - minY);
+                double towardZ = minZ + 0.5 * (maxZ - minZ);
+                this.clipTo(world, outX, outY, outZ, towardX, towardY, towardZ);
+                if (this.blockHit) {
+                    towardX = this.blockX;
+                    towardY = this.blockY;
+                    towardZ = this.blockZ;
+                }
+                if (!this.clipFrom(outX, outY, outZ, minX, minY, minZ, maxX, maxY, maxZ, towardX - outX, towardY - outY, towardZ - outZ)) {
+                    continue;
+                }
+                // projectSurfaceHitLocation: the surface hit, not the margin's
+                this.hits[h] = outX + this.clipScale * (towardX - outX);
+                this.hits[h + 1] = outY + this.clipScale * (towardY - outY);
+                this.hits[h + 2] = outZ + this.clipScale * (towardZ - outZ);
+            } else {
+                continue;
+            }
+            this.kinds[i] = CLIPPED;
+            this.distances[i] = RemoteMirror.distanceToSqr(eyeX, eyeY, eyeZ, this.hits[h], this.hits[h + 1], this.hits[h + 2]);
+            any = true;
+        }
+        // Either.right(entities) when any, else Either.left(the block clip): a block hit there is past the minimum reach, so
+        // it stands (filtered by the block range) and the client attacks nothing; a miss falls back to the usual pick
+        if (any) {
+            this.rangeKind = Kind.ENTITY;
+        } else if (blockAlong) {
+            this.rangeKind = RemoteMirror.distanceToSqr(eyeX, eyeY, eyeZ, toX, toY, toZ) < this.blockRange * this.blockRange ? Kind.BLOCK : Kind.MISS;
+        }
+    }
+
+    private Kind rangeKind = Kind.MISS;
+
+    private void markAllOutside() {
+        for (int i = 0; i < this.count; i++) {
+            this.kinds[i] = OUTSIDE;
+        }
+    }
+
+    // AABB.clip(from, to) with this from and delta: leaves the scale in clipScale (AABB.java:292-312)
+    private boolean clipFrom(final double fx, final double fy, final double fz, final double minX, final double minY, final double minZ,
+                             final double maxX, final double maxY, final double maxZ, final double dx, final double dy, final double dz) {
+        final double savedX = this.fromX;
+        final double savedY = this.fromY;
+        final double savedZ = this.fromZ;
+        this.fromX = fx;
+        this.fromY = fy;
+        this.fromZ = fz;
+        this.clipScale = 1.0;
+        this.clipHit = false;
+        this.clipBox(minX, minY, minZ, maxX, maxY, maxZ, dx, dy, dz);
+        this.fromX = savedX;
+        this.fromY = savedY;
+        this.fromZ = savedZ;
+        return this.clipHit;
+    }
+
+    /** What {@link #castAttackRange} came to: ENTITY (some candidate hit), BLOCK (the client attacks no entity) or MISS. */
+    public Kind rangeKind() {
+        return this.rangeKind;
+    }
+
+    /** After {@link #castAttackRange}: the nearest hit in index order (the first of a tie, as the client's {@code <}), or -1. */
+    public int nearestAlong() {
+        int nearest = -1;
+        double best = Double.MAX_VALUE;
+        for (int i = 0; i < this.count; i++) {
+            if (this.kinds[i] == CLIPPED && this.distances[i] < best) {
+                best = this.distances[i];
+                nearest = i;
+            }
+        }
+        return this.rangeKind == Kind.ENTITY ? nearest : -1;
+    }
+
+    /** After {@link #castAttackRange}: candidate {@code index}'s hit, {@code axis} 0-2. */
+    public double alongHit(final int index, final int axis) {
+        return this.hits[index * 3 + axis];
+    }
+
+    /**
+     * After {@link #castAttackRange}: whether the client's nearest hit can be candidate {@code index} in some entity
+     * order (its strict {@code <} keeps the first of a tie). {@code withInexact}: count inexact candidates as nearer too.
+     */
+    public boolean canPickAlong(final int index, final boolean withInexact) {
+        if (this.rangeKind != Kind.ENTITY || this.kinds[index] != CLIPPED) {
+            return false;
+        }
+        final double dd = this.distances[index];
+        for (int i = 0; i < this.count; i++) {
+            if (i != index && this.kinds[i] == CLIPPED && (withInexact || this.exact[i]) && this.distances[i] < dd) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    // ------------------------------------------------------------------------------------------------------------------
     // Block pass
     // ------------------------------------------------------------------------------------------------------------------
 
