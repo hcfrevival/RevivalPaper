@@ -1306,10 +1306,14 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
 
     /** {@code SGPLI.tick()}: windows the clock now allows run; frozen and kick checks for unanswered pings. */
     public void onServerTick() {
-        // Neue's landing pass (neue-combat §5.2): a held click lands here, past the bucket, the envelope and the judge
-        final ServerboundAttackPacket landing = gg.hcfrevival.revival.combat.NeueCombat.serverTick(this.player);
+        // Neue's landing pass (neue-combat §5.2): a held click lands here, past the bucket, the envelope and the judge. It
+        // lands when the window opens, so its click's time for the damage window is the landing's (SV-2)
+        final long landingNanos = System.nanoTime();
+        this.landingWaited = !this.landingWaited && this.landingWaits(landingNanos);
+        final ServerboundAttackPacket landing = this.landingWaited ? null
+            : gg.hcfrevival.revival.combat.NeueCombat.serverTick(this.player, landingNanos);
         if (landing != null) {
-            this.replayJudged(landing, landing.entityId()); // its reach was just re-checked on the attacker's mirror
+            this.replayJudged(landing, landing.entityId(), landingNanos); // its reach was just re-checked on the attacker's mirror
             gg.hcfrevival.revival.combat.NeueCombat.settle(this.player);
         }
         if (this.mode == AuthMode.OFF) {
@@ -1338,6 +1342,19 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
         }
         this.runReady();
         DebugHud.tick(this, this.settings());
+    }
+
+    // SV-2: right after a server stall, the windows this client sent through it still wait for the main thread. Their
+    // clicks reached the server before now, each with its own time, the one at the window's opening too; landing the
+    // held click, an older one, first would start the next window at the stall's end instead. So it waits a tick for
+    // them (the next tick's packets run first), and lands after them if none of them did. Never two ticks in a row: a
+    // server that stays behind has windows waiting at every tick. Only with the clicks' clock: off, a stall plays as it
+    // always has
+    private boolean landingWaited;
+
+    private boolean landingWaits(final long nowNanos) {
+        return Authority.behindNow(nowNanos) && this.arrivals.pending() > 0
+            && Revival.settings().legacyCombat(this.player.level().getWorld().getName()).damageWindows().meleeWallClock();
     }
 
     // Torture K1: this viewer's K, from its own ack jitter (p90 - p10 RTT); 0 until it has enough acks to tell. A switch
@@ -1570,6 +1587,7 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
     private void runWindow(final ClientStream.Window window, final boolean refused, final AuthoritativeSettings settings) {
         final int tick = window.tick();
         this.runningTick = tick;
+        this.runningArrivalNanos = window.arrivalNanos();
         this.stats.windows++;
         // Enforce: the simulation owns the sprint ledger, refused windows included; sprint packets move nothing (§7.2)
         this.player.revivalSprintLedger.simulated(this.mode == AuthMode.ENFORCE);
@@ -2241,7 +2259,7 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
         if (deliver) {
             // Neue's context around the replay: the judge's distance for the tipper (NaN: none), then held/landed/cleared
             gg.hcfrevival.revival.combat.NeueCombat.begin(this.player, attack, verdict == AttackJudge.VALID ? this.lastHitDistance : Double.NaN);
-            this.replayJudged(attack, verdict == AttackJudge.VALID && target instanceof Player ? target.getId() : -1);
+            this.replayJudged(attack, verdict == AttackJudge.VALID && target instanceof Player ? target.getId() : -1, this.runningArrivalNanos);
             gg.hcfrevival.revival.combat.NeueCombat.settle(this.player);
         }
     }
@@ -2249,18 +2267,34 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
     // The replay of an attack the judge called VALID on a player: Paper's range check after it (handleAttack) measures the
     // target's newest server box from the attacker's eye now, which a target running straight away at Speed III has left by
     // more than its 3-block leniency at 200 ms of rewind, and the hit vanished after its VALID (classic audit #7). The judge
-    // checked reach on what the attacker saw; that check skips the judged target only
-    private void replayJudged(final Packet<?> attack, final int targetId) {
+    // checked reach on what the attacker saw; that check skips the judged target only. clickNanos: when the click reached
+    // the server, for the target's damage window (SV-2)
+    private void replayJudged(final Packet<?> attack, final int targetId, final long clickNanos) {
         this.judgedTarget = targetId;
+        this.replayClickNanos = clickNanos;
         try {
             this.replay(attack);
         } finally {
             this.judgedTarget = -1;
+            this.replayClickNanos = 0L;
         }
     }
 
     // The player whose attack replay the judge called VALID, -1 outside one
     private int judgedTarget = -1;
+    // When the TickEnd of the window being run came off the wire (ArrivalStamps); that of the click being replayed, 0
+    // outside a replay
+    private long runningArrivalNanos;
+    private long replayClickNanos;
+
+    /**
+     * When the attack being replayed reached the server ({@code System.nanoTime}): its window's {@code TickEnd} arrival,
+     * which a server stall doesn't move (it only delays the window), or a held click's landing time; 0 outside a replay.
+     * The victim's melee window reads it (combat.DamageWindows, SV-2).
+     */
+    public long clickNanos() {
+        return this.replayClickNanos;
+    }
 
     /** The hook in {@code handleAttack}'s range check: whether this attack's reach was judged on what the attacker saw. */
     public boolean judgedReach(final net.minecraft.world.entity.Entity target) {

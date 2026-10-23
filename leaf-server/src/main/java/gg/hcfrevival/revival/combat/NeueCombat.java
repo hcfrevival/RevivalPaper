@@ -128,9 +128,10 @@ public final class NeueCombat {
      * the level ticked first. Under authority it returns the held click to replay through {@code handleAttack}, its
      * context begun (buffered, with the landing distance): replay it, then {@link #settle}. The token, envelope and judge
      * are skipped: the click paid and was judged when it was made, and reach was just re-checked on the attacker's mirror.
-     * Outside authority (§11) it lands the click itself, on server positions, and returns null.
+     * Outside authority (§11) it lands the click itself, on server positions, and returns null. {@code nowNanos}: the
+     * landing's time, which a click replayed under authority is dealt at (its damage window, SV-2).
      */
-    public static @Nullable ServerboundAttackPacket serverTick(final ServerPlayer attacker) {
+    public static @Nullable ServerboundAttackPacket serverTick(final ServerPlayer attacker, final long nowNanos) {
         final NeueState state = state(attacker);
         if (!state.pending()) {
             return null;
@@ -142,7 +143,7 @@ public final class NeueCombat {
         final ServerPlayer victim = target(attacker, state.pendingTarget());
         final boolean free = victim != null && (replay ? freeUnderAuthority(attacker, state) : freeOnServer(attacker, state));
         final Object packet = state.pendingPacket(); // still readable once due
-        if (state.landingStep(now(), victim != null, free, victim != null && windowOpen(victim)) != NeueState.DUE) {
+        if (state.landingStep(now(), victim != null, free, victim != null && windowOpen(victim, replay ? nowNanos : 0L)) != NeueState.DUE) {
             return null;
         }
         final boolean lineOfSight = rules(attacker).clickBufferLineOfSight();
@@ -545,9 +546,14 @@ public final class NeueCombat {
             && !victim.isRemoved() && !victim.isSpectator() && victim.level() == attacker.level() ? victim : null;
     }
 
-    /** 1.7's {@code hurtResistantTime > maxHurtResistantTime / 2}, inverted: the melee window is open to a fresh hit. */
-    static boolean windowOpen(final LivingEntity victim) {
-        return !(victim.damageCooldownTime > victim.invulnerableDuration / 2.0F);
+    /**
+     * 1.7's {@code hurtResistantTime > maxHurtResistantTime / 2}, inverted: the melee window is open to a fresh hit. A click
+     * authority replays at {@code clickNanos} (0: none) reads the counter its damage will meet, which follows the clicks'
+     * clock around a server stall (DamageWindows, SV-2).
+     */
+    static boolean windowOpen(final ServerPlayer victim, final long clickNanos) {
+        final int counter = clickNanos == 0L ? victim.damageCooldownTime : DamageWindows.meleeCounter(victim, clickNanos);
+        return !(counter > victim.invulnerableDuration / 2.0F);
     }
 
     // §5.2 step 3: the attacker's client would swing now with the same weapon in the same slot

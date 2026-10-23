@@ -1,5 +1,6 @@
 package gg.hcfrevival.revival.auth;
 
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import gg.hcfrevival.revival.RevivalTest;
@@ -39,5 +40,29 @@ class PauseClockTest {
         }
         final long caughtUp = Authority.lagMillisAt(t + 1310 * MS);
         assertTrue(caughtUp <= 2L, "the catch-up put the clock back on wall time (" + caughtUp + " ms)");
+    }
+
+    @Test
+    void theServerIsBehindFromAHitchOnNeverOnItsJitter() {
+        // SV-2: a damage window follows the clicks' clock once the server fell a period behind since its hit
+        final long period = 70 * MS; // a schedule of its own, as above
+        final int tick = 2_000_000_000;
+        final long t = 9_000_000 * MS;
+        Authority.noteServerTick(tick, t, period);
+        for (int i = 1; i <= 200; i++) {
+            Authority.noteServerTick(tick + i, t + i * period + (i % 2 == 0 ? 30 : -30) * MS, period);
+        }
+        assertFalse(Authority.behindSince(tick + 100, t + 200 * period + 40 * MS), "per-tick jitter under a period never puts it behind");
+        // A 200 ms hitch in tick 201: behind while it runs, then from that tick on
+        assertTrue(Authority.behindSince(tick + 300, t + 201 * period + 150 * MS), "behind while the hitch runs");
+        Authority.noteServerTick(tick + 201, t + 201 * period + 200 * MS, period);
+        Authority.noteServerTick(tick + 202, t + 201 * period + 202 * MS, period);
+        Authority.noteServerTick(tick + 203, t + 201 * period + 204 * MS, period);
+        assertTrue(Authority.behindSince(tick + 150, t + 201 * period + 205 * MS), "a window from before the hitch");
+        assertTrue(Authority.behindSince(tick + 202, t + 201 * period + 205 * MS), "a window from its catch-up ticks");
+        // Caught up
+        Authority.noteServerTick(tick + 204, t + 204 * period, period);
+        Authority.noteServerTick(tick + 205, t + 205 * period, period);
+        assertFalse(Authority.behindSince(tick + 204, t + 205 * period + 10 * MS), "a window from after it");
     }
 }

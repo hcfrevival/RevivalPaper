@@ -378,6 +378,8 @@ public final class Authority {
     private static long clockBaseNanos;
     private static long clockPeriodNanos;
     private static int clockLastTick = Integer.MIN_VALUE;
+    // SV-2: the last tick whose measurement found the server a tick period or more behind its schedule
+    private static int behindTick = Integer.MIN_VALUE;
 
     /** Main thread, from every player's connection tick: where the server stands against its tick schedule. */
     static void noteServerTick(final int tick, final long nowNanos, final long periodNanos) {
@@ -399,7 +401,29 @@ public final class Authority {
                 lagNanos = lag;
             }
         }
+        if (lagNanos >= periodNanos) {
+            behindTick = tick;
+        }
         nextDueNanos = clockBaseNanos + (tick + 1 - clockBaseTick) * periodNanos;
+    }
+
+    /**
+     * Whether the server fell a tick period or more behind its tick schedule in or after server tick {@code tick}, or is
+     * that far behind now (a hitch in progress, or the packets handled right after one). Only then do its ticks part from
+     * the players' time: within a period the ticks still count one a period, which the per-tick jitter of an ordinary
+     * server stays under (combat.DamageWindows, SV-2). Main thread.
+     */
+    public static boolean behindSince(final int tick) {
+        return behindSince(tick, System.nanoTime());
+    }
+
+    static boolean behindSince(final int tick, final long nowNanos) {
+        return behindTick >= tick || behindNow(nowNanos);
+    }
+
+    /** Whether the server is a tick period or more behind its schedule at {@code nowNanos} (SV-2). Main thread. */
+    static boolean behindNow(final long nowNanos) {
+        return clockBaseTick != Integer.MIN_VALUE && Math.max(lagNanos, nowNanos - nextDueNanos) >= clockPeriodNanos;
     }
 
     /** {@code System.currentTimeMillis()} less how far the server is behind its tick schedule, now: any thread. */

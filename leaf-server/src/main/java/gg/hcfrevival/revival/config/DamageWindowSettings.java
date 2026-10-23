@@ -14,13 +14,18 @@ import net.minecraft.resources.Identifier;
  * @param projectileTicks the projectile window's length, or {@link #INHERIT} for the entity's own (maximum no-damage ticks)
  * @param mobTicks the mob window's length, or {@link #INHERIT}
  * @param otherTicks the window for every other damage (fire, poison, drowning, fall, explosions...), or {@link #INHERIT}
+ * @param meleeWallClock around a server stall, a player's melee window between legacy clicks under authority counts
+ *                       the time between the clicks' arrivals instead of server ticks, so the stall neither keeps it
+ *                       shut nor, catching up, opens it early (pvp-issues SV-2); on schedule the ticks rule. Independent
+ *                       of {@code enabled}
  */
 public record DamageWindowSettings(
     boolean enabled,
     Set<Identifier> meleeProjectiles,
     int projectileTicks,
     int mobTicks,
-    int otherTicks
+    int otherTicks,
+    boolean meleeWallClock
 ) {
 
     public static final int INHERIT = -1;
@@ -44,7 +49,8 @@ public record DamageWindowSettings(
             Set.copyOf(melee),
             ticks(reader, world, "projectile-ticks"),
             ticks(reader, world, "mob-ticks"),
-            ticks(reader, world, "other-ticks")
+            ticks(reader, world, "other-ticks"),
+            reader.getWorldBoolean(world, PATH + "melee-wall-clock", true)
         );
     }
 

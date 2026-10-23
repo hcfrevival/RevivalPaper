@@ -31,10 +31,14 @@ public final class LegacyHitRegistration {
         return this.neue;
     }
 
-    /** Each tick: keep the no-cooldown modifier in step with the held item, the world and revival.yml; Neue's per-tick upkeep. */
+    /**
+     * Each tick (top of {@code ServerPlayer.tick}): keep the no-cooldown modifier in step with the held item, the world and
+     * revival.yml; Neue's per-tick upkeep; the melee window's level tick (SV-2).
+     */
     public void tick(final ServerPlayer player) {
         refresh(player, LegacyAttack.settings(player, player.getWeaponItem()));
         NeueCombat.tick(player);
+        DamageWindows.levelTick(player);
     }
 
     // hide-cooldown-on-items: an item that brings no attack speed of its own (a rod, a pot, a pearl) keeps the modifier, so
