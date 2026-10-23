@@ -70,7 +70,10 @@ strafe-jumps and hits back every 15 ticks) and `t_kb_chain` (20 knocks alternati
 cross-section of the gym (sprint-jump chains, stairs, slabs, ice, slime, water, ladder, ceiling, flush wall, sneak edge,
 cobweb, crawl, honey), nearest-first from the arena, then `t_far_tp`. **hitch**: client hitches of 250/500/1000 ms and
 2000 ms, server hitches of 300/700/1200 ms, during a duel. **marathon**: one teleport, then a 1,200-tick duel, with the
-stall profiles switched on only after the teleport. **bots**: 600 ticks in the load-bot arena aiming at the nearest player.
+stall profiles switched on only after the teleport. **far** (pvp-issues VI-1): the rig player watches the target
+strafe-jump 30 and 45 blocks away, past `exact-radius`, holding a sword and then a bow (`t_far_{sword,bow}_{30,45}`,
+200 ticks each, swords first so the bow's `ranged-linger-ticks` doesn't carry over); run it with `--revival
+replication.ranged-radius=64.0`. **bots**: 600 ticks in the load-bot arena aiming at the nearest player.
 
 What each column means:
 
@@ -630,7 +633,9 @@ python3 -I torture/build-doc.py                        # this file from torture/
 
 Ports: server 127.0.0.1:25600, proxy 25601. `torture.py` refuses to start when either is taken, starts one server, one
 proxy and one client per condition, stops only the pids it started, and stops a client that was kicked.
-`--revival key=value` (dotted for nested keys) overrides `revival.yml` for one run; every run starts from the defaults.
+`--revival key=value` (dotted for nested keys) overrides `revival.yml` for one run; every run starts from the defaults
+(`auth-torture/revival.default.yml`, saved the first time a jar wrote `revival.yml`). `--revival` can only set a key that
+file holds: after a jar adds keys, move it aside so the next `--jar` boot saves a new one.
 
 ## Limits
 

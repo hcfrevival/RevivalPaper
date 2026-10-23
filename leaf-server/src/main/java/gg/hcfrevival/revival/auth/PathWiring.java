@@ -28,7 +28,8 @@ import org.jspecify.annotations.Nullable;
  * is one step of its {@link PathFeed}; each viewer within {@code replication.exact-radius} gets the steps as K = 2
  * stepped moves, drained every server tick into that viewer's per-tick bundle (which carries our ping, R5), and the
  * vanilla tracker's movement packets for that player are withheld from it (R7). Viewers farther away keep the vanilla
- * cadence (still logged for their mirrors).
+ * cadence (still logged for their mirrors), unless they aim a ranged item: then the radius is
+ * {@code replication.ranged-radius} (VI-1).
  * <p>
  * Handovers keep each client's {@code VecDeltaCodec} base right: a viewer coming into range starts from the vanilla base
  * it holds; a viewer leaving range gets an {@code EntityPositionSync} at the vanilla base before vanilla deltas resume.
@@ -129,7 +130,8 @@ public final class PathWiring implements PathSink {
         if (old != null) {
             old.viewer.despawned();
         }
-        if (distanceSq(player, viewer) > settings.exactRadius() * settings.exactRadius() || !viewer.revivalAuth.eligible()) {
+        final double radius = radius(viewer, settings);
+        if (distanceSq(player, viewer) > radius * radius || !viewer.revivalAuth.eligible()) {
             return; // a ViaVersion or Geyser viewer keeps vanilla tracking: stepped moves through a translator are untested (N9)
         }
         for (final Packet<?> packet : pairing) {
@@ -187,14 +189,13 @@ public final class PathWiring implements PathSink {
         }
         final AuthoritativeSettings settings = Revival.settings().authoritative();
         final Target target = existing != null ? existing : targetOrNew(auth, settings);
-        final double enter = settings.exactRadius() * settings.exactRadius();
-        final double leave = (settings.exactRadius() + HYSTERESIS) * (settings.exactRadius() + HYSTERESIS);
         for (final ServerPlayerConnection connection : tracked) {
             final ServerPlayer viewer = connection.getPlayer();
             Fed fed = target.viewers.get(viewer);
             final double distance = distanceSq(player, viewer);
+            final double radius = radius(viewer, settings);
             if (fed == null) {
-                if (distance > enter || !viewer.revivalAuth.eligible()) {
+                if (distance > radius * radius || !viewer.revivalAuth.eligible()) {
                     continue;
                 }
                 // Into range: the client's codec base is the vanilla tracker's; the viewer's own K (review PT2-04, R2C-09:
@@ -204,7 +205,7 @@ public final class PathWiring implements PathSink {
                 fed.viewer.spawned(base.x, base.y, base.z, serverEntity.getLastSentYRot(), serverEntity.getLastSentXRot(), player.onGround(),
                     Authority.clockMillis());
                 target.viewers.put(viewer, fed);
-            } else if (distance > leave) {
+            } else if (distance > (radius + HYSTERESIS) * (radius + HYSTERESIS)) {
                 target.viewers.remove(viewer);
                 toVanilla(serverEntity, fed);
                 continue;
@@ -263,6 +264,13 @@ public final class PathWiring implements PathSink {
     /** Whether the player's movement comes from the simulation, so its path is authoritative. */
     static boolean replicated(final AuthPlayer auth) {
         return auth.mode() != AuthMode.OFF && auth.netActive();
+    }
+
+    // VI-1: 26.3's interpolation runs dry on the vanilla cadence (1.6% of moving ticks frozen past exact-radius in the torture
+    // rig), which only matters where a viewer aims: a bow, rod or thrown item gets the paths out to ranged-radius
+    private static double radius(final ServerPlayer viewer, final AuthoritativeSettings settings) {
+        return settings.rangedRadius() > settings.exactRadius() && viewer.revivalAuth.aimsRanged(settings, MinecraftServer.currentTick)
+            ? settings.rangedRadius() : settings.exactRadius();
     }
 
     private static double distanceSq(final ServerPlayer a, final ServerPlayer b) {

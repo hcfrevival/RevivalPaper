@@ -25,6 +25,7 @@ import java.util.EnumSet;
 import java.util.Set;
 import java.util.UUID;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.network.Connection;
 import net.minecraft.network.chat.Component;
 import net.minecraft.network.protocol.Packet;
@@ -140,6 +141,9 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
     private long lastHitRewindMillis = -1L;
     private double lastHitDistance = Double.NaN;
     private final InputStats inputStats = new InputStats();
+    // pvp-issues SP-4: the tap after each hit, forward let go (w-tap) and use held (block-hit)
+    private final gg.hcfrevival.revival.auth.input.TapWatch wTaps = new gg.hcfrevival.revival.auth.input.TapWatch();
+    private final gg.hcfrevival.revival.auth.input.TapWatch blockHits = new gg.hcfrevival.revival.auth.input.TapWatch();
     private final InputRules rules = new InputRules();
     private final AnomalyWatch anomalies = new AnomalyWatch();
     private final InputEnvelope envelope = new InputEnvelope();
@@ -295,6 +299,14 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
     /** The locked-cadence detector (neue-combat §12.2). */
     public gg.hcfrevival.revival.auth.input.CadenceWatch cadence() {
         return this.cadence;
+    }
+
+    public gg.hcfrevival.revival.auth.input.TapWatch wTaps() {
+        return this.wTaps;
+    }
+
+    public gg.hcfrevival.revival.auth.input.TapWatch blockHits() {
+        return this.blockHits;
     }
 
     public InputStats inputStats() {
@@ -1309,6 +1321,26 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
         return this.pathStep == 0 ? settings.pathStepTicks() : this.pathStep;
     }
 
+    // VI-1: the last server tick its hands were looked at, and the one its ranged aim lasts until
+    private int rangedChecked = Integer.MIN_VALUE;
+    private int rangedUntil = Integer.MIN_VALUE;
+
+    /**
+     * Whether this viewer holds a {@code replication.ranged-items} item in either hand, or did within
+     * {@code ranged-linger-ticks}: the players it could aim at get paths out to {@code ranged-radius} (pvp-issues VI-1).
+     * The hands are read once a server tick, however many players it views.
+     */
+    public boolean aimsRanged(final AuthoritativeSettings settings, final int now) {
+        if (this.rangedChecked != now) {
+            this.rangedChecked = now;
+            if (settings.rangedItems().contains(BuiltInRegistries.ITEM.getKey(this.player.getMainHandItem().getItem()))
+                || settings.rangedItems().contains(BuiltInRegistries.ITEM.getKey(this.player.getOffhandItem().getItem()))) {
+                this.rangedUntil = now + settings.rangedLingerTicks();
+            }
+        }
+        return now <= this.rangedUntil;
+    }
+
     // Hysteresis between low-jitter-ms and high-jitter-ms; a switch changes the K of every player fed to this viewer from
     // its next step on
     private void updatePathStep(final AuthoritativeSettings settings) {
@@ -1732,6 +1764,9 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
         this.repairSolids();
         this.mirrorTick(tick);
         this.inputStats.onTick(tick, this.attacksThisTick, claim != null && claim.hasRotation(), this.tickYRot);
+        // The keys the tick ends with: forward as sent, use as the simulation runs it (a block the server stopped ends the tap)
+        this.wTaps.onTick(tick, this.attacksThisTick > 0, (sentInput != null ? sentInput : this.stream.input()).forward());
+        this.blockHits.onTick(tick, this.attacksThisTick > 0, !(this.simulation.seeded() && this.simulation.usingItem()));
         if (settings.anomalyAlerts()) {
             this.checkAnomalies(settings);
         }
@@ -1751,6 +1786,9 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
         // A lock that held another click-lock-clicks: a steady human's chance lock rarely lasts (fable review #5, 12-14 CPS with
         // no tempo drift: 15-40 of 40 three-minute sessions lock at least once, 0-2 hold; fixed-rate clickers 28-40 hold)
         this.anomaly(AnomalyWatch.CLICK_LOCK, this.cadence.locked(), 2.0 * settings.anomalyClickLockClicks(), true);
+        // SP-4: the same tap to the tick after every hit; humans' spread breaks a run long before (tap study)
+        this.anomaly(AnomalyWatch.W_TAP_LOCK, this.wTaps.run(), settings.anomalyTapLockSamples(), true);
+        this.anomaly(AnomalyWatch.BLOCK_HIT_LOCK, this.blockHits.run(), settings.anomalyTapLockSamples(), true);
         // Classic audit #8: knocks taken on the ground with a jump in their own window, against the player's own jump rate
         final AuthStats stats = this.stats;
         final double base = stats.groundedTicks() == 0 ? 0.0 : (double) stats.groundJumps() / stats.groundedTicks();

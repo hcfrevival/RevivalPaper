@@ -1,6 +1,10 @@
 package gg.hcfrevival.revival.config;
 
 import gg.hcfrevival.revival.auth.AuthMode;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
+import net.minecraft.resources.Identifier;
 
 /**
  * The global {@code authoritative} section: the server, not the client, decides where players are and whether hits
@@ -93,6 +97,12 @@ import gg.hcfrevival.revival.auth.AuthMode;
  * @param keepAlive replication: nudge still players by 1/4096 block on alternate ticks so viewers never starve
  * @param exactRadius replication: exact paths, keep-alives and mirrors only within this many blocks of a viewer; beyond
  *                    it (plus 4 blocks of hysteresis) the vanilla tracker cadence, still logged
+ * @param rangedRadius replication: a viewer aiming a ranged item gets paths out to this many blocks instead, so the player
+ *                     it aims at doesn't stutter (MC-311974, pvp-issues VI-1); the player tracking range still caps it.
+ *                     0 (default) is off: design §15.6 keeps exact paths within exact-radius until its owner signs off on 64
+ * @param rangedLingerTicks replication: ...for this many server ticks after it last held one, so a hotbar switch between a
+ *                          pearl and a sword doesn't drop the far players off the feed and back
+ * @param rangedItems replication: the items that count, in either hand
  * @param preRoll replication: after a spawn, a hold step at the spawn point first (report 03 §6.3, M3)
  * @param respawnDistance replication: a jump farther than this from the viewer's display re-pairs instead of syncing
  * @param pathBuffer replication: authoritative steps kept for viewers that drain late; one further behind is re-paired
@@ -126,6 +136,8 @@ import gg.hcfrevival.revival.auth.AuthMode;
  *                               clicks more), ...
  * @param anomalyClickLockResidual ...no click further than this many ticks from their least-squares line...
  * @param anomalyClickLockMinCps ...at this many clicks a second or faster
+ * @param anomalyTapLockSamples {@code w-tap-lock} and {@code block-hit-lock}: hits in a row followed by the same w-tap or
+ *                              block-hit, to the tick (pvp-issues SP-4)
  * @param pongLagMs a second whose ack RTT runs this much over the keep-alive RTT is counted (pongs held back, review E5)
  * @param anomalyGrammarViolations input-grammar alert: actions a vanilla client can't send, since the player joined
  * @param anomalyJumpResetShare jump-reset alert (classic audit #8): the share of knocks applied on the ground whose own
@@ -203,6 +215,9 @@ public record AuthoritativeSettings(
     int stepSwitchSeconds,
     boolean keepAlive,
     double exactRadius,
+    double rangedRadius,
+    int rangedLingerTicks,
+    Set<Identifier> rangedItems,
     boolean preRoll,
     double respawnDistance,
     int pathBuffer,
@@ -224,6 +239,7 @@ public record AuthoritativeSettings(
     int anomalyClickLockClicks,
     double anomalyClickLockResidual,
     double anomalyClickLockMinCps,
+    int anomalyTapLockSamples,
     int pongLagMs,
     int anomalyGrammarViolations,
     double anomalyJumpResetShare,
@@ -250,6 +266,22 @@ public record AuthoritativeSettings(
     public static final int MIRROR_HISTORY_TICKS = 16;
     public static final int TIMER_QUEUE_CAP_MS = 400;
     public static final double DOUBLE_CLICK_RATIO = 1.0;
+    /** What a player aims at range with: launchers, rods and thrown items (potions are thrown at the thrower's feet). */
+    static final List<String> RANGED_ITEMS = List.of("minecraft:bow", "minecraft:crossbow", "minecraft:fishing_rod", "minecraft:ender_pearl",
+        "minecraft:snowball", "minecraft:egg", "minecraft:blue_egg", "minecraft:brown_egg", "minecraft:trident", "minecraft:wind_charge");
+
+    private static Set<Identifier> items(final ConfigReader reader, final String path, final List<String> def) {
+        final Set<Identifier> items = new HashSet<>();
+        for (final String entry : reader.getStringList(path, def)) {
+            final Identifier id = Identifier.tryParse(entry);
+            if (id == null) {
+                reader.problem(path, entry, "an item id such as minecraft:bow", "skipping it");
+            } else {
+                items.add(id);
+            }
+        }
+        return Set.copyOf(items);
+    }
 
     private static String apolloRules(final ConfigReader reader) {
         final String value = reader.getString(PATH + "client-profiles.apollo-rules", "follow").trim().toLowerCase(java.util.Locale.ROOT);
@@ -330,6 +362,9 @@ public record AuthoritativeSettings(
             Math.max(1, reader.getInt(PATH + "replication.step-switch-seconds", 5)),
             reader.getBoolean(PATH + "replication.keep-alive", true),
             Math.max(0.0, reader.getDouble(PATH + "replication.exact-radius", 24.0)),
+            Math.max(0.0, reader.getDouble(PATH + "replication.ranged-radius", 0.0)),
+            Math.max(0, reader.getInt(PATH + "replication.ranged-linger-ticks", 100)),
+            items(reader, PATH + "replication.ranged-items", RANGED_ITEMS),
             reader.getBoolean(PATH + "replication.pre-roll", true),
             Math.clamp(reader.getDouble(PATH + "replication.respawn-distance", 48.0), 1.0, 63.0),
             Math.max(8, reader.getInt(PATH + "replication.path-buffer", 64)),
@@ -351,6 +386,7 @@ public record AuthoritativeSettings(
             Math.clamp(reader.getInt(PATH + "stats.click-lock-clicks", gg.hcfrevival.revival.auth.input.CadenceWatch.LOCK_CLICKS), 10, 1000),
             Math.max(0.0, reader.getDouble(PATH + "stats.click-lock-residual", gg.hcfrevival.revival.auth.input.CadenceWatch.LOCK_RESIDUAL)),
             Math.max(0.1, reader.getDouble(PATH + "stats.click-lock-min-cps", gg.hcfrevival.revival.auth.input.CadenceWatch.LOCK_MIN_CPS)),
+            Math.max(2, reader.getInt(PATH + "stats.tap-lock-samples", gg.hcfrevival.revival.auth.input.TapWatch.LOCK_SAMPLES)),
             Math.max(0, reader.getInt(PATH + "stats.pong-lag-ms", 150)),
             Math.max(1, reader.getInt(PATH + "stats.grammar-violations", 3)),
             Math.clamp(reader.getDouble(PATH + "stats.jump-reset-share", 0.65), 0.0, 1.0),

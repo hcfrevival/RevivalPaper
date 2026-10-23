@@ -147,6 +147,15 @@ final class AuthLiveScenarios {
         this.tests.after(1, "auth: K per viewer: the walker is teleported out of exact-radius", () -> this.k1Away(40.0));
         this.tests.after(20, "auth: K per viewer: and back in", () -> this.k1Away(-40.0));
         this.tests.after(20, "auth: K per viewer: a walker coming into exact-radius is fed at the viewer's K1 (review PT2-04)", this::k1BackChecked);
+        this.tests.after(1, "auth: ranged paths: the walker 30 blocks from the viewer, past exact-radius", this::rangedAway);
+        this.tests.after(10, "auth: ranged paths: a viewer with no ranged item gets the vanilla cadence there", this::rangedUnfedChecked);
+        this.tests.after(1, "auth: ranged paths: the viewer takes a bow", () -> this.viewerHolds(Items.BOW));
+        this.tests.after(5, "auth: ranged paths: off by default (ranged-radius 0), a bow changes nothing; then on at 64", this::rangedOffChecked);
+        this.tests.after(5, "auth: ranged paths: a viewer holding a bow gets the walker's path out to ranged-radius (VI-1)", this::rangedFedChecked);
+        this.tests.after(1, "auth: ranged paths: the viewer switches to a sword", () -> this.viewerHolds(Items.DIAMOND_SWORD));
+        this.tests.after(60, "auth: ranged paths: the walker stays on the feed through ranged-linger-ticks", this::rangedLingerChecked);
+        this.tests.after(60, "auth: ranged paths: after it, the vanilla cadence again, from a position sync", this::rangedLingerOver);
+        this.tests.after(1, "auth: ranged paths: the walker back beside the viewer", this::rangedBack);
         this.hitRun(true);
         this.hitRun(false);
         this.tests.after(1, "auth: a double-tap sprint sword hit and an axe hit deal the same damage and knock with authority on and off", this::hitCompare);
@@ -892,6 +901,75 @@ final class AuthLiveScenarios {
         this.tests.check(maxLag - minLag < 0.5, "the delay holds (spread " + (maxLag - minLag) + ")");
         this.tests.check(inexact == 0, "the mirror stayed exact (" + inexact + " inexact samples)");
         return (minLag + maxLag) / 2.0;
+    }
+
+    // VI-1: replication.ranged-radius ------------------------------------------------------------------------------------
+
+    private int rangedMark;
+
+    private void rangedAway() {
+        final net.minecraft.server.level.ServerPlayer walker = this.auth.player();
+        final net.minecraft.server.level.ServerPlayer viewer = this.viewer.player;
+        // Past exact-radius and its hysteresis (24 + 4), inside the tracking range of this server's view-distance 2 (32)
+        walker.connection.teleport(viewer.getX() - 30.0, viewer.getY(), viewer.getZ(), walker.getYRot(), walker.getXRot());
+        this.rangedMark = this.viewer.received.size();
+    }
+
+    private void rangedUnfedChecked() {
+        this.tests.check(!this.walkerRemoved(), "the viewer still tracks the walker (distance " + this.client.player.distanceTo(this.viewer.player) + ")");
+        this.tests.check(!gg.hcfrevival.revival.auth.PathWiring.feeds(this.auth, this.viewer.player), "the walker isn't on the viewer's feed");
+    }
+
+    private void viewerHolds(final net.minecraft.world.item.Item item) {
+        this.viewer.player.getInventory().setItem(this.viewer.player.getInventory().getSelectedSlot(), new ItemStack(item));
+        this.rangedMark = this.viewer.received.size();
+    }
+
+    private void rangedOffChecked() {
+        this.tests.check(!gg.hcfrevival.revival.auth.PathWiring.feeds(this.auth, this.viewer.player), "not fed with ranged-radius at its default 0 ("
+            + gg.hcfrevival.revival.Revival.settings().authoritative().rangedRadius() + ")");
+        setAuth("authoritative.replication.ranged-radius", 64.0);
+        this.tests.check(gg.hcfrevival.revival.Revival.settings().authoritative().rangedRadius() == 64.0, "ranged-radius is 64 after /revival reload");
+    }
+
+    private void rangedFedChecked() {
+        this.tests.check(!this.walkerRemoved(), "the viewer still tracks the walker");
+        final int fedAt = gg.hcfrevival.revival.auth.PathWiring.fedStepTicks(this.auth, this.viewer.player);
+        final int k = this.viewer.player.revivalAuth.pathStepTicks(gg.hcfrevival.revival.Revival.settings().authoritative());
+        this.tests.check(fedAt == k, "the walker is on the viewer's feed at its K, 30 blocks out (" + fedAt + ", K" + k + ")");
+    }
+
+    private void rangedLingerChecked() {
+        this.tests.check(gg.hcfrevival.revival.auth.PathWiring.feeds(this.auth, this.viewer.player), "still fed 60 ticks after the switch");
+    }
+
+    private void rangedLingerOver() {
+        this.tests.check(!gg.hcfrevival.revival.auth.PathWiring.feeds(this.auth, this.viewer.player), "off the feed 120 ticks after the switch");
+        boolean synced = false;
+        for (final net.minecraft.network.protocol.game.ClientboundEntityPositionSyncPacket sync
+            : this.viewer.receivedOfType(net.minecraft.network.protocol.game.ClientboundEntityPositionSyncPacket.class, this.rangedMark)) {
+            synced |= sync.id() == this.client.player.getId();
+        }
+        this.tests.check(synced, "a position sync at the vanilla base handed the walker back to vanilla deltas");
+        this.tests.check(!this.walkerRemoved(), "the viewer still tracks the walker");
+    }
+
+    private void rangedBack() {
+        setAuth("authoritative.replication.ranged-radius", 0.0);
+        this.viewer.player.getInventory().setItem(this.viewer.player.getInventory().getSelectedSlot(), ItemStack.EMPTY);
+        final net.minecraft.server.level.ServerPlayer walker = this.auth.player();
+        final net.minecraft.server.level.ServerPlayer viewer = this.viewer.player;
+        walker.connection.teleport(viewer.getX() - 6.0, viewer.getY(), viewer.getZ(), walker.getYRot(), walker.getXRot());
+    }
+
+    // Whether the viewer's client was told to remove the walker since rangedMark (it left tracking range)
+    private boolean walkerRemoved() {
+        boolean removed = false;
+        for (final net.minecraft.network.protocol.game.ClientboundRemoveEntitiesPacket remove
+            : this.viewer.receivedOfType(net.minecraft.network.protocol.game.ClientboundRemoveEntitiesPacket.class, this.rangedMark)) {
+            removed |= remove.entityIds().contains(this.client.player.getId());
+        }
+        return removed;
     }
 
     // §15.5: hits with authority on and off ---------------------------------------------------------------------------

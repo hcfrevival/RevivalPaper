@@ -12,9 +12,12 @@ public final class AnomalyWatch {
     public static final int CLICK_STREAK = 3;
     public static final int JUMP_RESET = 4;
     public static final int CLICK_LOCK = 5;
-    public static final int KINDS = 6;
+    public static final int W_TAP_LOCK = 6;
+    public static final int BLOCK_HIT_LOCK = 7;
+    public static final int KINDS = 8;
 
-    private static final String[] NAMES = {"double-clicks", "aim-gcd", "input-grammar", "click-streak", "jump-reset", "click-lock"};
+    private static final String[] NAMES = {"double-clicks", "aim-gcd", "input-grammar", "click-streak", "jump-reset", "click-lock", "w-tap-lock",
+        "block-hit-lock"};
 
     private final boolean[] raised = new boolean[KINDS];
 

@@ -53,15 +53,16 @@ policy in `revival.yml` and server configs), **core** (the HCFR plugins, outside
 | | Count |
 |---|---|
 | Solved | 39 |
-| Partial | 21 |
+| Partial | 22 |
 | Accepted | 8 (5 of them [limit]) |
-| Open | 1 |
+| Open | 0 |
 | Items | 69 |
 
 Since the last refresh (2026-10-21, `a7a84a06`): 15 items moved to Solved (HR-2, HR-6, IN-1, IN-2, IN-5, PR-3, NW-2,
 SV-6; SP-3, MV-3 and WD-1 once their cheat rows ran, one of which found a hole; WD-4 (the ghost-hand rule), SV-3 (Leaf's
 packet reductions refused) and SV-4 (faults injected into authority code) on 2026-10-23; and HR-11, which was never an
-issue under authority) and 5 from Open to Partial (KB-9, PR-1, PR-4, PR-7, CL-1). The classic audit added 3 items, all
+issue under authority) and 6 from Open to Partial (KB-9, PR-1, PR-4, PR-7, CL-1; SP-4, the tap-lock alerts, on
+2026-10-23). The classic audit added 3 items, all
 Partial: BL-3, SP-5 and KB-10.
 
 Solved today, in short:
@@ -109,7 +110,7 @@ Solved items are left out.
 | 5 | [PR-7](#pr-7) | Partial | combat, core | Pearls land only where a standing box fits and stop at fake walls; no running-server glitch suite, and core isn't told of a refund. |
 | 6 | [HR-3](#hr-3) | Partial | netcode | A low-ping cheater has about the 150 ms slack plus its jitter of free backtrack inside its cap; no `rewind-stretch` flag. |
 | 7 | [KB-4](#kb-4) | Partial | combat, netcode | The base knock points between server positions, not along what the attacker saw; unmeasured at ping. |
-| 8 | [VI-1](#vi-1) | Partial | netcode | Paths are exact within 24 blocks; beyond, the 26.3 stutter shows on 1.6-4% of moving ticks, at bow, rod and pearl range. |
+| 8 | [VI-1](#vi-1) | Partial | netcode, config | Paths are exact within 24 blocks. `ranged-radius` extends them to 64 for a viewer aiming a bow, rod or thrown item; it is built and off until §15.6 is signed off. |
 | 9 | [IN-4](#in-4) | Partial | netcode | Aim assist is measured (yaw GCD), with thresholds never tuned on real mouse data. |
 | 10 | [KB-10](#kb-10) | Partial | netcode | Jump-reset macros raise an alert, on thresholds from simulated players only. |
 | 11 | [IN-3](#in-3) | Partial | netcode | Autoclickers are capped at 12 CPS, and a 20 CPS lock or any fixed rate is flagged; the thresholds await real click data. |
@@ -122,7 +123,7 @@ Solved items are left out.
 | 18 | [SV-5](#sv-5) | Partial | netcode | Plugins that write velocity or teleports around the choke point get upper-bound timing and corrections. |
 | 19 | [VI-3](#vi-3) | Partial | netcode | Invisible or teleporting opponents after a desync are re-paired and counted, with no playtest budget yet. |
 | 20 | [HR-7](#hr-7) | Partial | combat, netcode | The 26.3 client picks the bare box, without 1.7's +0.1 margin; spear stabs land under enforce but aren't lag-compensated. |
-| 21 | [SP-4](#sp-4) | Open | netcode | W-tap and block-hit macros are not measured. |
+| 21 | [SP-4](#sp-4) | Partial | netcode | Tick-locked w-tap and block-hit macros raise an alert; macros timed in milliseconds mostly don't, and no real tap data has checked it. |
 | 22 | [KB-9](#kb-9) | Partial | combat | Classic keeps 1.7's combo lock by design; DI is built in `neue`, which is parked. |
 
 ---
@@ -631,16 +632,31 @@ Solved items are left out.
     (control)" and "sprint knock: an honest block-hit, the release a tick later, re-arms it (control)"; unit
     `InputRulesTest.aReleaseOnlyComesFromAWindowThatStartedUsing`.
 
-### SP-4 W-tap and block-hit macros — Open {#sp-4}
+### SP-4 W-tap and block-hit macros — Partial {#sp-4}
 
 - **Players:** macro w-taps and block-hits that are perfectly timed on every hit.
 - **Cause:** input. A macro presses real keys, so every packet is legal.
-- **Today:** nothing measures it. The jump-reset alert (KB-10) is the same idea for knocks.
-- **Fix (netcode):** evidence only, like the click detector. In `InputStats`, record per attack the gap from the last
-  STOP/START sprint (or block release) to the attack. Flag a gap that is fixed to the tick over 100 attacks, with
-  zero spread.
-- **Proof (to add):** a synthetic-population study like `neue-combat.md` §12.3: false positives per hour on human
-  timing models, detection rate on fixed-delay macros.
+- **Today:** an alert, never an action (2026-10-23, `auth.input.TapWatch`). A tap is what a hit is followed by:
+  forward let go and pressed again (a w-tap, the keys as the client sent them), or use held and let go (a block-hit, as
+  the simulation runs it). A tap that starts within 10 client ticks of an attack is one sample: its lead (the attack to
+  the tap's first tick) and its length. `AuthInputAnomalyEvent` `w-tap-lock` or `block-hit-lock` fires when
+  `stats.tap-lock-samples` (100) taps in a row are the same sample to the tick; `/revival auth inspect` shows each run,
+  its longest and the count.
+  - What it catches: a macro run on the client's ticks (a cheat client's w-tap module) every time, at the 100th tap. A
+    macro timed in milliseconds lands on two neighbouring ticks with the click's phase in its tick, so it is caught only
+    when its delays sit on 50 ms multiples with under about 2 ms of jitter.
+- **Fix (netcode):** calibrate on recorded taps; a macro timed in milliseconds needs a distribution test (two
+  neighbouring values at a steady ratio), which needs real human data first.
+- **Proof:**
+  - Exists: unit `TapWatchTest`; the tap study (2026-10-23, a replica of `TapWatch` with the click at a uniform phase in
+    its tick and the key read once a tick). Humans: 4,000 fights of 300 taps for each timing spread of 5, 10, 15, 20,
+    30 and 50 ms (lead mean 0-150 ms, length 50-200 ms): 0 flagged; the longest run of one sample was 60 at a 5 ms
+    spread (no human holds that), 17 at 20 ms. Macros: tick-locked, all flagged at tap 100; timed in milliseconds,
+    lead/length 50/100 ms or 0/50 ms with 0 jitter all flagged, with 2 ms 5% and 37%, with 8 ms none; 20/60, 30/75 and
+    10/110 ms none. Live rows "w-tap: a macro that lets go of forward 1 tick after every hit, for 2 ticks" and
+    "block-hit: a macro that blocks 1 tick after every hit, for 2 ticks" (flagged at 20 for the row), and "honest: a
+    w-tap and a block-hit after every hit, timed as a human (control)" (a 20 ms spread, not flagged).
+  - To add: runs of recorded taps from playtests (false positives per hour).
 
 ### SP-5 Swapping to the sword: the first hits skip 1.7's attacker slowdown — Accepted {#sp-5}
 
@@ -1123,15 +1139,29 @@ Solved items are left out.
   delay), else 2 (K2). A switch continues the paths in place (review 2 PT2-06), and a target walking into range is fed
   at the viewer's K (PT2-04). Beyond 24 blocks is vanilla cadence: in the torture rig the target froze on 97 of 6,138
   moving ticks there (1.6%, 4% at 30 ms jitter), which covers bow, rod and pearl aim at range.
-- **Fix (netcode):** extend K paths to every tracked player the viewer could aim at with a ranged item: the viewer
-  holds a bow, rod, pearl or snowball, and the target is within 64 blocks. Or raise `exact-radius` to 48, after SV-1
-  measures the cost.
+  - Built (2026-10-23), off by default: `replication.ranged-radius`. A viewer holding a `ranged-items` item in either
+    hand (bow, crossbow, rod, pearl, snowball, eggs, trident, wind charge), or one that held one within
+    `ranged-linger-ticks` (100, so a pearl-sword switch doesn't drop the far players and re-add them), gets K paths out
+    to that radius. Their mirrors are re-paired when inexact, as near ones are, which keeps lag-compensated arrows exact.
+    The hands are read once a server tick per viewer. With the default of 0, nothing changes and the check isn't run.
+- **Fix (netcode, config):** turn `ranged-radius` on at 64. That changes design §15.6 ("K2 paths, keep-alives and
+  mirrors only within a combat radius ... beyond it vanilla-cadence output"), so it needs the maintainer's sign-off.
+  The cost is a stepped move every K ticks per far player while a viewer aims, against vanilla's every 2 ticks while it
+  moves, plus keep-alive nudges for still ones. Every server's revival.yml already holds the 0 by then, so the new
+  default needs a `RevivalConfig` migration.
 - **Proof:**
   - Exists: rig `full3`, 0 freezes in 2,865 moving ticks within 24 blocks; torture steady links, 0 freezes inside the
     radius once the harness stopped respawning the target (`duelfix`); live "auth: the viewer's mirror of a walking
     player never freezes and trails it by the K2 delay" and "auth: K per viewer: one-tick steps, the mirror exact and a
     tick less behind".
-  - To add: `view_target_strafe` at 30 and 45 blocks, 0 freezes.
+  - Exists: live rows "auth: ranged paths: a viewer holding a bow gets the walker's path out to ranged-radius (VI-1)",
+    "...stays on the feed through ranged-linger-ticks" and "...after it, the vanilla cadence again, from a position sync"
+    (with a sword at 30 blocks, the vanilla cadence; at the default 0, a bow changes nothing). Torture set `far` (real
+    client, 2026-10-23, runs `far1` and `far2`, `ranged-radius` 64): the target strafe-jumping 30 and 45 blocks away at 0
+    to 250 ms with up to 30 ms of jitter. Holding a sword (the vanilla cadence) it froze on 51 of 2,117 moving ticks
+    (2.4%; 4.3% at 30 ms of jitter); holding a bow, on 0 of 2,103. 0 corrections, every claim exact, and the mirror's
+    box equal to the client's on all 4,800 ticks).
+  - To add: the sign-off, then the default.
 
 ### VI-2 Opponents are drawn behind (interpolation delay) — Accepted [limit] {#vi-2}
 

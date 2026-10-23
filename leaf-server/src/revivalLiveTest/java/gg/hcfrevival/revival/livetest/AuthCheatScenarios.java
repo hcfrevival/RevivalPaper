@@ -298,6 +298,10 @@ final class AuthCheatScenarios {
         // Classic audit #8: the jump-reset alert, a macro against an honest tap-hopper
         this.jumpReset("jump-reset: a macro that jumps in the window of every knock it takes on the ground", true);
         this.jumpReset("honest: a player who jumps on 3% of its ground ticks at random, knocked as often (control)", false);
+        // pvp-issues SP-4: tick-locked w-tap and block-hit macros against human timing
+        this.tapLock("w-tap: a macro that lets go of forward 1 tick after every hit, for 2 ticks", TAP_W, true);
+        this.tapLock("block-hit: a macro that blocks 1 tick after every hit, for 2 ticks", TAP_BLOCK, true);
+        this.tapLock("honest: a w-tap and a block-hit after every hit, timed as a human (control)", TAP_W | TAP_BLOCK, false);
         // Classic audit #13: a pot refill through the inventory screen mid-fight, as an honest client does it
         this.potRefill();
         // pvp-issues SP-3, MV-3: cheats authority closes by design, each against its honest control
@@ -2558,6 +2562,82 @@ final class AuthCheatScenarios {
             }
             this.c.before = null;
             this.configure("authoritative.stats.jump-reset-min-knocks", 40);
+        });
+        this.honestAfter(id, NONE, 0);
+        this.finish(id);
+    }
+
+    private static final int TAP_W = 1;
+    private static final int TAP_BLOCK = 2;
+
+    // pvp-issues SP-4: 30 hits 10 ticks apart, each followed by its taps. The macro's tap is the same to the tick every time
+    // (1 tick after the hit, 2 long); the control's lead and length are drawn around the same with a 20 ms spread (0.4
+    // ticks, seeded), tighter than the tap study's humans. The row lowers tap-lock-samples to 20. Forward walks into a wall
+    // (the attacks behind it are counted, valid or not), so the lane stays put
+    private void tapLock(final String id, final int taps, final boolean macro) {
+        this.combatJoin(id);
+        final int[] wall = new int[3];
+        this.step(1, id + ": a sword, a wall ahead, the victim behind it, 20 taps lock", () -> {
+            this.open(id);
+            this.configure("authoritative.stats.tap-lock-samples", 20);
+            this.give(this.c, new ItemStack(Items.DIAMOND_SWORD));
+            this.place(0.0, 2.8);
+            wall[0] = net.minecraft.util.Mth.floor(this.c.player.getX());
+            wall[1] = net.minecraft.util.Mth.floor(this.c.player.getY());
+            wall[2] = net.minecraft.util.Mth.floor(this.c.player.getZ()) + 1;
+            this.set(wall[0], wall[1], wall[2], Blocks.STONE.defaultBlockState());
+            this.set(wall[0], wall[1] + 1, wall[2], Blocks.STONE.defaultBlockState());
+            this.c.forcePosition = true;
+            this.c.keys = FORWARD;
+        });
+        final long[] before = new long[2];
+        this.arm(id, () -> {
+            before[0] = this.c.auth.wTaps().samples();
+            before[1] = this.c.auth.blockHits().samples();
+            final java.util.Random dice = new java.util.Random(5150L);
+            final int[] k = {-1};
+            final int[] gaps = {1, 2, 1, 2};
+            this.c.before = x -> {
+                final int t = ++k[0] % 10;
+                if (t == 0) {
+                    for (int g = 0; g < 4; g++) {
+                        gaps[g] = macro ? (g % 2 == 0 ? 1 : 2) : Math.max(g % 2, (int) Math.round((g % 2 == 0 ? 1.0 : 2.0) + 0.4 * dice.nextGaussian()));
+                    }
+                    this.attack(x, 1);
+                }
+                x.keys = (taps & TAP_W) != 0 && t >= gaps[0] && t < gaps[0] + gaps[1] ? NONE : FORWARD;
+                if ((taps & TAP_BLOCK) != 0 && t == gaps[2]) {
+                    x.actions.add(new ServerboundUseItemPacket(InteractionHand.MAIN_HAND, 1, x.yaw, x.pitch));
+                }
+                if ((taps & TAP_BLOCK) != 0 && t == gaps[2] + gaps[3]) {
+                    x.actions.add(new ServerboundPlayerActionPacket(ServerboundPlayerActionPacket.Action.RELEASE_USE_ITEM, BlockPos.ZERO, Direction.DOWN));
+                }
+            };
+        });
+        this.step(300, id + ": 30 hits", () -> {
+        });
+        this.judge(10, id, () -> {
+            final java.util.Set<String> raised = this.anomalies.getOrDefault(this.c.player.getUUID(), java.util.Set.of());
+            final gg.hcfrevival.revival.auth.input.TapWatch w = this.c.auth.wTaps();
+            final gg.hcfrevival.revival.auth.input.TapWatch b = this.c.auth.blockHits();
+            final long wSamples = w.samples() - before[0];
+            final long bSamples = b.samples() - before[1];
+            this.note("w-taps " + wSamples + " (longest run " + w.longest() + "), block-hits " + bSamples + " (longest run " + b.longest() + "), alerts "
+                + raised);
+            if (macro) {
+                final boolean block = (taps & TAP_BLOCK) != 0;
+                this.expect((block ? bSamples : wSamples) >= 25, "the taps were measured (" + (block ? bSamples : wSamples) + ")");
+                this.expect(raised.contains(block ? "block-hit-lock" : "w-tap-lock"), "the " + (block ? "block-hit-lock" : "w-tap-lock") + " alert fired");
+            } else {
+                this.label = "CONTROL";
+                this.honestExpect(wSamples >= 25 && bSamples >= 25, "both taps were measured (" + wSamples + ", " + bSamples + ")");
+                this.honestExpect(!raised.contains("w-tap-lock") && !raised.contains("block-hit-lock"), "no tap alert: " + raised);
+            }
+            this.c.before = null;
+            this.c.keys = NONE;
+            this.configure("authoritative.stats.tap-lock-samples", gg.hcfrevival.revival.auth.input.TapWatch.LOCK_SAMPLES);
+            this.set(wall[0], wall[1], wall[2], Blocks.AIR.defaultBlockState());
+            this.set(wall[0], wall[1] + 1, wall[2], Blocks.AIR.defaultBlockState());
         });
         this.honestAfter(id, NONE, 0);
         this.finish(id);
