@@ -52,10 +52,10 @@ policy in `revival.yml` and server configs), **core** (the HCFR plugins, outside
 
 | | Count |
 |---|---|
-| Solved | 35 |
+| Solved | 36 |
 | Partial | 24 |
 | Accepted | 8 (5 of them [limit]) |
-| Open | 2 |
+| Open | 1 |
 | Items | 69 |
 
 Since the last refresh (2026-10-21, `a7a84a06`): 12 items moved to Solved (HR-2, HR-6, IN-1, IN-2, IN-5, PR-3, NW-2,
@@ -123,7 +123,6 @@ Solved items are left out.
 | 23 | [HR-7](#hr-7) | Partial | combat, netcode | The 26.3 client picks the bare box, without 1.7's +0.1 margin; spear hits on players never land under enforce. |
 | 24 | [SP-4](#sp-4) | Open | netcode | W-tap and block-hit macros are not measured. |
 | 25 | [KB-9](#kb-9) | Partial | combat | Classic keeps 1.7's combo lock by design; DI is built in `neue`, which is parked. |
-| 26 | [NW-3](#nw-3) | Open | netcode | Tab ping is keep-alive based, not the RTT authority judges with. |
 
 ---
 
@@ -1290,16 +1289,19 @@ Solved items are left out.
   server teleport sent into it" (no violation) and "combat: hit a target whose link stopped 2 s ago, where it stopped"
   (`VALID` at 2050 ms past a 202 ms cap); the torture marathon and hitch runs: no kick after the stall fixes.
 
-### NW-3 Tab ping doesn't match what authority judges with — Open {#nw-3}
+### NW-3 Tab ping doesn't match what authority judges with — Solved (they match) {#nw-3}
 
 - **Players:** arguments about who is "really" lagging; ping spoofing as an excuse.
-- **Cause:** server. Tab latency comes from keepalives. Authority uses ack RTT (`rttBase`, the p10 of 256 samples,
-  or of the last 32 when that is higher).
-- **Today:** tab latency is vanilla's keep-alive RTT. `debug.hud` shows the last ack RTT and the last hit's rewind,
-  and `/revival auth inspect` the base. Seconds where the ack RTT runs more than `pong-lag-ms` (150) past the
-  keep-alive are counted (`pongsBehindKeepAlive`, review E5), never acted on.
-- **Fix (netcode):** report the ack RTT (a smoothed median) as the player's latency to the tab list and the API.
-- **Proof (to add):** unit test. The tab latency equals the median ack RTT within 5 ms over a simulated stream.
+- **Cause (claimed):** tab latency comes from keepalives, while authority times with the ack RTT (`rttBase`, a low
+  percentile of the last 256 acks, or of the last 32 when that is higher).
+- **Today:** the two measure the same path and agree. Paper's improved keepalives give the tab a 5-second average of
+  per-second keepalive round trips (`ServerCommonPacketListenerImpl.handleKeepAlive`), and the 26.3 client answers
+  keepalives on its main thread as it answers the authority's pings. `rttBase` is lower by design: a floor for the
+  timing caps, not a ping to show. Seconds where the ack RTT runs more than `pong-lag-ms` (150) past the keepalive
+  are counted (`pongsBehindKeepAlive`, review E5).
+- **Fix:** none.
+- **Proof:** real client, 2026-10-22, run `classic6` (about 43,000 samples): the tab latency median against the median
+  last ack RTT: 7.0 and 10.1 ms at localhost, 167 and 157 at r150j30, 264 and 257 at r250j30, 308 and 310 at r300j10.
 
 ---
 
