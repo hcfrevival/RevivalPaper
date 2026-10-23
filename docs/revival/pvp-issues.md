@@ -108,7 +108,7 @@ Solved items are left out.
 | 3 | [NW-1](#nw-1) | Partial | netcode | Steady links, Wi-Fi hiccups and 0.5% loss are clean on a real client; 2% loss at 150 ms and a 2 s freeze still cost corrections, and the loss costs hits. |
 | 4 | [SV-2](#sv-2) | Partial | combat | A server hitch no longer refuses hits, but damage windows count server ticks, so a stall shuts windows real time had opened. |
 | 5 | [PR-7](#pr-7) | Partial | combat, core | Pearls land only where a standing box fits and stop at fake walls; no running-server glitch suite, and core isn't told of a refund. |
-| 6 | [HR-3](#hr-3) | Partial | netcode | A low-ping cheater has about the 150 ms slack plus its jitter of free backtrack inside its cap; no `rewind-stretch` flag. |
+| 6 | [HR-3](#hr-3) | Partial | netcode | A low-ping cheater has about the 150 ms slack plus its jitter of free backtrack inside its cap; using it on every hit raises `rewind-stretch`, on thresholds from simulated and torture-rig play only. |
 | 7 | [KB-4](#kb-4) | Partial | combat, netcode | The base knock points between server positions, not along what the attacker saw; unmeasured at ping. |
 | 8 | [VI-1](#vi-1) | Partial | netcode, config | Paths are exact within 24 blocks. `ranged-radius` extends them to 64 for a viewer aiming a bow, rod or thrown item; it is built and off until §15.6 is signed off. |
 | 9 | [IN-4](#in-4) | Partial | netcode | Aim assist is measured (yaw GCD), with thresholds never tuned on real mouse data. |
@@ -207,14 +207,27 @@ Solved items are left out.
   - A 20 ms player's cap is about 20 + display + jitter + 150 ms, so the fake lag it can add freely is about the
     150 ms slack plus its own jitter. Past the cap its hits are judged at the target's truth at the capped age, not at
     the stale box it chose.
-- **Fix (netcode):** a `rewind-stretch` anomaly that flags a player whose hits keep using more rewind than its own RTT
-  and display delay explain: evidence for staff, like the other anomalies. Not specified beyond this line. The slack
-  itself is the price of honest tick waits.
+  - A stall widens it for a while (found 2026-10-23 in torture `freeze2`): the jitter term is the p90 of the last 256
+    acks, so a 2 s stall's late pongs keep it at the ceiling (`rtt-ceiling-ms`, 250 ms more) for about 13 s. A 20 ms
+    player who stalls on purpose gets about 520 ms of cap instead of 280 for that time.
+  - The `rewind-stretch` alert (2026-10-23, `auth.input.RewindWatch`): every valid melee hit's rewind, less the
+    attacker's `rttBase` and the display delay its mirror measured, is its excess; `AuthInputAnomalyEvent`
+    `rewind-stretch` fires when the median of the last `stats.rewind-stretch-hits` (30) valid hits is at least
+    `stats.rewind-stretch-ms` (100). Evidence for staff, never an action; `/revival auth inspect` shows the median, the
+    highest and the count.
+- **Fix (netcode):** calibrate `rewind-stretch` on recorded fights; make the jitter term forget a stall's drain sooner
+  (a §15.7 estimator change, for sign-off). The slack itself is the price of honest tick waits.
 - **Proof:**
   - Exists: cheat rows "combat: fake lag (pongs on time, the victim's movement shown 10 ticks late)" and "combat:
     backtrack past the rewind cap (pongs held 500 ms)" (both refused); cheat suite 2 "replication: perfectly regular
     pongs to get K1, then a 500 ms backtrack" (refused).
-  - To add: the `rewind-stretch` anomaly's own test, and a victim-side metric: the share of hits taken where the
+  - Exists: the honest excess on real clients through the torture proxy (2026-10-23, every tick the client showed
+    the target, runs `grid1` and `audit4-marathon`): median 5-61 ms on steady links from 0 to 250 ms with up to 30 ms
+    of jitter (p99 under 135, the most 159), 26-76 ms through 300 ms stalls every 4-5 s and 1 s stalls every 15 s.
+    Unit `RewindWatchTest`. Live rows "rewind-stretch: a client that holds its packets 150 ms before each swing"
+    (flagged) and "honest: hits at the client's own pace (control)" (not flagged), 2026-10-23: the cheat's 16 valid hits at a median 154 ms, the
+    control's at 5 ms.
+  - To add: false positives per hour on recorded fights, and a victim-side metric: the share of hits taken where the
     victim's own truth was more than 1 block from the attacker's mirrored box, p50 and p99 per ping band in playtests.
 
 ### HR-4 Reach, hitbox expand, through-wall hits, killaura without aim — Solved {#hr-4}

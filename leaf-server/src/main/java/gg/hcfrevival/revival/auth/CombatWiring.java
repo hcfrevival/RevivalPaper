@@ -217,6 +217,9 @@ public final class CombatWiring implements ViewerMirrors, AttackJudge, Projectil
             Authority.clockMillis(), cap);
         attacker.recordHit(check.verdict() == HitCheck.Verdict.VALID ? "VALID" : check.verdict().name() + " " + check.reason().name(),
             check.rewindMillis(), check.distance());
+        if (check.verdict() == HitCheck.Verdict.VALID) {
+            attacker.noteValidRewind(check.rewindMillis(), attacker.lastDisplayDelay(), settings);
+        }
         return switch (check.verdict()) {
             case VALID -> VALID;
             case INVALID -> INVALID;

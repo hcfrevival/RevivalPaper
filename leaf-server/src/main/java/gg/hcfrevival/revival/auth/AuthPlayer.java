@@ -144,6 +144,8 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
     // pvp-issues SP-4: the tap after each hit, forward let go (w-tap) and use held (block-hit)
     private final gg.hcfrevival.revival.auth.input.TapWatch wTaps = new gg.hcfrevival.revival.auth.input.TapWatch();
     private final gg.hcfrevival.revival.auth.input.TapWatch blockHits = new gg.hcfrevival.revival.auth.input.TapWatch();
+    // pvp-issues HR-3: valid hits' rewind past the base round trip and the display delay
+    private final gg.hcfrevival.revival.auth.input.RewindWatch rewinds = new gg.hcfrevival.revival.auth.input.RewindWatch();
     private final InputRules rules = new InputRules();
     private final AnomalyWatch anomalies = new AnomalyWatch();
     private final InputEnvelope envelope = new InputEnvelope();
@@ -307,6 +309,15 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
 
     public gg.hcfrevival.revival.auth.input.TapWatch blockHits() {
         return this.blockHits;
+    }
+
+    public gg.hcfrevival.revival.auth.input.RewindWatch rewinds() {
+        return this.rewinds;
+    }
+
+    /** A valid melee hit judged {@code rewindMillis} back, with the display delay its cap measured (HR-3). */
+    void noteValidRewind(final long rewindMillis, final long displayMillis, final AuthoritativeSettings settings) {
+        this.rewinds.onHit(rewindMillis - this.transactions.rttBaseNanos() / 1_000_000L - displayMillis, settings.anomalyRewindStretchHits());
     }
 
     public InputStats inputStats() {
@@ -1789,6 +1800,8 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
         // SP-4: the same tap to the tick after every hit; humans' spread breaks a run long before (tap study)
         this.anomaly(AnomalyWatch.W_TAP_LOCK, this.wTaps.run(), settings.anomalyTapLockSamples(), true);
         this.anomaly(AnomalyWatch.BLOCK_HIT_LOCK, this.blockHits.run(), settings.anomalyTapLockSamples(), true);
+        // HR-3: the median of the last valid hits' rewind past what the base round trip and the display delay explain
+        this.anomaly(AnomalyWatch.REWIND_STRETCH, this.rewinds.median(), settings.anomalyRewindStretchMs(), this.rewinds.full());
         // Classic audit #8: knocks taken on the ground with a jump in their own window, against the player's own jump rate
         final AuthStats stats = this.stats;
         final double base = stats.groundedTicks() == 0 ? 0.0 : (double) stats.groundJumps() / stats.groundedTicks();

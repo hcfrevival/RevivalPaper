@@ -21,7 +21,9 @@ import org.jspecify.annotations.NullMarked;
  *       jump rate (a velocity macro);</li>
  *   <li>{@code click-lock}: clicks in a row at one fixed rate (an autoclicker at any rate);</li>
  *   <li>{@code w-tap-lock}, {@code block-hit-lock}: hits in a row followed by the same w-tap or block-hit to the tick
- *       (a macro bound to the click).</li>
+ *       (a macro bound to the click);</li>
+ *   <li>{@code rewind-stretch}: the median rewind of the player's last valid hits, past what its own base round trip and
+ *       display delay explain (backtrack inside the rewind cap).</li>
  * </ul>
  */
 @NullMarked

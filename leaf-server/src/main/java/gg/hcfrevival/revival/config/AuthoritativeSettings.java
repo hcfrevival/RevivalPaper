@@ -138,6 +138,9 @@ import net.minecraft.resources.Identifier;
  * @param anomalyClickLockMinCps ...at this many clicks a second or faster
  * @param anomalyTapLockSamples {@code w-tap-lock} and {@code block-hit-lock}: hits in a row followed by the same w-tap or
  *                              block-hit, to the tick (pvp-issues SP-4)
+ * @param anomalyRewindStretchHits {@code rewind-stretch}: the valid hits whose median excess rewind is judged (HR-3)
+ * @param anomalyRewindStretchMs ...and the median, in ms past the attacker's base round trip and display delay, that
+ *                               raises it
  * @param pongLagMs a second whose ack RTT runs this much over the keep-alive RTT is counted (pongs held back, review E5)
  * @param anomalyGrammarViolations input-grammar alert: actions a vanilla client can't send, since the player joined
  * @param anomalyJumpResetShare jump-reset alert (classic audit #8): the share of knocks applied on the ground whose own
@@ -240,6 +243,8 @@ public record AuthoritativeSettings(
     double anomalyClickLockResidual,
     double anomalyClickLockMinCps,
     int anomalyTapLockSamples,
+    int anomalyRewindStretchHits,
+    long anomalyRewindStretchMs,
     int pongLagMs,
     int anomalyGrammarViolations,
     double anomalyJumpResetShare,
@@ -387,6 +392,8 @@ public record AuthoritativeSettings(
             Math.max(0.0, reader.getDouble(PATH + "stats.click-lock-residual", gg.hcfrevival.revival.auth.input.CadenceWatch.LOCK_RESIDUAL)),
             Math.max(0.1, reader.getDouble(PATH + "stats.click-lock-min-cps", gg.hcfrevival.revival.auth.input.CadenceWatch.LOCK_MIN_CPS)),
             Math.max(2, reader.getInt(PATH + "stats.tap-lock-samples", gg.hcfrevival.revival.auth.input.TapWatch.LOCK_SAMPLES)),
+            Math.clamp(reader.getInt(PATH + "stats.rewind-stretch-hits", gg.hcfrevival.revival.auth.input.RewindWatch.HITS), 5, 500),
+            Math.max(0L, (long) reader.getInt(PATH + "stats.rewind-stretch-ms", (int) gg.hcfrevival.revival.auth.input.RewindWatch.STRETCH_MS)),
             Math.max(0, reader.getInt(PATH + "stats.pong-lag-ms", 150)),
             Math.max(1, reader.getInt(PATH + "stats.grammar-violations", 3)),
             Math.clamp(reader.getDouble(PATH + "stats.jump-reset-share", 0.65), 0.0, 1.0),

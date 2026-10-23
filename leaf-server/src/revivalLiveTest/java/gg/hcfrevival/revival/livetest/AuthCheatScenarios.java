@@ -302,6 +302,9 @@ final class AuthCheatScenarios {
         this.tapLock("w-tap: a macro that lets go of forward 1 tick after every hit, for 2 ticks", TAP_W, true);
         this.tapLock("block-hit: a macro that blocks 1 tick after every hit, for 2 ticks", TAP_BLOCK, true);
         this.tapLock("honest: a w-tap and a block-hit after every hit, timed as a human (control)", TAP_W | TAP_BLOCK, false);
+        // pvp-issues HR-3: backtrack inside the rewind cap against an honest fighter
+        this.rewindStretch("rewind-stretch: a client that holds its packets 150 ms before each swing", true);
+        this.rewindStretch("honest: hits at the client's own pace (control)", false);
         // Classic audit #13: a pot refill through the inventory screen mid-fight, as an honest client does it
         this.potRefill();
         // pvp-issues SP-3, MV-3: cheats authority closes by design, each against its honest control
@@ -2638,6 +2641,68 @@ final class AuthCheatScenarios {
             this.configure("authoritative.stats.tap-lock-samples", gg.hcfrevival.revival.auth.input.TapWatch.LOCK_SAMPLES);
             this.set(wall[0], wall[1], wall[2], Blocks.AIR.defaultBlockState());
             this.set(wall[0], wall[1] + 1, wall[2], Blocks.AIR.defaultBlockState());
+        });
+        this.honestAfter(id, NONE, 0);
+        this.finish(id);
+    }
+
+    // pvp-issues HR-3: 16 hits 20 ticks apart on a victim re-placed 2.8 ahead (and healed) 14 ticks before each. The
+    // cheat holds everything from its pings on for the 3 ticks before each swing and lets it go the tick after, so its
+    // acked view is 150 ms old when it hits while its base round trip stays the link's: fake lag timed to its swings. The
+    // row widens rewind-slack-ms to 300 so every held hit stays inside the cap and is judged valid (the held pongs widen
+    // the cap's jitter term too, but only once a tenth of the 256-ack window holds them), and lowers rewind-stretch-hits
+    // to 10
+    private void rewindStretch(final String id, final boolean cheat) {
+        this.combatJoin(id);
+        this.step(1, id + ": a sword, the victim in reach, 10 hits judged, slack 300", () -> {
+            this.open(id);
+            this.configure("authoritative.stats.rewind-stretch-hits", 10);
+            this.configure("authoritative.rewind-slack-ms", 300);
+            this.give(this.c, new ItemStack(Items.DIAMOND_SWORD));
+            this.place(0.0, 2.8);
+            this.c.forcePosition = true;
+            this.c.keys = NONE;
+        });
+        final long[] before = new long[1];
+        this.arm(id, () -> {
+            before[0] = this.c.auth.rewinds().hits();
+            final int[] k = {-1};
+            this.c.before = x -> {
+                final int t = ++k[0] % 20;
+                if (t == 5) {
+                    this.place(0.0, 2.8);
+                    this.v.player.setHealth(20.0F); // sixteen sword hits would kill it
+                }
+                if (cheat && t == 16) {
+                    x.holdPongs = true;
+                }
+                if (t == 19) {
+                    this.attack(x, 1);
+                }
+                if (cheat && t == 0 && k[0] > 0) {
+                    x.releaseHeld();
+                }
+            };
+        });
+        this.step(320, id + ": 16 hits", () -> {
+        });
+        this.judge(10, id, () -> {
+            final boolean raised = this.anomalies.getOrDefault(this.c.player.getUUID(), java.util.Set.of()).contains("rewind-stretch");
+            final gg.hcfrevival.revival.auth.input.RewindWatch r = this.c.auth.rewinds();
+            final long valid = r.hits() - before[0];
+            this.note("valid hits " + valid + ", median excess " + r.median() + " ms (highest " + r.highest() + "), alert " + raised);
+            if (cheat) {
+                this.expect(valid >= 10, "its hits were judged valid (" + valid + ")");
+                this.expect(raised, "the rewind-stretch alert fired (median " + r.median() + " ms)");
+            } else {
+                this.label = "CONTROL";
+                this.honestExpect(valid >= 10, "its hits were judged valid (" + valid + ")");
+                this.honestExpect(!raised, "no rewind-stretch alert (median " + r.median() + " ms)");
+            }
+            this.c.before = null;
+            this.c.releaseHeld();
+            this.configure("authoritative.stats.rewind-stretch-hits", gg.hcfrevival.revival.auth.input.RewindWatch.HITS);
+            this.configure("authoritative.rewind-slack-ms", 150);
         });
         this.honestAfter(id, NONE, 0);
         this.finish(id);

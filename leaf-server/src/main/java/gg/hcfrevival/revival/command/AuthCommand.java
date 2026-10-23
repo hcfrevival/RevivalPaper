@@ -176,10 +176,11 @@ final class AuthCommand {
             tx.landingWindows(gg.hcfrevival.revival.auth.net.LandingLag.SCOPE, now, sampleAge), tx.landingWindows(gg.hcfrevival.revival.auth.net.LandingLag.TICK, now, sampleAge),
             tx.probes(), stats.correctionsMistimed(), stats.landingFallbacks(), stats.correctionsWaited(), stats.backstopsLimited(), stats.subMicronClaims(), auth.world().holes(),
             stats.holeClaims(), stats.holeSnaps()));
-        lines.add(String.format(Locale.ROOT, "attacks %d: accepted %d, rejected %d, over cap %d, over cps %d; eye offsets refused %d; knocks on the ground %d, jumped in their window %d; one-click streak %d (longest %d), fixed-rate lock %d (longest %d); w-tap lock %d (longest %d, %d taps), block-hit lock %d (longest %d, %d); double clicks %.1f%%, yaw gcd %.4f / %.4f (%d turns, %d misses, %d smoothed skipped)",
+        lines.add(String.format(Locale.ROOT, "attacks %d: accepted %d, rejected %d, over cap %d, over cps %d; eye offsets refused %d; knocks on the ground %d, jumped in their window %d; one-click streak %d (longest %d), fixed-rate lock %d (longest %d); w-tap lock %d (longest %d, %d taps), block-hit lock %d (longest %d, %d); rewind past rtt and display: median %d ms (highest %d, %d valid hits); double clicks %.1f%%, yaw gcd %.4f / %.4f (%d turns, %d misses, %d smoothed skipped)",
             stats.attacksQueued(), stats.attacksAccepted(), stats.attacksRejected(), stats.attacksOverCap(), stats.attacksOverCps(), stats.eyeOffsetsRefused(), stats.groundedKnocks(), stats.knockJumps(),
             auth.cadence().streak(), auth.cadence().longest(), auth.cadence().locked(), auth.cadence().longestLock(), auth.wTaps().run(), auth.wTaps().longest(), auth.wTaps().samples(),
-            auth.blockHits().run(), auth.blockHits().longest(), auth.blockHits().samples(), input.doubleClickRatio() * 100.0,
+            auth.blockHits().run(), auth.blockHits().longest(), auth.blockHits().samples(), auth.rewinds().median(),
+            auth.rewinds().highest() == Long.MIN_VALUE ? 0L : auth.rewinds().highest(), auth.rewinds().hits(), input.doubleClickRatio() * 100.0,
             input.yawGcd(), input.secondGcd(), input.turns(), input.gcdMisses(), input.smoothedTurns()));
         final gg.hcfrevival.revival.auth.input.InputRules rules = auth.inputRules();
         final StringBuilder grammar = new StringBuilder("input grammar: " + rules.total() + " broken, " + stats.grammarDropped() + " dropped");
