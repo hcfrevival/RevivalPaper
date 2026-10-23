@@ -65,8 +65,9 @@ public final class SelfEcho {
                 case ClientView.DATA_POSE -> replacement = (meant & POSE) != 0 ? value : null;
                 case ClientView.DATA_LIVING_ENTITY_FLAGS -> replacement = (meant & USE) != 0 ? value : null;
                 case ClientView.DATA_SHARED_FLAGS -> {
-                    final byte server = (Byte) value.value();
-                    if ((meant & (SPRINT | SWIM | GLIDE)) == 0 && (server & SERVER_FLAGS) == sentServerFlags) {
+                    if (!(value.value() instanceof final Byte server)) {
+                        replacement = value; // a plugin's malformed packet: as it was, never a ClassCastException on the send
+                    } else if ((meant & (SPRINT | SWIM | GLIDE)) == 0 && (server & SERVER_FLAGS) == sentServerFlags) {
                         // Only client-owned bits changed, and the client made those changes itself: a copy that lands
                         // after its next one undoes it (real client at 300 ms: a re-sprint undone in the tick of the next
                         // block-hit, so the hit went out unarmed, the client copying any sync like MC-69459)

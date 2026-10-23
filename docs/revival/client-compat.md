@@ -176,7 +176,8 @@ Option names come from the Apollo API's mod-setting classes [src]. Behaviour is 
 These are the surfaces a non-vanilla client can trip. All are [src] in `auth/`.
 
 - **Kick** in enforce (`AuthPlayer.protocolViolation`, message "Invalid transaction replies"):
-  - a second `PlayerInput`, sprint `PlayerCommand` or move claim in one window (`ClientStream.SECOND_CLAIM`);
+  - a second position claim in one window (`ClientStream.SECOND_CLAIM`; since §15.8 a second `PlayerInput` or sprint
+    `PlayerCommand` is counted, and since review 3 #5 any other extra move packet too);
   - a pong after the window's first non-GUI packet (`ClientStream.recordAck`, "a pong after the tick's keybinds");
   - skipped pings, and a pong for a ping never sent;
   - more than 512 packets in one window;

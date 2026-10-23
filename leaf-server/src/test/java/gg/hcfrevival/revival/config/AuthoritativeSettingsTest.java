@@ -48,4 +48,12 @@ class AuthoritativeSettingsTest {
         yaml.set("authoritative.mode", "observe");
         assertEquals(AuthMode.OBSERVE, AuthoritativeSettings.read(new ConfigReader(yaml)).mode());
     }
+
+    @Test
+    void aProtocolKickRateIsAtMostTheRingItIsCountedIn() {
+        // Review 3 #11: past 4096 the ring was re-made on every violation and the kick never fired
+        final YamlConfiguration yaml = new YamlConfiguration();
+        yaml.set("authoritative.client-profiles.protocol-kick-rate", 10000);
+        assertEquals(AuthoritativeSettings.MAX_PROTOCOL_KICK_RATE, AuthoritativeSettings.read(new ConfigReader(yaml)).protocolKickRate());
+    }
 }

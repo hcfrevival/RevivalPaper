@@ -167,6 +167,25 @@ live runner, sync tracker: 88 of 88 blocked, every honest phase clean. The suite
 | teleport: a server teleport that reaches the client 1.2 s late, walking (review X2-03) | honest | the server player walks on 2.6 blocks from the forced teleport; the late landing rolls nothing back; accept matched, no violation |
 | (after the summary) players who quit under authority are released (review PT2-02) | pass | 0 held |
 
+## Rows added by review 3, 2026-10-23 (145 of 145 with them)
+
+The Ponytail audit's findings (`auth-review-3.md`), each row next to the rows of its topic and named "review 3 #N". Each
+ran on `316a191f` as well (its main sources, these rows built in, `classic-capped`, filtered by `REVIVAL_LIVE_ONLY="review
+3"`): every cheat row leaked there and every control was hurt, except the two guards, which hold on both.
+
+| Row | On `316a191f` | With the fixes |
+|---|---|---|
+| stall: 30.0 s with nothing in or out, standing, then walks on as it comes back (review 3 #4) | kicked: "Invalid transaction replies" (the pings it answered filled the tick's 512) | not kicked, frozen during the stall, running again, 0 corrections |
+| honest: a rotation reply out of its place (a rotation packet written around the netcode), then the tick's move (review 3 #5, control) | kicked: "Invalid transaction replies" (a second move claim) | not kicked, counted (3), the tick's move its claim: 0 corrections |
+| combat: honest hits on a player outside authority standing still (an NPC), at 0 ms / 150 ms / 250 ms (review 3 #3, control) | 0 of 6 landed at each, `INVALID REWIND` (rewinds of 0.8 to 3 s past caps of 200 to 410 ms) | 6 of 6 `VALID` at each, judged where the NPC stands (its tracker's last send) |
+| combat: a player outside authority (an NPC) stepped 2 aside, pongs held 500 ms, the swing goes where it stood (review 3 #3) | refused (`REWIND`): guard | refused (`MISSED`: judged where it stands now) |
+| geyser: in a continuous geyser's column, the claims go to vanilla within max-move (review 3 #6, control) | exempt, 30 ticks: guard | exempt, 31 ticks |
+| geyser: a pool over potent sulfur buried under stone, the claims rise 0.9 a tick (review 3 #6) | leaked: the server rose 4.5 over 7 exempt ticks | blocked: no exempt tick, the server stayed (+0.0), honest after |
+| geyser: in a continuous geyser's column, claims a spot 3 blocks off each tick; viewers are sent where the server holds it (review 3 #7) | leaked: 10 claims refused, but the path went 3.0 off | blocked: the path stayed where the server holds the player (0.0 off) |
+| vehicles: logs in on a boat (vanilla re-mounts it before authority starts), drives it 1.5 blocks a tick (review 3 #2) | leaked: driven 15 blocks, still riding under enforce, no claim compared after | blocked: dismounted when enforce started, stayed within 1.3, exact after |
+| warm-up: holds its first pongs after PlayerLoaded, claims a flight of 0.5 a tick (review 3 #1) | leaked: the server rose 10.7, the truth started 3.1 up | blocked: the server never moved, the truth starts on the floor |
+| honest: walking at 150 ms when authority starts mid-session (review 3 #1, control) | 3 corrections (the truth starts at rest), exact after; on `d020b2e2` 4, none exact while it walks | the same: 3 on `316a191f`, 4 on `d020b2e2`, exact after |
+
 ## Since the 21:45 run (51 of 70)
 
 Fixed by the netcode, each with its scenario above:

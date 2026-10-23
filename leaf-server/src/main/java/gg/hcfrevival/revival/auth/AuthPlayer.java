@@ -4161,7 +4161,7 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
         }
         final long now = System.nanoTime();
         if (this.softTimes.length != rate) {
-            this.softTimes = new long[Math.min(rate, 4096)];
+            this.softTimes = new long[rate];
             this.softCount = 0;
             this.softNext = 0;
         }

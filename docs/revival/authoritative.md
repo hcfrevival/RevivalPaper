@@ -377,8 +377,10 @@ replace anything above that contradicts them.
   `ClientboundPlayerInfoUpdatePacket` (self game mode) is bundled, never trailed.
 - **Deadline.** Each entry has an ack deadline in the player's own `TickEnd`s: an entry sent after `TickEnd(n)` that
   is unacked at `TickEnd(n + ceil(rttBase/50) + ack-jitter-ticks)` is **force-applied** to the truth at that tick
-  (and the client is corrected as needed). Past `max-unacked-ms` (default 1500) the player is frozen, then kicked;
-  log and mirror entries are dropped. `rttBase` = long-window low percentile of ack RTT (kernel TCP RTT when
+  (and the client is corrected as needed). Past `max-unacked-ms` (default 1500) the player is frozen (windows
+  refused) for as long as the stall lasts, and never kicked for it: in HCF a kick is a combat-logger death, and Paper's
+  keep-alive timeout decides when a connection is gone (NW-2; 2026-10-23, review 3). `rttBase` = long-window low
+  percentile of ack RTT (kernel TCP RTT when
   available), never the latest pong; a short-window low percentile lifts it when that is higher, so a ping that went
   up is followed in about 1.5 s (`RttBaseline`: p10 of the last 256 acks, or of the last 32).
 - **Bypass audit.** A Netty outbound auditor next to the encoder notices classified packets that did not come through
@@ -407,8 +409,9 @@ Client predictions (dig/place with sequence `s`):
 - sequences strictly increasing; every sequence-carrying packet the server drops (Paper's spam limiter, immobile)
   is still acked (move `ackBlockChangesUpTo` before those early returns);
 - predictions expire at the ack deadline;
-- a placement the server denied is **not honored by the truth** (`honor-denied-predictions: false`; stops HCF block
-  glitching); after any revert, if the truth box intersects a collidable block, the truth snaps to the
+- a placement the server denied is **not honored by the truth** (stops HCF block glitching; the
+  `honor-denied-predictions` key that claimed to switch it did nothing and is gone, 2026-10-23, review 3); after any
+  revert, if the truth box intersects a collidable block, the truth snaps to the
   prediction-time position whatever `lastTeleportSequence` says.
 
 ### 15.3 Teleports, exempt states, eligibility
@@ -430,8 +433,16 @@ Client predictions (dig/place with sequence `s`):
   acks of `SetPassengers`, health/death, `SetCamera`. At the Respawn ack reset sticky input, sprint state, `xLast`,
   `yRotLast`, `positionReminder` per the KEEP flags. Leaving an exempt state re-seeds from server-owned state (the
   dismount position, the respawn/teleport destination, the last truth); the first claim after is a claim.
+- **Warm-up** (until the client's first pong after authority starts): exempt, and under `enforce` frozen like not
+  loaded: its claims never reach vanilla's handler and are never a seed's pair, so the truth starts where the server
+  holds the player. An honest client is warm a round trip after authority starts (at a join, before it reports
+  `PlayerLoaded`); a player moving when authority starts mid-session is corrected onto the truth after it. Replayed,
+  the claims of a client that held its first pongs flew on vanilla's 10-blocks-a-tick check until the freeze (2026-10-23,
+  review 3).
 - **Vehicles in `enforce`:** `authoritative.vehicles: deny` (default; mounting is cancelled for authoritative
-  players) or `vanilla` (exempt, documented as client-trusted). Attacks from exempt states are refused in `enforce`.
+  players, and a player riding when `enforce` starts, which vanilla's login re-mount and a mount made under `observe`
+  leave, is dismounted then: 2026-10-23, review 3) or `vanilla` (exempt, documented as client-trusted). Attacks from
+  exempt states are refused in `enforce`.
 - **Eligibility per player:** a real connection (`isRealPlayer`), protocol 26.3 (Via API when present), not
   Geyser/Floodgate. Everyone else is `off` (vanilla handling, vanilla tracker output); NPC `ServerPlayer`s are
   never touched (no skipped travel, no path suppression).
@@ -477,8 +488,10 @@ one when there is no claim. "Zero corrections" in §14 means zero beyond these d
   aborts digging); model the `ABORT_DESTROY_BLOCK` and `onTeleport()` that follow every correction.
 - **Timer (Grim model):** allowed `TickEnd`s ≤ `(now - t0)/period + bank`, with the ack clock minus
   `timer-drift-ms` as the floor; bank ≤ `min(max-banked-ticks, ticks since (newest acked ping send time - drift))`.
-  Over-budget windows are queued and run as budget refills; refused only past `timer-queue-cap-ms` (default 1000).
-  A client with no pongs stops moving within the ack deadline.
+  Over-budget windows are queued and run as budget refills; refused only past `timer-queue-cap-ms` (default 400:
+  the clock drains a backlog, config v5; 2026-10-23, review 3). A client with no pongs keeps its real-time ticks, its
+  entries forced onto the truth at their ack deadlines, until its oldest ping is `max-unacked-ms` (1.5 s) old; then it
+  is frozen until they come (§15.1; 2026-10-23, review 3).
 - **Velocity:** `ServerPlayer.deltaMovement` is not overwritten while `syncVelocity` is set (knocks waiting for the
   tracker survive); the sim velocity lives in `AuthPlayer` and is what `getVelocity`, `LegacyKnockback` and
   `MotionShadow` read. Server velocity writes are logged and applied at their ack like any entry.
@@ -510,7 +523,12 @@ one when there is no claim. "Zero corrections" in §14 means zero beyond these d
 ### 15.7 Hits
 
 - Rewind age = the server tick of the target path point the pick box came from. Cap
-  `min(max-rewind-ms, rttBase + jitter + K·50 ms)`; a sustained ack RTT far above `rttBase` is flagged.
+  `min(rttBase, rtt-ceiling-ms) + display + jitter + rewind-slack-ms`: the ping made good up to the ceiling, the display
+  delay measured from the attacker's own mirror, its ack jitter (p90 − p10, at most the ceiling) and 150 ms of tick
+  waits, with `max-rewind-ms` (600) only a sanity bound (`CombatWiring.rewindCap`, HR-2; 2026-10-23, review 3). Past the
+  cap the hit is judged at the target's truth at the capped age; a target outside authority has none but where it
+  stands while it hasn't moved since its tracker last sent it (review 3 #3). A sustained ack RTT far above `rttBase` is
+  flagged.
 - Non-player entities never veto a hit in v1 (only blocks and mirrored players take part in the pick).
 - Exempt attackers: refused in `enforce`.
 
@@ -524,7 +542,9 @@ and §15.4 for ordering-only violations:
   after a window's keybind packets, a second `PlayerInput` or sprint command in one window, and other packets sent
   outside the vanilla tick pipeline that carry no advantage. They still feed statistics and staff alerts.
 - **Still an instant kick:** unknown, future or skipped pong ids; forged accepts (ids never sent, non-finite);
-  window or log overflow; a second position claim in one window (vanilla 26.3 already kicks that).
+  window or log overflow (512 gameplay packets in one window; the drain replies a client sends back from a stall have
+  their own cap of 4096); a second position claim in one window (vanilla 26.3 already kicks that). Any other extra move
+  packet is counted (2026-10-23, review 3).
 - **Client profiles** per player (`docs/revival/client-compat.md`): built from the brand, the `lunar:apollo`
   channel and the Apollo options the server pushed to that player. Input-grammar rules relax per profile only
   where the client provably behaves differently (verified by the manual Lunar session or the rig's Apollo stand-in),

@@ -117,12 +117,13 @@ public final class BypassAuditor {
             return;
         }
         this.installedOn = null;
-        final ChannelPipeline pipeline = channel.pipeline();
-        if (pipeline.get(PACKET_HANDLER) != null) {
-            pipeline.remove(PACKET_HANDLER);
-        }
-        if (pipeline.get(RAW_HANDLER) != null) {
-            pipeline.remove(RAW_HANDLER);
+        // By instance: no get-then-remove race with a channel closing on its event loop (review 2 fixed it in ArrivalStamps)
+        for (final ChannelHandler handler : new ChannelHandler[] {this.packetLevel, this.rawLevel}) {
+            try {
+                channel.pipeline().remove(handler);
+            } catch (final java.util.NoSuchElementException e) {
+                // already gone with the channel
+            }
         }
     }
 

@@ -23,7 +23,7 @@ import org.jspecify.annotations.Nullable;
  * view (design §7.1, §15.7).
  * <p>
  * Non-player targets never veto a hit in v1 (§15.7): they get {@link AttackJudge#UNKNOWN} and the vanilla/Paper checks.
- * The rewind cap is {@code min(max-rewind-ms, rttBase + ack jitter + K × 50 ms)}.
+ * The rewind cap is {@link #rewindCap}'s (HR-2).
  */
 public final class CombatWiring implements ViewerMirrors, AttackJudge, ProjectileViews {
 

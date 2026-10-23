@@ -34,6 +34,14 @@ class SelfEchoTest {
     }
 
     @Test
+    void aFlagsValueOfAnotherTypeGoesOutAsItIs() {
+        // A plugin's malformed self packet (id 0 as an int) threw a ClassCastException at the choke point
+        final SynchedEntityData.DataValue<Integer> odd = new SynchedEntityData.DataValue<>(ClientView.DATA_SHARED_FLAGS, EntityDataSerializers.INT, 8);
+        final ClientboundSetEntityDataPacket echo = new ClientboundSetEntityDataPacket(5, List.of(odd));
+        assertSame(echo, SelfEcho.entityData(echo, true, false, false, 0, -1));
+    }
+
+    @Test
     void nothingToChangeKeepsThePacket() {
         final ClientboundSetEntityDataPacket echo = new ClientboundSetEntityDataPacket(5, List.of(flags(1 << 3)));
         assertSame(echo, SelfEcho.entityData(echo, true, false, false, 0, -1));

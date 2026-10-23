@@ -296,16 +296,6 @@ public final class OutboundClassifier {
         };
     }
 
-    /** Whether the classifier logs this packet type at all (a quick test for bundles). */
-    public static boolean mayMatter(final Packet<?> packet) {
-        return info(packet).family != NONE;
-    }
-
-    /** Packets that must not be bundled: the ping goes right after them (rule A, report 02 §6). */
-    public static boolean trailingPing(final int kind) {
-        return kind == CHUNK || kind == LOGIN;
-    }
-
     private static int selfKind(final Packet<?> packet, final int self) {
         return switch (packet) {
             case final ClientboundSetEntityMotionPacket motion -> motion.id() == self ? SELF_MOTION : NONE;

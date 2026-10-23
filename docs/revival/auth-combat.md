@@ -81,9 +81,12 @@ HitCheck check = new HitValidator().validate(attacker, targetId, book, T, List<C
   of the box it shows), and a backtrack or a held view gains nothing past the cap. A path that stopped (no `TickEnd`,
   refused or frozen windows) answers with its newest step while the target's `ServerPlayer` is still there and no server
   teleport is pending: a lag switch or a freeze no longer makes a player unhittable (review X2-01, pvp-issues NW-2: "stays
-  hittable where it froze"). Only a target with no path (outside authority), or one that moved without a step (a teleport
-  pending or forced), is INVALID `REWIND`. Other players stay where the
-  client drew them. `rewindMillis()` stays the age of the view. Neue's held-click landing (`NeueReach.authority`)
+  hittable where it froze"). A target outside authority (a player-type NPC, a ViaVersion or Geyser player) has no path:
+  it answers where it stands while it is within its tracker's send threshold of what the tracker last sent it
+  (`ServerEntity.getPositionBase()`), as `stillAt` does for a path, so a still one is hittable at every ping (review 3 #3:
+  sent nothing but a resync every 60 ticks, its view aged past every cap). Only a target outside authority that moved
+  since that send (or rides), or one under authority that moved without a step (a teleport pending or forced), is
+  INVALID `REWIND`. Other players stay where the client drew them. `rewindMillis()` stays the age of the view. Neue's held-click landing (`NeueReach.authority`)
   measures its reach the same way past the cap.
 - Why `canPick` and not one answer: `ProjectileUtil.getEntityHitResult` depends on the client's entity iteration order
   (section storage order, unknowable) when the eye is inside a candidate's box or two candidates tie, because a clipped

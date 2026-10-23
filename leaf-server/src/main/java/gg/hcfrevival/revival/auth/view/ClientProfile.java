@@ -49,6 +49,7 @@ public final class ClientProfile {
     private String lunarVersion = "";
     private List<String> mods = List.of();
     private int nextRefresh;
+    private boolean apolloFailed;
 
     /** Re-reads the profile every so often: often while the client may still announce itself or Apollo is present. */
     public void maybeRefresh(final ServerPlayer player, final int window, final boolean followApollo) {
@@ -146,7 +147,7 @@ public final class ClientProfile {
     // Apollo by reflection ----------------------------------------------------------------------------------------------
 
     private void readApollo(final UUID uuid, final int window) {
-        final Apollo api = Apollo.get();
+        final Apollo api = this.apolloFailed ? null : Apollo.get();
         if (api == null) {
             return;
         }
@@ -173,7 +174,9 @@ public final class ClientProfile {
             this.lunarVersion = api.version(player);
             this.mods = api.mods(player);
         } catch (final ReflectiveOperationException | LinkageError | RuntimeException e) {
-            Apollo.broken();
+            // This player's read failed, not Apollo's API (Apollo.get checked that): this player goes without its options
+            // and everyone else keeps theirs (the error turned Apollo reading off for every player until a reload)
+            this.apolloFailed = true;
         }
     }
 
@@ -242,11 +245,6 @@ public final class ClientProfile {
                 }
             }
             return instance;
-        }
-
-        static void broken() {
-            broken = true;
-            instance = null;
         }
 
         @Nullable Object player(final UUID uuid) throws ReflectiveOperationException {

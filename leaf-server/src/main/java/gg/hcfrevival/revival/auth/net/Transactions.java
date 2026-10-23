@@ -216,11 +216,6 @@ public final class Transactions {
     private int recentAckIndex;
     private final RttBaseline rtt = new RttBaseline(100_000_000L);
     private long lastAckedSentNanos;
-    // The ack clock as the timer may use it (review timer-backlog-permanent): a drain's pongs count only once they have
-    // settled, so the catch-up ticks that follow them in the same frame keep the credit the stall left
-    private long settledAckSentNanos;
-    private long pendingAckSentNanos;
-    private long pendingAckArrivalNanos;
     // Pings dropped by a reset or overflow whose pongs may still come back: tolerated as duplicates, not unknown
     private int droppedNewestId;
     private int droppedCount;
@@ -953,10 +948,6 @@ public final class Transactions {
             this.acked++;
             final long now = System.nanoTime();
             this.lastAckedSentNanos = Math.max(this.lastAckedSentNanos, sentNanos);
-            if (this.pendingAckArrivalNanos == 0L) {
-                this.pendingAckArrivalNanos = now;
-            }
-            this.pendingAckSentNanos = Math.max(this.pendingAckSentNanos, sentNanos);
             this.lastRttNanos = now - sentNanos;
             this.lastRttTicks = serverTick - sentTick;
             this.rtt.sample(this.lastRttNanos); // rttBase: never the latest pong (§15.1)
@@ -1166,21 +1157,6 @@ public final class Transactions {
     /** {@code System.nanoTime()} at which the newest acked ping was sent: the client's clock is at least this. */
     public long lastAckedSentNanos() {
         return this.lastAckedSentNanos;
-    }
-
-    /**
-     * The ack clock for the tick timer: like {@link #lastAckedSentNanos}, but pongs count only once {@code settleNanos}
-     * has passed since the first of them arrived. A client back from a stall answers every ping it queued and then runs
-     * its catch-up ticks in the same frame; those ticks are owed for the stall, which the pongs just before them must
-     * not erase. A client that keeps answering while it sends no ticks still has its idle time forfeited, a settle later.
-     */
-    public long settledAckSentNanos(final long nowNanos, final long settleNanos) {
-        if (this.pendingAckArrivalNanos != 0L && nowNanos - this.pendingAckArrivalNanos >= settleNanos) {
-            this.settledAckSentNanos = Math.max(this.settledAckSentNanos, this.pendingAckSentNanos);
-            this.pendingAckArrivalNanos = 0L;
-            this.pendingAckSentNanos = 0L;
-        }
-        return this.settledAckSentNanos;
     }
 
     public long lastRttNanos() {

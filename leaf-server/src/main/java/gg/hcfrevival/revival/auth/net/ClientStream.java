@@ -46,8 +46,6 @@ public final class ClientStream {
     public static final byte ACCEPT = 3;
     /** The {@code MovePlayer.Rot} a client sends back for a {@code PlayerRotation} packet (identified by adjacency). */
     public static final byte ROTATION_REPLY = 4;
-    /** Entries force-applied at their deadline: {@code [a, b)} of {@link Window#acked}. */
-    public static final byte FORCED = 5;
     /**
      * The {@code PlayerAction(ABORT_DESTROY_BLOCK)} a mining client sends right after a teleport accept
      * ({@code handleMovePlayer} calls {@code stopDestroyBlock}): a drain reply, not a keybind.
@@ -429,11 +427,6 @@ public final class ClientStream {
         return best;
     }
 
-    /** Entries force-applied at their deadline, applied in this window's drain. */
-    public void recordForced(final int from, final int to) {
-        this.current.add(FORCED, null, from, to);
-    }
-
     /**
      * A teleport accept. Returns whether it is in its legal place (the drain part; for a correction, right after the
      * pong that carried it).
@@ -453,11 +446,6 @@ public final class ClientStream {
             this.violations++;
         }
         return legal;
-    }
-
-    /** The correction whose accept must be the next packet, or 0. */
-    public int correctionAcceptExpected() {
-        return this.correctionAcceptNext;
     }
 
     private void clearAdjacency() {

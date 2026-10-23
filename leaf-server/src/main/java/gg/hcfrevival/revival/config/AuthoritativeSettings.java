@@ -70,10 +70,11 @@ import net.minecraft.resources.Identifier;
  *                   the mode is enforce: authority then protects every fight, review E4)
  * @param apolloRules {@code follow} (client profiles read the Apollo combat options the server pushed to each Lunar
  *                    player) or {@code ignore}; informational until a rule reads the profile (design §15.8)
- * @param protocolKickRate ordering-only protocol violations (a pong or accept after the tick's keybinds, a second input
- *                         or sprint command in a tick, a teleport never accepted, a backwards prediction sequence) a
- *                         player may make in 60 s before a kick (design §15.8: in HCF a kick is a combat-logger death);
- *                         0 kicks at the first. Forged or unknown replies, overflow and a second move claim kick at once
+ * @param protocolKickRate ordering-only protocol violations (a pong or accept after the tick's keybinds, a second input,
+ *                         sprint command or move packet in a tick, a teleport never accepted, a backwards prediction
+ *                         sequence) a player may make in 60 s before a kick (design §15.8: in HCF a kick is a combat-logger
+ *                         death); 0 kicks at the first, 4096 at most. Forged or unknown replies, overflow and a second
+ *                         position claim kick at once
  * @param teleportChunkSendTicks a server teleport into a chunk the client hasn't been sent is held (pvp-issues PR-8): if
  *                               Moonrise hasn't sent that chunk within this many ticks, it is sent now, then the teleport
  * @param teleportHoldMaxTicks a held teleport goes out after this many ticks whatever its chunk (one the server can't load)
@@ -270,6 +271,8 @@ public record AuthoritativeSettings(
     public static final int MIRROR_HISTORY_TICKS = 16;
     public static final int TIMER_QUEUE_CAP_MS = 400;
     public static final double DOUBLE_CLICK_RATIO = 1.0;
+    /** The most ordering violations a minute {@code AuthPlayer} keeps times for (review 3 #11: past it the kick never fired). */
+    public static final int MAX_PROTOCOL_KICK_RATE = 4096;
     /** What a player aims at range with: launchers, rods and thrown items (potions are thrown at the thrower's feet). */
     static final List<String> RANGED_ITEMS = List.of("minecraft:bow", "minecraft:crossbow", "minecraft:fishing_rod", "minecraft:ender_pearl",
         "minecraft:snowball", "minecraft:egg", "minecraft:blue_egg", "minecraft:brown_egg", "minecraft:trident", "minecraft:wind_charge");
@@ -351,7 +354,7 @@ public record AuthoritativeSettings(
             vehicles(reader),
             ineligible(reader),
             apolloRules(reader),
-            Math.max(0, reader.getInt(PATH + "client-profiles.protocol-kick-rate", 20)),
+            Math.clamp(reader.getInt(PATH + "client-profiles.protocol-kick-rate", 20), 0, MAX_PROTOCOL_KICK_RATE),
             Math.max(0, reader.getInt(PATH + "teleport-chunk-send-ticks", 2)),
             Math.max(0, reader.getInt(PATH + "teleport-hold-max-ticks", 100)),
             Math.max(0.1, reader.getDouble(PATH + "seed-max-move", 10.0)),

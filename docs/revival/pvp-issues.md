@@ -3,8 +3,11 @@
 Status: 2026-10-23, branch `revival/authoritative` (the classic audit, `auth-classic-audit.md`: the jump-reset alert,
 the two parity switches as the user set them, the stale self-echo fixes, the keep-sprint and never-loaded holes closed;
 then the ghost-hand rule, WD-4, a code review's fixes, NW-1's one-correction recovery from a 2 s freeze, and SV-2's
-window clock). The live suites are green on `classic-capped` and `classic`, both trackers: on `classic-capped` cheat
-suite 133/133, cheat suite 2 56/56. The
+window clock; then review 3, `auth-review-3.md`: a warm-up flight and a login re-mount that bypassed `vehicles: deny`
+closed, the view now hears every dismount, still players outside authority hittable past the cap, no kick after a long
+stall or for a stray move packet, geysers exempt only while they launch, exempt ticks replicated where the server holds
+the player). The live suites are green on `classic-capped` and `classic`, both trackers: on `classic-capped` cheat
+suite 145/145, cheat suite 2 56/56. The
 real client (run `classic6`) is exact with every hit `VALID` at localhost, 150, 250 and 300 ms. This is a list of every problem 1.7 PvP
 is known to have, checked against the authoritative RevivalPaper server. It draws on the community's own record
 (sources at the end) and on this repo's design, code, tests and real-client runs.
@@ -117,7 +120,7 @@ Solved items are left out.
 | 9 | [KB-10](#kb-10) | Partial | netcode | Jump-reset macros raise an alert, on thresholds from simulated players only. |
 | 10 | [IN-3](#in-3) | Partial | netcode | Autoclickers are capped at 12 CPS, and a 20 CPS lock or any fixed rate is flagged; the thresholds await real click data. |
 | 11 | [PR-4](#pr-4) | Partial | combat, core | 1.7's splash falloff is on; core's own pot precision may stack on it, and no pot drill compares them. |
-| 12 | [MV-5](#mv-5) | Partial | sim, netcode | Geysers, riptide, `vehicles: vanilla` and solid copies that went inexact still trust the client, within 1 block. |
+| 12 | [MV-5](#mv-5) | Partial | sim, netcode | Launching geysers, riptide, `vehicles: vanilla` and solid copies that went inexact still trust the client, within 1 block. |
 | 13 | [CL-2](#cl-2) | Partial | config | ViaVersion and Geyser players play client-trusted unless `ineligible: deny`; hcfr-core runs neither today. |
 | 14 | [CL-3](#cl-3) | Partial | config | GrimAC false flags on legit 1.7 play; the GrimAC checklist was never run with a real client. |
 | 15 | [PR-6](#pr-6) | Partial | config | Split damage windows are built and live-tested but off by default, so fire ticks and arrows still eat sword hits. |
@@ -173,11 +176,20 @@ Solved items are left out.
     attacker (torture F6).
   - Inside the cap the hit is judged on the box the client drew (HR-1). Past it, against the target's truth at the
     capped age (`HitValidator`, `TruthPaths`): a shooter whose ping exceeds the ceiling leads moving players by the
-    excess instead of losing every hit.
+    excess instead of losing every hit. A target outside authority (a player-type NPC, a ViaVersion or Geyser player)
+    has no path: it is judged where it stands while it is still within its tracker's send threshold of what the tracker
+    last sent it. Before review 3 (#3, review 1's stale-stamp-stationary-targets) a still one, sent nothing but a resync
+    every 60 ticks, aged past every cap and was hittable only for a moment after each resync. HCFR's combat logger is a
+    villager and REDLINE's dummies are mannequins (not players: vanilla checks); the bots module's puppets are
+    player-type and never start authority.
   - A hit the judge called `VALID` skips Paper's range check on current positions for that target (patch 1018
     `Lag-compensated reach`, `AuthPlayer.judgedReach`; classic audit #7), so chase hits on fast targets land.
 - **Fix:** none. Past about 350 ms of steady ping a shooter must lead moving targets: that is the designed limit.
 - **Proof (exists):**
+  - review 3 #3: unit `TruthPathsTest`; cheat rows "combat: honest hits on a player outside authority standing still (an
+    NPC), at 0 ms / 150 ms / 250 ms (review 3 #3, control)" (6 of 6 `VALID`, 0 of 6 before, `REWIND`) and "combat: a
+    player outside authority (an NPC) stepped 2 aside, pongs held 500 ms, the swing goes where it stood (review 3 #3)"
+    (refused, `MISSED`);
   - unit `RewindCapTest` (honest hits fit at every ping; the old flat cap refused them above 190 ms; withheld pongs
     don't widen it), `HitValidatorTest` (past the cap a leading attacker hits the truth at the capped age, and the stale
     box misses);
@@ -1074,9 +1086,9 @@ Solved items are left out.
   block holds you up for a jump over 2-block walls ([17]: BlockGlitchFix, Grim #1142).
 - **Cause:** client prediction against server denial.
 - **Today:** `WorldView` predictions are admitted only if a vanilla client would make them
-  (`auth/view/PredictionRules.java`). A placement the server denied is not honoured by the truth
-  (`honor-denied-predictions: false`), and after a revert a truth box inside a block snaps to the prediction-time
-  position (§15.2). Denied breaks are WD-2.
+  (`auth/view/PredictionRules.java`). A placement the server denied is not honoured by the truth (the
+  `honor-denied-predictions` key that claimed to switch that did nothing and is gone, review 3 #8), and after a revert a
+  truth box inside a block snaps to the prediction-time position (§15.2). Denied breaks are WD-2.
 - **Fix:** none in code.
 - **Proof (exists):** cheat row "world: a block a plugin cancels, its ghost climbed over a 2-high wall (block glitch)":
   a `BlockPlaceEvent` cancel, the client predicting the block and keeping its ghost past the server's ack; the client
@@ -1305,11 +1317,15 @@ Solved items are left out.
   - Boats, shulkers and happy ghasts are the port's own colliders, at the boxes the client holds
     (`auth/combat/SolidMirrors.java`). A rod pull is modelled velocity, not an exemption.
   - Still exempt, vanilla taking the claim within `external-movers.max-move` (1.0): a solid entity in contact whose
-    client copy isn't exact (until it is re-paired) and a potent sulfur geyser (`auth/ExternalMovers.java`). Riptide is
-    exempt too (not ported). Vehicles are denied by default (`vehicles: deny`); under `vanilla`, riding is
-    client-trusted.
-- **Fix (sim, netcode):** port riptide; bound the geyser and inexact-copy windows tighter if a cheat row shows they
-  matter.
+    client copy isn't exact (until it is re-paired) and a potent sulfur geyser while it launches: erupting or
+    continuous, unbroken water up to the feet, air within vanilla's 4 water blocks (`auth/ExternalMovers.java`; review 3
+    #6: any pool over potent sulfur buried anywhere 24 below was a permanent client-trusted zone a base could build).
+    Riptide is exempt too (not ported). An exempt tick's path step, what viewers see and lag compensation reads, is
+    where vanilla's handler left the player (review 3 #7: it was the claim, even one then refused, a ghost).
+  - Vehicles are denied by default (`vehicles: deny`); a player riding when enforce starts (vanilla's login re-mount, a
+    mount made under observe) is dismounted then, and the view hears every dismount (review 3 #2: both rode on,
+    client-trusted, and any dismount left the view riding, exempt). Under `vanilla`, riding is client-trusted.
+- **Fix (sim, netcode):** port riptide; bound the inexact-copy window tighter if a cheat row shows it matters.
 - **Proof:**
   - Exists: unit `ExternalMoversTest` (lane, axis, sign, travel); cheat rows "piston: pushed along its lane, the
     claims adopted (control)", "piston: a piston 10 blocks off toggled, the claims rise 0.55 a tick (a claim-wall
@@ -1318,8 +1334,15 @@ Solved items are left out.
     moved into the lane (the client ignores the move)", "solids: walk through a shulker spawned ahead, pongs held (the
     spawn's window)" and "solids: phase through a shulker the client dropped from its world" (0 mover exemptions); real
     client `n_boat_stand`, `n_boat_slide`, `n_boat_jump` (`full1`: 0 corrections, 0 exemptions).
-  - To add: fly and speed during a geyser or inexact-copy exemption, bounded by `max-move`. "combat: attack from an
-    exempt state (riding)" covers attacks only.
+  - Exists (review 3): unit `ExternalMoversTest.onlyAnActiveGeyserUnderUnbrokenWaterReachingAirExemptsATick`,
+    `OutboundClassifierTest`; cheat rows "geyser: a pool over potent sulfur buried under stone, the claims rise 0.9 a
+    tick (review 3 #6)" (the server rose 4.5 before, 0 now), "geyser: in a continuous geyser's column, the claims go to
+    vanilla within max-move (review 3 #6, control)", "geyser: in a continuous geyser's column, claims a spot 3 blocks off
+    each tick; viewers are sent where the server holds it (review 3 #7)" (3.0 off before, 0 now) and "vehicles: logs in
+    on a boat (vanilla re-mounts it before authority starts), drives it 1.5 blocks a tick (review 3 #2)" (15 blocks
+    before, dismounted now).
+  - To add: fly and speed during an inexact-copy exemption, bounded by `max-move`. "combat: attack from an exempt state
+    (riding)" covers attacks only.
 
 ### MV-6 Teleport accept spoofing and forged accepts — Solved {#mv-6}
 
@@ -1412,11 +1435,16 @@ Solved items are left out.
   ones kick past `client-profiles.protocol-kick-rate`. Keep-alives go out unbundled (2026-10-23): one inside the tick's
   bundle waited for the client's main thread, so after a stall past a second the client answered a later, lone one
   first, and Paper kicked it for a keep-alive answered out of order (torture `freeze1`, a 2 s client hitch at 150 ms).
+  Back from a long stall, the pongs a client sends in its first window no longer count toward that tick's 512 gameplay
+  packets (review 3 #4): past about 25 s of heartbeat pings (13 s with only its downlink stalled) its first key press
+  was an overflow kick, which Paper's 30 s keep-alive would have spared.
 - **Fix:** none.
 - **Proof (exists):** cheat rows "stall: 4.5 s with nothing in or out, walking" (not kicked, frozen during the stall,
   recovered with 1 correction), "stall: 12.0 s with nothing in or out, standing" (0 corrections), "stall: 1.0 s with a
   server teleport sent into it" (no violation) and "combat: hit a target whose link stopped 2 s ago, where it stopped"
-  (`VALID` at 2050 ms past a 202 ms cap); the torture marathon and hitch runs: no kick after the stall fixes.
+  (`VALID` at 2050 ms past a 202 ms cap); "stall: 30.0 s with nothing in or out, standing, then walks on as it comes
+  back (review 3 #4)" (kicked before, not now; unit `ClientStreamTest.repliesAfterALongStallDontCountTowardTheTicksPacketCap`);
+  the torture marathon and hitch runs: no kick after the stall fixes.
 
 ### NW-3 Tab ping doesn't match what authority judges with — Solved (they match) {#nw-3}
 
@@ -1605,8 +1633,11 @@ Solved items are left out.
     client faking Lunar gains one click a tick earlier after a screen. Dig-and-use needs nothing: no rule gates a use
     while destroying.
   - Kicks for packets a client sends outside the vanilla tick, `client-compat.md`'s top risk, are closed:
-    ordering-only violations (a pong after the tick's keybinds, a second input or sprint command) are counted and kick
-    only past `client-profiles.protocol-kick-rate` (20 in 60 s).
+    ordering-only violations (a pong after the tick's keybinds, a second input or sprint command, and since review 3 #5
+    any extra move packet that isn't a second position) are counted and kick only past
+    `client-profiles.protocol-kick-rate` (20 in 60 s, at most 4096). Only a second position claim is still the instant
+    kick, as in vanilla (§15.8): a rotation reply out of its place (the reply to a rotation packet a plugin wrote around
+    the choke point, or a modded client's packet) made the tick's real move a "second move claim".
   - A client claiming Lunar gets nothing for it: reach and autoblock are refused as for any client.
   - The NAS world has been played with Lunar over the internet since 2026-10-21. Whether HCFR's Apollo combat options
     were pushed there is not recorded.
@@ -1616,8 +1647,10 @@ Solved items are left out.
   3. Decide the fairness policy. Options differ between Lunar and vanilla players, so either keep Apollo combat off
      on authoritative servers, or accept the asymmetry openly.
 - **Proof:**
-  - Exists: cheat rows "pongs: pong placed after a keybind packet" and "grammar: two PlayerInput packets in one tick"
-    (counted, not kicked); cheat suite 2 "client profile: claims Lunar (lunarclient brand, lunar:apollo registered)";
+  - Exists: cheat rows "pongs: pong placed after a keybind packet", "grammar: two PlayerInput packets in one tick" and
+    "honest: a rotation reply out of its place (a rotation packet written around the netcode), then the tick's move
+    (review 3 #5, control)" (counted, not kicked; kicked before); cheat suite 2 "client profile: claims Lunar (lunarclient
+    brand, lunar:apollo registered)";
     unit `InputRulesTest.anAttackAfterACloseIsFineWhenTheServerTurnedTheMissPenaltyOff`.
   - To add: the Apollo stand-in in the rig agent (`client-compat.md` §9.1 R1: the miss-penalty and dig-use variants,
     `whiff_then_click`, `refill_then_click`), with 0 corrections and no grammar violation except the expected
@@ -1630,7 +1663,8 @@ Solved items are left out.
   lenient reach, client-trusted movement, and different hit rules (1.8's 0.1 pick margin).
 - **Today:** `auth/Eligibility.java` turns authority off for them (fail-open). `authoritative.ineligible: deny`
   refuses them while the mode is enforce (review E4); the default is `allow`. hcfr-core deploys neither ViaVersion nor
-  Geyser, so no such player can join HCFR today (`client-compat.md` §10).
+  Geyser, so no such player can join HCFR today (`client-compat.md` §10). Hits on them from players under enforce are
+  judged past the cap where they stand while they haven't moved since their tracker last sent them (HR-2, review 3 #3).
 - **Fix (config):** `deny` on authoritative servers, or a `separate` policy that routes those players to
   non-authoritative arenas (not built). Check the K paths sent to an ineligible viewer (`client-compat.md` N9).
 - **Proof (to add):** a join test with a Via-translated client and a Geyser client under each policy, plus the N9

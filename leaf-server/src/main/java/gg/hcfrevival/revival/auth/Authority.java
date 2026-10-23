@@ -433,6 +433,9 @@ public final class Authority {
 
     /** {@code System.currentTimeMillis()} less how far the server is behind its tick schedule, now: any thread. */
     public static long clockMillis() {
+        // shortcut: the wall clock, so an NTP step or a VM or NAS resume shifts every stamp against the ones before it (a
+        // burst of wrong hit verdicts, review 3 #9); move to System.nanoTime() / 1_000_000 plus a positive offset fixed at
+        // startup (displayDelay reads a stamp <= 0 as unknown) if a step ever shows in the verdicts
         return System.currentTimeMillis() - lagMillisAt(System.nanoTime());
     }
 
