@@ -144,6 +144,7 @@ Melee keeps the entity's real window, so the no-damage-ticks API and plugins tha
 | `enabled` | `false` | Split the damage window into the four channels above. `false` keeps 26.x's single window. |
 | `melee-projectiles` | `["minecraft:fishing_bobber", "minecraft:snowball", "minecraft:egg"]` | Projectiles, by entity id, that share the melee window, so 1.7 rod and snowball combos stay as they are. |
 | `projectile-ticks`, `mob-ticks`, `other-ticks` | `-1` | Each channel's window length in ticks; `-1` uses the entity's own (its maximum no-damage ticks). |
+| `melee-wall-clock` | `true` | Around a server stall, a player's melee window between legacy hits under authority counts the time between the clicks' arrivals instead of server ticks, so the stall doesn't keep it shut and the ticks that catch up after it don't open it early. On schedule nothing changes. Works with `enabled` on or off. |
 
 ### `sword-blocking`
 

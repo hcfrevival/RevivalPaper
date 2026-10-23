@@ -316,7 +316,56 @@ Settings: `PathFeed.Settings.stepTicks` and `keepAlive` are `authoritative.repli
 `replication.pre-roll` (true), `replication.respawn-distance` (48.0), `replication.path-buffer` (64, the ring),
 `mirror-history-ticks` (`CombatWiring.HISTORY_TICKS`, 64).
 
-## 6. Not covered
+## 6. The melee window's clock (pvp-issues SV-2)
+
+A player's damage window counts the victim's level ticks. A fresh hit sets `damageCooldownTime` to
+`invulnerableDuration` (20), each `ServerPlayer.tick` takes one off, and a hit is fresh again at 10 or less (1.7's
+`hurtResistantTime > maxHurtResistantTime / 2`, inverted). A server stall parts those ticks from the players' time,
+both ways:
+
+- **Shut too long.** The clients click on in real time through the stall. Their windows queue behind it and run in
+  its burst (torture F4), where they meet a counter the stall held: a click made after real time had opened the window
+  is turned away, and the hit lands a click or two later.
+- **Open too soon.** Paper's catch-up ticks then run back to back (up to `catchup-ticks`, 5) and take several off the
+  counter in a few milliseconds: a hit dealt in the stall's burst gets its next window early.
+
+`legacy-combat.damage-windows.melee-wall-clock` (on by default) puts the melee window on the clicks' clock around a
+stall (`combat.DamageWindows`):
+
+- **The click's time** is when it reached the server: its window's `TickEnd` off the wire (`ArrivalStamps`, stamped
+  on the Netty thread, so a stall delays the window but not the stamp), passed through the replay
+  (`AuthPlayer.clickNanos()`). A held click (the click buffer, pvp-issues HR-6) takes its landing time: it lands when
+  the window opens. A fresh hit's click starts the clock (`DamageWindows.settle`).
+- **When the clock rules.** Before the damage of a legacy melee click on a player that authority delivered, while
+  the server is or was a tick period behind its schedule since the window's fresh hit (`Authority.behindSince`: a
+  tick measured that far behind at or after the hit's tick, or the server that far behind now). The counter is then set
+  to what is left of the window between the two clicks' arrivals, rounded to whole ticks (`DamageWindows.catchUp`).
+  The clicks are whole client ticks apart, so rounding takes out up to half a tick of the two arrivals' network
+  jitter together. A window real time opened is open, and one the catch-up ticks counted down early stays shut.
+- **When vanilla's counter wins.**
+  - On schedule. Per-tick jitter keeps the server within a period of its schedule, and then nothing changes, bit for
+    bit: the window is the counter's, as before.
+  - When something else wrote the counter. The windows count the victim's level ticks
+    (`DamageWindows.levelTick`, from `LegacyHitRegistration.tick`, first in the same `ServerPlayer.tick` as the
+    decrement; server ticks would not do, since clicks run both before a tick's level phase and after it) and keep
+    what the last tracked click left. A plugin's `setNoDamageTicks`, or a fresh window from other damage (one window
+    with `damage-windows.enabled: false`) or from an untracked hit (outside authority, a fist, a 26.x weapon), stands,
+    and the clock stays out of that window until the next tracked fresh hit.
+  - Every other damage: projectiles, mobs, fire and the rest keep vanilla's ticks.
+- **The click buffer** reads the same counter: the landing pass asks `DamageWindows.meleeCounter` at the landing's
+  time (`NeueCombat.windowOpen`), so a held click lands when its replay will find the window open. Right after a stall
+  the pass waits a tick while windows the attacker sent through the stall still wait for the main thread
+  (`AuthPlayer.landingWaits`): their clicks reached the server before the landing, the one at the window's opening
+  with its own time. Landing the held click first would start the next window at the stall's end.
+- The counter is still vanilla's field. The clock writes it only at a tracked click's damage, so the hurt animation
+  (`hurtTime`), the Bukkit no-damage-ticks API and `EntityDamageEvent` see one window.
+
+Proof: unit `DamageWindowsTest` (a stall doesn't keep the window shut; catch-up ticks don't open it early; jitter
+rounds to the client's spacing; a plugin's write and another fresh window win; only a fresh hit restarts the clock; on
+schedule the counter is vanilla's bit for bit over 2,000 jittered clicks), `PauseClockTest` (behind from a hitch on,
+never on per-tick jitter), and cheat suite 2's "server lag" row (`auth-cheat-suite-2.md`, "Server lag").
+
+## 7. Not covered
 
 - Non-player targets and blockers are not mirrored (no exact interpolation for mobs); spears' `AttackRange` pick and
   riding attackers are UNKNOWN.
@@ -326,3 +375,7 @@ Settings: `PathFeed.Settings.stepTicks` and `keepAlive` are `authoritative.repli
 - R8 (holding pose changes until the display reaches them) is not implemented; exactness doesn't depend on it.
 - The mirror was proven against the client's own classes driven by copied handler bodies, not against a running
   client; the end-to-end check is report 03 §7.5 step 2 (a client that logs boxes at each pick).
+- The window clock (§6) covers player melee under authority. A held click still waits at most `click-buffer-seconds`
+  in server ticks, which a stall's catch-up ticks run through in a few milliseconds: such a click expires, and the
+  attacker's next click lands on the clock. The clock was measured with a fake client on localhost (cheat suite 2), not
+  yet with the real client through the torture rig's network.

@@ -286,3 +286,46 @@ drop). With the Neue agent's L1/L3/L4 as they stood in the main tree at 11:00, t
 **46 of 46 blocked** (honest H1: the attack at yaw 180 lands VALID, the strafe 17/17 exact). L1's netcode half (calling
 `NeueCombat.swung` for every attack the grammar admits, and for a `Punch` in the lockout; neue-hooks.md) is parked while
 classic comes first: L1 only matters for Neue's parry window.
+
+## Server lag (SV-2, 2026-10-23)
+
+One row measures what a server stall does to an honest combo (pvp-issues SV-2), with the window on server ticks and on
+the clicks' clock (`damage-windows.melee-wall-clock`, `auth-combat.md` §6): "server lag: a still target clicked at 12
+CPS through a 200 ms stall every 40 ticks". It takes about 2 minutes of the sync run.
+
+- **The stall.** The driver's task sleeps the main thread 200 ms every 35-45 server ticks (seeded): a plugin's hitch.
+  The gaps vary so the stalls fall on every point of the 10-tick hit cycle; at a fixed 40 the cycle settles, after the
+  first hit a stall delays, on a phase the stalls miss.
+- **The clicker** is a `FakeClient` on its own thread (`AuthCheatScenarios2.Clicker`), ticking every 50 ms of real time
+  whatever the server does, half a tick off the server's schedule: a still player clicking the target 2, 2, 1 ticks
+  apart (12 CPS, a click on every tick a window can open). It is on `wire` (new in `FakeClient`): its packets pass the
+  channel's pipeline, where authority's `ArrivalStamps` stamps its TickEnds as they arrive, and queue for the main
+  thread through the packet processor, as a real connection's do. Clients ticked by the driver can't do this: the
+  stall stops them too.
+- **The target** is an honest client against its wall, its health topped up every tick.
+- **Three phases** of 600 client ticks: no stalls; stalls with the window on server ticks (`melee-wall-clock: false`,
+  the server before SV-2); stalls on the clicks' clock. Each reports fresh hits a second (first to last fresh hit) and
+  the gaps between fresh hits in real time, between the times their clicks reached the server (a held click's: its
+  landing), in ticks. The row passes when the control and the clock both keep at least 1.95 a second with no gap of 8
+  or less, and the clock has at most one gap of 12 or more (a hiccup of the machine's own).
+
+Results, the full live runs of 2026-10-23 (sync tracker; this suite 56/56 on `classic-capped`, 49/49 on `classic`),
+fresh hits a second and the gaps in ticks:
+
+| Rule set | No stalls | Stalls, the window on server ticks | Stalls, the clicks' clock |
+|---|---|---|---|
+| `classic` | 2.00, `{10=59}` | 1.95, `{10=53, 12=2, 13=2, 14=1}` | 2.00, `{10=59}` |
+| `classic-capped` | 2.00, `{10=60}` | 2.00, `{7=2, 8=2, 9=2, 10=49, 11=1, 12=2, 13=2}` | 2.01, `{9=9, 10=42, 11=9}` |
+
+Runs of the row alone (`-Drevival.livetest.only`) gave the same numbers, also on top of NW-1's freeze recovery
+(`4b1282ab`), except that on `classic-capped` a few gaps of 9 and 11 come and go between runs, in the control too.
+
+On `classic` the stalls delayed 5 hits by 2-4 ticks each. On `classic-capped` the click buffer evens out the rate, but
+the cadence breaks both ways: a stall delays some hits and its catch-up ticks let others in 2-3 ticks early. The clock
+keeps 1.7's cadence through the stalls on both. On `classic-capped` it needs the landing pass to wait a tick after a
+stall while the attacker's windows queued behind it still wait for the main thread: before that, the held click from
+before the stall landed at the stall's end and started the next window there (3 to 5 hits 3-4 ticks late in two runs,
+1.97-1.98 a second). The 9s and 11s are a held click's landing (in the connection phase, at the start of a tick) next to
+a direct click (mid-tick), half a tick apart in the same server tick.
+
+The clicker trips the `click-lock` alert (an exact 12 CPS for 300 ticks), as an autoclicker should.

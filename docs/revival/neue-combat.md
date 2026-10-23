@@ -279,7 +279,7 @@ What changes it:
 |---|---|
 | any | unchanged |
 
-**The landing pass** is `NeueCombat.serverTick(attacker)`, called first in `AuthPlayer.onServerTick`, before the
+**The landing pass** is `NeueCombat.serverTick(attacker, now)`, called first in `AuthPlayer.onServerTick`, before the
 `mode == OFF` return and before `runReady()`. It runs in the connection phase, so the window that the level phase
 opened is already visible. It runs once per server tick:
 
@@ -323,6 +323,12 @@ latest tick.
 **Why here.** A click held in the packet phase of `N` can land in the connection phase of `N`, if the level phase of
 `N` opened the window. That is 0 server ticks after the window opens, and before any window queued in the same
 phase. The attacker's own later clicks are judged after it.
+
+**Around a server stall** (pvp-issues SV-2, `damage-windows.melee-wall-clock`), step 4 reads the counter the landing's
+replay will meet, which follows the clicks' clock while the server is or was behind its schedule (`auth-combat.md` §6).
+Right after a stall the pass also waits a tick while windows the attacker sent through the stall still wait for the
+main thread: their clicks reached the server before the landing, and the one at the window's opening lands with its
+own time.
 
 When two attackers have clicks held on the same victim, connection order decides who lands fresh. The other click
 is turned away and is not held again. Combo's roster order behaves the same way. A fairer option (p2): land the

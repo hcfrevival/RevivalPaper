@@ -2,7 +2,9 @@
 
 Status: 2026-10-23, branch `revival/authoritative` (the classic audit, `auth-classic-audit.md`: the jump-reset alert,
 the two parity switches as the user set them, the stale self-echo fixes, the keep-sprint and never-loaded holes closed;
-then the ghost-hand rule, WD-4, a code review's fixes, and NW-1's one-correction recovery from a 2 s freeze). The live suites are green on `classic-capped`, both trackers: cheat suite 126/126, cheat suite 2 55/55. The
+then the ghost-hand rule, WD-4, a code review's fixes, NW-1's one-correction recovery from a 2 s freeze, and SV-2's
+window clock). The live suites are green on `classic-capped` and `classic`, both trackers: on `classic-capped` cheat
+suite 133/133, cheat suite 2 56/56. The
 real client (run `classic6`) is exact with every hit `VALID` at localhost, 150, 250 and 300 ms. This is a list of every problem 1.7 PvP
 is known to have, checked against the authoritative RevivalPaper server. It draws on the community's own record
 (sources at the end) and on this repo's design, code, tests and real-client runs.
@@ -52,18 +54,18 @@ policy in `revival.yml` and server configs), **core** (the HCFR plugins, outside
 
 | | Count |
 |---|---|
-| Solved | 39 |
-| Partial | 22 |
+| Solved | 40 |
+| Partial | 21 |
 | Accepted | 8 (5 of them [limit]) |
 | Open | 0 |
 | Items | 69 |
 
-Since the last refresh (2026-10-21, `a7a84a06`): 15 items moved to Solved (HR-2, HR-6, IN-1, IN-2, IN-5, PR-3, NW-2,
+Since the last refresh (2026-10-21, `a7a84a06`): 16 items moved to Solved (HR-2, HR-6, IN-1, IN-2, IN-5, PR-3, NW-2,
 SV-6; SP-3, MV-3 and WD-1 once their cheat rows ran, one of which found a hole; WD-4 (the ghost-hand rule), SV-3 (Leaf's
-packet reductions refused) and SV-4 (faults injected into authority code) on 2026-10-23; and HR-11, which was never an
-issue under authority) and 6 from Open to Partial (KB-9, PR-1, PR-4, PR-7, CL-1; SP-4, the tap-lock alerts, on
-2026-10-23). The classic audit added 3 items, all
-Partial: BL-3, SP-5 and KB-10.
+packet reductions refused), SV-4 (faults injected into authority code) and SV-2 (the melee window on the clicks' clock
+through a server stall) on 2026-10-23; and HR-11, which was never an issue under authority) and 6 from Open to Partial
+(KB-9, PR-1, PR-4, PR-7, CL-1; SP-4, the tap-lock alerts, on 2026-10-23). The classic audit added 3 items, all Partial:
+BL-3, SP-5 and KB-10.
 
 Solved today, in short:
 
@@ -78,6 +80,7 @@ Solved today, in short:
 - Keep-sprint, packet crits and HCF's block glitch (a cancelled placement climbed over a wall).
 - Sword blocking on a modern client.
 - The CPS race and clicks lost into the damage window, in `classic-capped` (the NAS world) and `neue`.
+- Server lag eating hits: through a server stall, fresh hits keep 1.7's 10-tick cadence, none late and none early.
 - One-tick pot swaps, off-hand pots behind a sword, silent aim on throws, and inventory-move.
 - 1.7 throws and flight.
 - The 26.3 interpolation stutter near the fight.
@@ -106,25 +109,24 @@ Solved items are left out.
 | 1 | [SV-1](#sv-1) | Partial | netcode, config | 200 players on one map run exact at MSPT p99 8.6 ms, 50 at 125 ms are exact, and 100 heal from a 2.3 s stall in 7 s. 200 in one fight needs a second machine to measure. |
 | 2 | [CL-1](#cl-1) | Partial | netcode, config, core | Most HCF players use Lunar. Frame-time packets no longer kick, but no rule reads HCFR's Apollo combat options and no recorded Lunar session has checked them against the grammar. |
 | 3 | [NW-1](#nw-1) | Partial | netcode | Steady links, Wi-Fi hiccups and 0.5% loss are clean on a real client, and a 2 s freeze recovers with one correction; 2% loss at 150 ms still costs corrections and hits. |
-| 4 | [SV-2](#sv-2) | Partial | combat | A server hitch no longer refuses hits, but damage windows count server ticks, so a stall shuts windows real time had opened. |
-| 5 | [PR-7](#pr-7) | Partial | combat, core | Pearls land only where a standing box fits and stop at fake walls; no running-server glitch suite, and core isn't told of a refund. |
-| 6 | [HR-3](#hr-3) | Partial | netcode | A low-ping cheater has about the 150 ms slack plus its jitter of free backtrack inside its cap; using it on every hit raises `rewind-stretch`, on thresholds from simulated and torture-rig play only. |
-| 7 | [KB-4](#kb-4) | Partial | combat, netcode | The base knock points between server positions, not along what the attacker saw; unmeasured at ping. |
-| 8 | [VI-1](#vi-1) | Partial | netcode, config | Paths are exact within 24 blocks. `ranged-radius` extends them to 64 for a viewer aiming a bow, rod or thrown item; it is built and off until §15.6 is signed off. |
-| 9 | [IN-4](#in-4) | Partial | netcode | Aim assist is measured (yaw GCD), with thresholds never tuned on real mouse data. |
-| 10 | [KB-10](#kb-10) | Partial | netcode | Jump-reset macros raise an alert, on thresholds from simulated players only. |
-| 11 | [IN-3](#in-3) | Partial | netcode | Autoclickers are capped at 12 CPS, and a 20 CPS lock or any fixed rate is flagged; the thresholds await real click data. |
-| 12 | [PR-4](#pr-4) | Partial | combat, core | 1.7's splash falloff is on; core's own pot precision may stack on it, and no pot drill compares them. |
-| 13 | [MV-5](#mv-5) | Partial | sim, netcode | Geysers, riptide, `vehicles: vanilla` and solid copies that went inexact still trust the client, within 1 block. |
-| 14 | [CL-2](#cl-2) | Partial | config | ViaVersion and Geyser players play client-trusted unless `ineligible: deny`; hcfr-core runs neither today. |
-| 15 | [CL-3](#cl-3) | Partial | config | GrimAC false flags on legit 1.7 play; the GrimAC checklist was never run with a real client. |
-| 16 | [PR-6](#pr-6) | Partial | config | Split damage windows are built and live-tested but off by default, so fire ticks and arrows still eat sword hits. |
-| 17 | [VI-4](#vi-4) | Partial | config, netcode | Anti-ESP is built but off by default, and pop-in when it is on is unmeasured. |
-| 18 | [SV-5](#sv-5) | Partial | netcode | Plugins that write velocity or teleports around the choke point get upper-bound timing and corrections. |
-| 19 | [VI-3](#vi-3) | Partial | netcode | Invisible or teleporting opponents after a desync are re-paired and counted, with no playtest budget yet. |
-| 20 | [HR-7](#hr-7) | Partial | combat, netcode | The 26.3 client picks the bare box, without 1.7's +0.1 margin; spear stabs land under enforce but aren't lag-compensated. |
-| 21 | [SP-4](#sp-4) | Partial | netcode | Tick-locked w-tap and block-hit macros raise an alert; macros timed in milliseconds mostly don't, and no real tap data has checked it. |
-| 22 | [KB-9](#kb-9) | Partial | combat | Classic keeps 1.7's combo lock by design; DI is built in `neue`, which is parked. |
+| 4 | [PR-7](#pr-7) | Partial | combat, core | Pearls land only where a standing box fits and stop at fake walls; no running-server glitch suite, and core isn't told of a refund. |
+| 5 | [HR-3](#hr-3) | Partial | netcode | A low-ping cheater has about the 150 ms slack plus its jitter of free backtrack inside its cap; using it on every hit raises `rewind-stretch`, on thresholds from simulated and torture-rig play only. |
+| 6 | [KB-4](#kb-4) | Partial | combat, netcode | The base knock points between server positions, not along what the attacker saw; unmeasured at ping. |
+| 7 | [VI-1](#vi-1) | Partial | netcode, config | Paths are exact within 24 blocks. `ranged-radius` extends them to 64 for a viewer aiming a bow, rod or thrown item; it is built and off until §15.6 is signed off. |
+| 8 | [IN-4](#in-4) | Partial | netcode | Aim assist is measured (yaw GCD), with thresholds never tuned on real mouse data. |
+| 9 | [KB-10](#kb-10) | Partial | netcode | Jump-reset macros raise an alert, on thresholds from simulated players only. |
+| 10 | [IN-3](#in-3) | Partial | netcode | Autoclickers are capped at 12 CPS, and a 20 CPS lock or any fixed rate is flagged; the thresholds await real click data. |
+| 11 | [PR-4](#pr-4) | Partial | combat, core | 1.7's splash falloff is on; core's own pot precision may stack on it, and no pot drill compares them. |
+| 12 | [MV-5](#mv-5) | Partial | sim, netcode | Geysers, riptide, `vehicles: vanilla` and solid copies that went inexact still trust the client, within 1 block. |
+| 13 | [CL-2](#cl-2) | Partial | config | ViaVersion and Geyser players play client-trusted unless `ineligible: deny`; hcfr-core runs neither today. |
+| 14 | [CL-3](#cl-3) | Partial | config | GrimAC false flags on legit 1.7 play; the GrimAC checklist was never run with a real client. |
+| 15 | [PR-6](#pr-6) | Partial | config | Split damage windows are built and live-tested but off by default, so fire ticks and arrows still eat sword hits. |
+| 16 | [VI-4](#vi-4) | Partial | config, netcode | Anti-ESP is built but off by default, and pop-in when it is on is unmeasured. |
+| 17 | [SV-5](#sv-5) | Partial | netcode | Plugins that write velocity or teleports around the choke point get upper-bound timing and corrections. |
+| 18 | [VI-3](#vi-3) | Partial | netcode | Invisible or teleporting opponents after a desync are re-paired and counted, with no playtest budget yet. |
+| 19 | [HR-7](#hr-7) | Partial | combat, netcode | The 26.3 client picks the bare box, without 1.7's +0.1 margin; spear stabs land under enforce but aren't lag-compensated. |
+| 20 | [SP-4](#sp-4) | Partial | netcode | Tick-locked w-tap and block-hit macros raise an alert; macros timed in milliseconds mostly don't, and no real tap data has checked it. |
+| 21 | [KB-9](#kb-9) | Partial | combat | Classic keeps 1.7's combo lock by design; DI is built in `neue`, which is parked. |
 
 ---
 
@@ -1469,23 +1471,49 @@ Solved items are left out.
   hits `VALID` at 100 through a stall (98.6%), and 200 players (the bots on a second machine). Met too: 0 `REWIND` for
   50 bots at 125 ms.
 
-### SV-2 Server lag eats hits — Partial {#sv-2}
+### SV-2 Server lag eats hits — Solved {#sv-2}
 
 - **Players:** "server lag eats hits", combos that break on a TPS drop.
 - **Cause:** server clock. During a stall, clients keep ticking. Their windows queue and are judged correctly, against
   the client tick each click was made in. But damage windows only count server ticks, so clicks from queued windows
-  meet windows that should already have opened by real time. The knock then goes out late.
-- **Today:** verdicts no longer charge a hitch to the attacker: rewind ages are on the lag-compensation clock
-  (`Authority.clockMillis`, torture F6), and a stall's burst drains at once (F4). On the torture rig, server hitches of
-  0.3-1.2 s cost 0 corrections and every hit stayed `VALID` (`stallfix4-hitch`). Damage cadence is still
-  server-tick-based (`DamageWindows`, `damageCooldownTime`).
-- **Fix (combat):** for legacy melee between players, keep each victim's melee window in wall-clock milliseconds
-  (`openAtMs = hitMs + windowTicks × 50`). Check it in `revivalHurtServer` in place of the tick counter, so a stall
-  doesn't stretch immunity. Leave vanilla's counter for the hurt animation and plugins. The click buffer of
-  `classic-capped` and `neue` (HR-6) covers short stalls too.
-- **Proof (to add):** lag-injection live test. A plugin sleeps the main thread 200 ms every 40 ticks while a
-  `FakeClient` combos at 12 CPS. Landed fresh hits per second ≥ 1.95, against 2.00 without lag. Today, measure the
-  loss first.
+  meet windows that should already have opened by real time. The knock then goes out late. After the stall, Paper's
+  catch-up ticks run back to back and count a window down in a few milliseconds, so a hit dealt in the stall's burst
+  gets its next window early.
+- **Today:**
+  - Verdicts don't charge a hitch to the attacker: rewind ages are on the lag-compensation clock
+    (`Authority.clockMillis`, torture F6), and a stall's burst drains at once (F4). On the torture rig, server hitches
+    of 0.3-1.2 s cost 0 corrections and every hit stayed `VALID` (`stallfix4-hitch`).
+  - The melee window follows the clicks' clock around a stall (2026-10-23, `damage-windows.melee-wall-clock`, on by
+    default; `auth-combat.md` §6). While the server is or was a tick behind its schedule since the window's fresh hit
+    (`Authority.behindSince`), a legacy melee click on a player that authority delivers sets the victim's counter,
+    before its damage, to what is left of the window between its arrival (its window's `TickEnd` off the wire) and the
+    arrival of the click that opened the window, rounded to whole ticks (`DamageWindows.catchUp`). A window real time
+    opened is open; one the catch-up ticks counted down early stays shut. A plugin's `setNoDamageTicks`, or a window
+    another damage or an untracked hit opened, stands. The click buffer reads the same counter, and right after a stall
+    a held click waits a tick for the clicks the client sent through it (`AuthPlayer.landingWaits`).
+  - On schedule nothing changes: the window is vanilla's counter, which still drives the hurt animation, plugins and
+    every other damage.
+- **Fix:** none left for player melee under authority. Projectiles, mobs and other damage, and players outside
+  authority, still count server ticks.
+- **Proof (exists):**
+  - unit `DamageWindowsTest` (a stall doesn't keep the window shut; catch-up ticks don't open it early; jitter rounds to
+    the client's spacing; a plugin's write and another fresh window win; only a fresh hit restarts the clock; on
+    schedule the counter is vanilla's bit for bit over 2,000 jittered clicks), `PauseClockTest` (behind from a hitch on,
+    never on per-tick jitter);
+  - cheat suite 2 "server lag: a still target clicked at 12 CPS through a 200 ms stall every 40 ticks"
+    (`auth-cheat-suite-2.md`, "Server lag"): a plugin sleeps the main thread 200 ms every 35-45 ticks while a fake
+    client on its own thread, its TickEnds stamped as they arrive, clicks a still target 2, 2, 1 ticks apart. Fresh hits
+    a second over 600 client ticks, and the gaps between them in real time:
+
+    | Rule set | No stalls | Stalls, the window on server ticks (before) | Stalls, the clicks' clock |
+    |---|---|---|---|
+    | `classic` | 2.00, every gap 10 ticks | 1.95: 5 of 58 gaps 12-14 ticks | 2.00, every gap 10 ticks |
+    | `classic-capped` | 2.00, every gap 10 ticks | 2.00, but 4 gaps of 7-8 ticks and 4 of 12-13 | 2.01, every gap 9-11 ticks |
+
+    The full live runs of 2026-10-23; runs of the row alone gave the same. On `classic-capped` the click buffer hid the
+    loss in the rate: the hits the stalls delayed were made up by hits the catch-up ticks let in early. The 9s and 11s
+    are a held click's landing (at the start of a tick) next to a direct click (mid-tick), half a tick apart in one
+    server tick.
 
 ### SV-3 Leaf and Paper settings that drop or delay knockback — Solved {#sv-3}
 
@@ -1637,13 +1665,13 @@ The realistic lever is Apollo: Lunar already exposes server-controlled combat op
 ## 14. Test backlog (the proofs to add)
 
 Grouped by harness. Each line points at its item. The proofs this list used to hold for HR-2, HR-6, IN-1, IN-5, PR-3,
-PR-8, NW-2 and SV-6 exist now (see each item).
+PR-8, NW-2, SV-2 and SV-6 exist now (see each item).
 
 **Unit** (`./gradlew :leaf-server:runRevivalTests`):
 
 - tab latency from ack RTT (NW-3);
 
-**Cheat suite** (`AuthCheatScenarios`). Green on `classic-capped` (126/126; cheat suite 2 55/55); the table in
+**Cheat suite** (`AuthCheatScenarios`). Green on `classic-capped` (133/133; cheat suite 2 56/56); the table in
 `auth-cheat-suite.md` predates the classic-audit rows. New rows:
 
 - fly and speed during a geyser or inexact-copy exemption (MV-5);
@@ -1657,7 +1685,6 @@ PR-8, NW-2 and SV-6 exist now (see each item).
 - rod and snowball at 0/100/200 ms on a strafing target (PR-1);
 - the pearl glitch suite on a running server (PR-7);
 - potion spawn origin, to the bit (PR-5);
-- lag injection (SV-2);
 - Via and Geyser joins under each `ineligible` policy (CL-2).
 
 **Real client** (`~/Developer/tools/auth-rig/enforce-neue`, `torture`):
