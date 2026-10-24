@@ -252,7 +252,7 @@ range check is replaced) and validated at `TickEnd(T)`:
 - Non-player targets (scope change, 2026-10-24, from the NAS playtest; pending John's acknowledgement): a block the
   server has between the attacker's eye and the target vetoes the hit, mob or player. Blocks are what the server knows
   exactly; where the client drew a mob it doesn't (no mirror), so the rule is strict about blocks and tolerant about the
-  target. A living non-player target (not a mannequin, which stands in for a player and keeps vanilla's checks) is
+  target. A living non-player target (a mannequin too, 2026-10-24: it stands in for a player but has no truth path) is
   INVALID `BLOCKED` when a block on the attacker's `WorldView`, read as the player pick reads it (OUTLINE, no fluids; a
   break the server denied counts as the block, though the client still shows the hole), stands between the same eye and
   every place the target may have been drawn: its server box now and a tick ago and at each position its tracker sent

@@ -115,7 +115,8 @@ HitCheck clip = validator.blockClip(attacker, targetId, region /* HitValidator.R
   reads it: what this client was sent and acked, with its own admitted predictions (a block it broke and the server broke
   too is gone at once); a server change it hasn't acked yet is still its old state (pinned), and a break the server denied
   is the block (the truth's), though the client still shows the hole. Not clipped (vanilla's checks, as before): the key
-  `authoritative.block-clip-non-player-targets` off, a target that isn't living or is a mannequin, a spectator or riding
+  `authoritative.block-clip-non-player-targets` off, a target that isn't living (a mannequin is, 2026-10-24: it stands in
+  for a player but has no truth path, so the block clip is all it gets), a spectator or riding
   attacker, keybinds in an exempt tick, an unseeded truth, a region past 16 blocks. Shortcut: the grid samples those faces,
   so a sliver in sight between its points reads as hidden; only a swing whose crosshair missed the region can meet that.
 - `PickWorld`'s default `outlineShape` is `state.getShape(EmptyBlockGetter, pos, CollisionContext.empty())`: exact for
@@ -240,7 +241,7 @@ does not change).
 | `HitValidatorTest` (20) | valid, out of reach, missed, blocked, occluded, eye inside the target, eye inside another player, not present / removed, inclusive rewind cap, rewind from the displayed step, inexact target, no sample, spear, exact vs inexact non-player blockers; past the cap (a real `PathFeed` as the truth): a lead lands, the stale box misses, the first step at the capped age and never an older one, REWIND only with no truth that new, the truth never asked inside the cap, an inexact mirror judged on the truth |
 | `NonPlayerBlockClipTest` (6) | the block clip: a villager in a glass cell is BLOCKED, whatever the crosshair; in the open, over a 1-high wall, out of the crosshair or out of reach, not vetoed; a box a tick ago in sight is enough when the box now is behind a wall; a denied break's hole on a real `WorldView` (mocked level): the client's read sees the villager through it, the judge's read is BLOCKED |
 | `SentTrailTest` (4) | the sends in the span and the newest before it, nothing with no send in the span, a 64-tick gap forgets the views before it, the ring keeps the newest 16 |
-| `NonPlayerSweepTest` (4, in `auth`) | `CombatWiring`'s side: the region holds the box now and a tick ago and the trail over the view's lag; the span at 20, 112 and 300 ms and for an unsynced type; a mannequin keeps vanilla's checks |
+| `NonPlayerSweepTest` (4, in `auth`) | `CombatWiring`'s side: the region holds the box now and a tick ago and the trail over the view's lag; the span at 20, 112 and 300 ms and for an unsynced type; a mannequin is clipped like a mob, a player never (its paths judge it) |
 | `PathFeedTest` (11) | `positionSince` (the oldest held step at or after a stamp, inclusive; none past the newest; the ring's oldest when it no longer reaches back), PosRot with a 2-tick stepped delta through the real codec, viewer base equals the real `VecDeltaCodec` over 2,000 random ticks (syncs and keep-alives included), grid and exact sync positions, respawn decisions, ring overrun, no freeze for 1 or 2 silent ticks and one for 3, steady state 1.5 steps behind at speed 2, still player kept alive within 1/4096 block (and restarts without keep-alive), pre-roll |
 
 ### 3.4 Cost (this Mac, JDK 25, after warm-up)

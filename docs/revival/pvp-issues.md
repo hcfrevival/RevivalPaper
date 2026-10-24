@@ -183,7 +183,7 @@ Solved items are left out.
     has no path: it is judged where it stands while it is still within its tracker's send threshold of what the tracker
     last sent it. Before review 3 (#3, review 1's stale-stamp-stationary-targets) a still one, sent nothing but a resync
     every 60 ticks, aged past every cap and was hittable only for a moment after each resync. HCFR's combat logger is a
-    villager and REDLINE's dummies are mannequins (not players: vanilla checks); the bots module's puppets are
+    villager and REDLINE's dummies are mannequins (not players: no paths, vanilla's reach and WD-5's block clip); the bots module's puppets are
     player-type and never start authority.
   - A hit the judge called `VALID` skips Paper's range check on current positions for that target (patch 1018
     `Lag-compensated reach`, `AuthPlayer.judgedReach`; classic audit #7), so chase hits on fast targets land.
@@ -1181,15 +1181,17 @@ Solved items are left out.
     line (`BLOCKED xN (non-player xN)`), logged with `debug.log`;
   - the world view is read as the player pick reads it: a break the server denied is the block, though the client still
     shows the hole; a change the client hasn't acked yet is its old state; its own break the server made too is gone;
-  - reach and aim are never judged on a non-player; mannequins (REDLINE's dummies, NPC plugins), targets that aren't
-    living, spectators, riding or exempt attackers keep vanilla's checks as before;
+  - reach and aim are never judged on a non-player; targets that aren't living, spectators, riding or exempt
+    attackers keep vanilla's checks as before; a mannequin (REDLINE's dummies, NPC plugins) is clipped like a mob
+    (2026-10-24; the first cut left it to vanilla's checks as a player's stand-in, but it has no truth path to judge
+    it by, and the block the server has between the eye and it is as real as for a villager);
   - `authoritative.block-clip-non-player-targets` (on) switches it (`CombatWiring.judgeNonPlayer`).
 - **Fix:** none in code. Shortcut: the grid samples the region's faces, so a sliver in sight between its points reads as
   hidden; only a swing whose crosshair missed the region (not an honest client's) can meet that.
 - **Proof (exists):** unit `NonPlayerBlockClipTest` (a villager in a glass cell BLOCKED whatever the crosshair; in the
   open, over a 1-high wall, off the crosshair or past reach not vetoed; the box a tick ago in sight is enough; a denied
   break's hole on a real `WorldView`: the client's read sees the villager through it, the judge's is BLOCKED),
-  `NonPlayerSweepTest` (the candidates, the span, mannequins left alone), `SentTrailTest`. Cheat rows (`classic-capped`,
+  `NonPlayerSweepTest` (the candidates, the span, mannequins clipped, players never), `SentTrailTest`. Cheat rows (`classic-capped`,
   2026-10-24): "combat: a villager (NoAI) behind a glass wall at 2.5 (WD-5)" (refused, `INVALID BLOCKED`, the villager
   untouched; with the key off the same swing lands, as every swing did before) and "combat: breaks a protected block on
   its side, a tick later swings at a villager through the hole (WD-5, the NAS case)" (the client has the gap, the server

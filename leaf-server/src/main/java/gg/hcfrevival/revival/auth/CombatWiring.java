@@ -277,9 +277,13 @@ public final class CombatWiring implements ViewerMirrors, AttackJudge, Projectil
         return UNKNOWN;
     }
 
-    /** Living non-player targets the block clip judges: every one but a mannequin (it stands in for a player). */
+    /**
+     * Living non-player targets the block clip judges, and whose sends feed the trail: every one that isn't a player. A
+     * mannequin (REDLINE's dummies, NPC plugins) is one (2026-10-24): it stands in for a player but has no truth path,
+     * and the block the server has between the eye and it is as real as for a mob; players are judged on their paths.
+     */
     static boolean clipped(final LivingEntity living) {
-        return !(living instanceof net.minecraft.world.entity.Avatar);
+        return !(living instanceof net.minecraft.world.entity.player.Player);
     }
 
     /**

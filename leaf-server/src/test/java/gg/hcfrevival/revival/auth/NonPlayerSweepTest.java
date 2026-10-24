@@ -15,6 +15,7 @@ import gg.hcfrevival.revival.config.RevivalSettings;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.decoration.Mannequin;
 import net.minecraft.world.entity.npc.villager.Villager;
+import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.phys.AABB;
 import org.junit.jupiter.api.Test;
 
@@ -76,8 +77,9 @@ class NonPlayerSweepTest {
     }
 
     @Test
-    void mannequinsKeepVanillasChecks() {
+    void mannequinsAreClippedLikeMobsPlayersNever() {
         assertTrue(CombatWiring.clipped(mock(Villager.class)));
-        assertFalse(CombatWiring.clipped(mock(Mannequin.class)), "a mannequin stands in for a player (REDLINE's dummies)");
+        assertTrue(CombatWiring.clipped(mock(Mannequin.class)), "a mannequin (REDLINE's dummies) has no truth path: the block clip is all it gets");
+        assertFalse(CombatWiring.clipped(mock(Player.class)), "a player is judged on its paths");
     }
 }

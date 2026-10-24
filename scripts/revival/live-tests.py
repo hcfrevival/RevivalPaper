@@ -8,7 +8,8 @@ Each run gets a fresh temporary server folder (offline mode, flat world, accepte
 RevivalLiveTests plugin and a random nonce. The plugin drives two fake players through the real packet
 handlers and logs REVIVAL_LIVE_PASS / REVIVAL_LIVE_FAIL lines carrying that nonce; this script fails unless
 REVIVAL_LIVE_DONE <nonce> appears and no failure does. The Mojang server jar and libraries Paperclip
-unpacks are cached in leaf-server/build/revival-live/ so later runs start offline.
+unpacks are cached in leaf-server/build/revival-live/ so later runs start offline. A passed run's server folder is
+removed (REVIVAL_LIVE_KEEP=1 keeps it; hundreds had piled up in TMPDIR by 2026-10-24); a failed run's stays with its log.
 
 REVIVAL_LIVE_RULES=<rule set> runs both cheat suites on that rule set (classic when unset; classic-capped is the
 NAS world's). REVIVAL_LIVE_ONLY=<token>,<token> keeps only the steps whose names hold one of them, and the cheat suite's
@@ -76,7 +77,8 @@ def run(name: str, async_tracker: bool, server_jar: pathlib.Path, plugin: pathli
 
     output = log.read_text(errors="replace")
     (CACHE / "logs").mkdir(parents=True, exist_ok=True)
-    shutil.copy(log, CACHE / "logs" / f"{name.replace(' ', '-')}.log")  # for CI to upload
+    kept = CACHE / "logs" / f"{name.replace(' ', '-')}.log"
+    shutil.copy(log, kept)  # for CI to upload
     for line in output.splitlines():
         if f"REVIVAL_LIVE_PASS {nonce}" in line:
             print(f"[{name}] PASS {line.split(nonce, 1)[1].strip()}")
@@ -86,7 +88,9 @@ def run(name: str, async_tracker: bool, server_jar: pathlib.Path, plugin: pathli
         print(output[-15000:])
         print(f"[{name}] FAILED. Log: {log}")
         return False
-    print(f"[{name}] all live tests passed. Log: {log}")
+    print(f"[{name}] all live tests passed. Log: {kept}")
+    if not os.environ.get("REVIVAL_LIVE_KEEP"):
+        shutil.rmtree(server, ignore_errors=True)
     return True
 
 
