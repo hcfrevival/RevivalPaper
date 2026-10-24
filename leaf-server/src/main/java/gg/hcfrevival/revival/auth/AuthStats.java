@@ -73,6 +73,9 @@ public final class AuthStats {
     long attacksQueued;
     long attacksAccepted;
     long attacksRejected;
+    // attacksRejected by HitCheck.Reason: on players, and on living non-player targets (the block clip, design §7.1)
+    private final long[] rejectedPlayers = new long[gg.hcfrevival.revival.auth.combat.HitCheck.Reason.values().length];
+    private final long[] rejectedNonPlayers = new long[gg.hcfrevival.revival.auth.combat.HitCheck.Reason.values().length];
     long attacksOverCap;
     long serverTeleports;
     long teleportAcceptMismatches;
@@ -213,6 +216,21 @@ public final class AuthStats {
 
     public long attacksRejected() {
         return this.attacksRejected;
+    }
+
+    /** An attack the judge called INVALID, for {@code reason}; {@code nonPlayer}: on a living non-player target. */
+    void rejected(final gg.hcfrevival.revival.auth.combat.HitCheck.Reason reason, final boolean nonPlayer) {
+        (nonPlayer ? this.rejectedNonPlayers : this.rejectedPlayers)[reason.ordinal()]++;
+    }
+
+    /** Attacks the judge called INVALID for {@code reason}, on any target ({@link #attacksRejected} sums them). */
+    public long attacksRejected(final gg.hcfrevival.revival.auth.combat.HitCheck.Reason reason) {
+        return this.rejectedPlayers[reason.ordinal()] + this.rejectedNonPlayers[reason.ordinal()];
+    }
+
+    /** ...of which on a living non-player target (only {@code BLOCKED}: the non-player block clip). */
+    public long attacksRejectedNonPlayer(final gg.hcfrevival.revival.auth.combat.HitCheck.Reason reason) {
+        return this.rejectedNonPlayers[reason.ordinal()];
     }
 
     public long attacksOverCap() {

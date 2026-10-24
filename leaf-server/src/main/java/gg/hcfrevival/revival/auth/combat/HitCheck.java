@@ -32,9 +32,15 @@ public record HitCheck(Verdict verdict, Reason reason, double distance, long rew
         NOT_PRESENT,
         /** INVALID: the ray never met the target's box. */
         MISSED,
-        /** INVALID: met it, but beyond the client's entity interaction range. */
+        /**
+         * INVALID: met it, but beyond the client's entity interaction range. UNKNOWN for a non-player target farther than
+         * the block clip looks ({@link HitValidator#SIGHT_REACH}): vanilla's reach check refuses it anyway.
+         */
         OUT_OF_REACH,
-        /** INVALID: a block the client had was nearer along the ray. */
+        /**
+         * INVALID: a block the client had was nearer along the ray. For a non-player target ({@link HitValidator#blockClip}):
+         * a block stands between the eye and every point the target may have been drawn at.
+         */
         BLOCKED,
         /** INVALID: another entity took the pick in every possible order. */
         OCCLUDED,
@@ -50,7 +56,12 @@ public record HitCheck(Verdict verdict, Reason reason, double distance, long rew
         /** UNKNOWN: no sample for the attack tick (the tick wasn't run yet, or is out of history). */
         NO_SAMPLE,
         /** UNKNOWN: a pick this replay doesn't cover (spear {@code ATTACK_RANGE}, riding attacker). */
-        UNSUPPORTED
+        UNSUPPORTED,
+        /**
+         * UNKNOWN: a non-player target some line from the eye reaches past every block (the non-player block clip,
+         * {@link HitValidator#blockClip}): its reach and aim stay vanilla's.
+         */
+        IN_SIGHT
     }
 
     public boolean valid() {

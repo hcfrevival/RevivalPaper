@@ -249,7 +249,18 @@ range check is replaced) and validated at `TickEnd(T)`:
   attacker's `WorldView`, entity clip, strict `<` comparisons, interaction range from the client's attributes;
 - valid iff the pick returns the attacked entity. Then `player.attack(target)` runs as today (RevivalPaper combat,
   events). Invalid: dropped, counted, in `observe` only logged.
-- Non-player targets: vanilla/Paper validation, unchanged.
+- Non-player targets (scope change, 2026-10-24, from the NAS playtest; pending John's acknowledgement): a block the
+  server has between the attacker's eye and the target vetoes the hit, mob or player. Blocks are what the server knows
+  exactly; where the client drew a mob it doesn't (no mirror), so the rule is strict about blocks and tolerant about the
+  target. A living non-player target (not a mannequin, which stands in for a player and keeps vanilla's checks) is
+  INVALID `BLOCKED` when a block on the attacker's `WorldView`, read as the player pick reads it (OUTLINE, no fluids; a
+  break the server denied counts as the block, though the client still shows the hole), stands between the same eye and
+  every place the target may have been drawn: its server box now and a tick ago and at each position its tracker sent
+  it to over the attacker's view lag (`min(rttBase, rtt-ceiling-ms)` + jitter + two of its update intervals +
+  `rewind-slack-ms`, at most `max-rewind-ms`), grown by 0.1. Anything else is vanilla/Paper's validation, unchanged:
+  reach and aim are never judged on a non-player. `authoritative.block-clip-non-player-targets` (on) switches it. The
+  playtest: a vanilla client (112 ms) broke protected glass on its side and killed 24 villagers through the hole, 184
+  attacks, none judged (pvp-issues WD-5).
 - Rewind window cap `max-rewind-ms` (default 300): an attack that relies on mirror state older than the cap is
   invalid (anti-backtrack, ping spoof).
 
@@ -333,7 +344,8 @@ authoritative:
 
 One mechanic per patch: `1011-Authoritative-netcode` (pong, outbound choke point, window packets, tick end, teleport
 accept, client load/respawn), `1012-Authoritative-movement` (claim handling, truth on the player, zero-input travel,
-velocity restores, MotionShadow inputs), `1013-Lag-compensated-hits` (attack queue), `1014-Authoritative-paths`
+velocity restores, MotionShadow inputs), `1013-Lag-compensated-hits` (attack queue; the field on `LivingEntity` that holds
+a non-player's sent positions for the block clip, 2026-10-24), `1014-Authoritative-paths`
 (tracker output for player targets), `1015-Visibility` (tracker pairing). Hook sites: report 04 §10. Every hook is
 listed in `scripts/revival/markers.txt`.
 

@@ -2254,7 +2254,9 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
         } else if (verdict == AttackJudge.INVALID) {
             this.stats.attacksRejected++;
             if (settings.debugLog()) {
-                DebugHud.rejectedHit(this, tick, target.getScoreboardName(), this.lastHitVerdict == null ? "INVALID" : this.lastHitVerdict,
+                // A mob's scoreboard name is its UUID; its toString has its type and where the server holds it
+                DebugHud.rejectedHit(this, tick, target instanceof Player ? target.getScoreboardName() : target.toString(),
+                    this.lastHitVerdict == null ? "INVALID" : this.lastHitVerdict,
                     this.lastHitRewindMillis, this.lastHitDistance);
             }
         } else if (target == null || refused) {
@@ -2313,6 +2315,14 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
     /** The hook in {@code handleAttack}'s range check: whether this attack's reach was judged on what the attacker saw. */
     public boolean judgedReach(final net.minecraft.world.entity.Entity target) {
         return this.judgedTarget >= 0 && target.getId() == this.judgedTarget;
+    }
+
+    /**
+     * The window being run has its keybinds in an exempt tick, or the port isn't stepped since one: its attacks are never
+     * delivered under enforce ({@link #runAttack}), and the truth's eye isn't where the client picked from.
+     */
+    boolean attackExempt() {
+        return this.keybindExempt != AuthStats.EXEMPT_NONE || portExempt(this.lastExempt);
     }
 
     private int speedSyncsPending;

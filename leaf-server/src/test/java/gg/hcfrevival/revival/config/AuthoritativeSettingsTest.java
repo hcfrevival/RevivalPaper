@@ -31,6 +31,7 @@ class AuthoritativeSettingsTest {
         assertEquals(1.0E-6, settings.correctionPersistMin(), "NAS glitch: no teleport for a sub-µm gap");
         assertEquals(500, settings.landingProbeMs());
         assertEquals(2000, settings.landingSampleMs());
+        assertTrue(settings.blockClipNonPlayerTargets(), "design §7.1, 2026-10-24: no mob is hit through a block the server has");
     }
 
     @Test

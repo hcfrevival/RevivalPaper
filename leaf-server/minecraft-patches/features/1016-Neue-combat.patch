@@ -29,10 +29,10 @@ index f2f2157f83048c67ba8d96c448759fa914fe4063..71a011a6ba03031d0e4902e6178caac8
          this.player.resetLastActionTime();
          // CraftBukkit start - Raytrace to look for 'rogue armswings'
 diff --git a/net/minecraft/world/entity/LivingEntity.java b/net/minecraft/world/entity/LivingEntity.java
-index 5dece03001aff0a8c49d74b8513821993f6ce5a1..2213cc8ff32b80b1f3ed484bb399714d73f3a25d 100644
+index fecfc9a8eda707ac6213ab24e77da110c6de30f7..7e162285ee62ec30c11d4f35df57db9b7fc705ab 100644
 --- a/net/minecraft/world/entity/LivingEntity.java
 +++ b/net/minecraft/world/entity/LivingEntity.java
-@@ -1512,6 +1512,8 @@ public abstract class LivingEntity extends Entity implements Attackable, Waypoin
+@@ -1513,6 +1513,8 @@ public abstract class LivingEntity extends Entity implements Attackable, Waypoin
              return false;
          }
  
@@ -41,7 +41,7 @@ index 5dece03001aff0a8c49d74b8513821993f6ce5a1..2213cc8ff32b80b1f3ed484bb399714d
          if (source.is(DamageTypeTags.IS_FIRE) && this.hasEffect(MobEffects.FIRE_RESISTANCE)) {
              return false;
          }
-@@ -1565,6 +1567,7 @@ public abstract class LivingEntity extends Entity implements Attackable, Waypoin
+@@ -1566,6 +1568,7 @@ public abstract class LivingEntity extends Entity implements Attackable, Waypoin
          boolean tookFullDamage = true;
          if (this.damageCooldownTime > (float)this.invulnerableDuration / 2.0F && !source.is(DamageTypeTags.BYPASSES_COOLDOWN)) { // CraftBukkit - restore use of maxNoDamageTicks
              if (damage <= this.lastHurt) {

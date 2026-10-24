@@ -1,13 +1,14 @@
 # 1.7 PvP issues: the checklist
 
-Status: 2026-10-23, branch `revival/authoritative` (the classic audit, `auth-classic-audit.md`: the jump-reset alert,
+Status: 2026-10-24, branch `revival/authoritative` (the classic audit, `auth-classic-audit.md`: the jump-reset alert,
 the two parity switches as the user set them, the stale self-echo fixes, the keep-sprint and never-loaded holes closed;
 then the ghost-hand rule, WD-4, a code review's fixes, NW-1's one-correction recovery from a 2 s freeze, and SV-2's
 window clock; then review 3, `auth-review-3.md`: a warm-up flight and a login re-mount that bypassed `vehicles: deny`
 closed, the view now hears every dismount, still players outside authority hittable past the cap, no kick after a long
 stall or for a stray move packet, geysers exempt only while they launch, exempt ticks replicated where the server holds
-the player). The live suites are green on `classic-capped` and `classic`, both trackers: on `classic-capped` cheat
-suite 145/145, cheat suite 2 56/56. The
+the player; then WD-5 from a NAS playtest: no mob is hit through a block the server has). The live suites are green on
+`classic-capped`, both trackers (2026-10-24: cheat suite 150/150, cheat suite 2 56/56), and were on `classic`
+(2026-10-23). The
 real client (run `classic6`) is exact with every hit `VALID` at localhost, 150, 250 and 300 ms. This is a list of every problem 1.7 PvP
 is known to have, checked against the authoritative RevivalPaper server. It draws on the community's own record
 (sources at the end) and on this repo's design, code, tests and real-client runs.
@@ -57,18 +58,19 @@ policy in `revival.yml` and server configs), **core** (the HCFR plugins, outside
 
 | | Count |
 |---|---|
-| Solved | 40 |
+| Solved | 41 |
 | Partial | 21 |
 | Accepted | 8 (5 of them [limit]) |
 | Open | 0 |
-| Items | 69 |
+| Items | 70 |
 
 Since the last refresh (2026-10-21, `a7a84a06`): 16 items moved to Solved (HR-2, HR-6, IN-1, IN-2, IN-5, PR-3, NW-2,
 SV-6; SP-3, MV-3 and WD-1 once their cheat rows ran, one of which found a hole; WD-4 (the ghost-hand rule), SV-3 (Leaf's
 packet reductions refused), SV-4 (faults injected into authority code) and SV-2 (the melee window on the clicks' clock
 through a server stall) on 2026-10-23; and HR-11, which was never an issue under authority) and 6 from Open to Partial
 (KB-9, PR-1, PR-4, PR-7, CL-1; SP-4, the tap-lock alerts, on 2026-10-23). The classic audit added 3 items, all Partial:
-BL-3, SP-5 and KB-10.
+BL-3, SP-5 and KB-10. A NAS playtest added WD-5 on 2026-10-24 (villagers killed through a denied break's hole in their
+glass box), Solved the same day by the non-player block clip.
 
 Solved today, in short:
 
@@ -89,6 +91,7 @@ Solved today, in short:
 - The 26.3 interpolation stutter near the fight.
 - Ghost blocks and phasing through fake walls.
 - Ghost hand: chests, doors and digs through walls.
+- Hits on mobs through blocks: through a wall, or through a hole the client broke in protected glass (WD-5).
 - A bug in authority code: it falls back to the client's claim for one tick and never kicks (191 injected faults in a
   fight).
 - A stalled player: frozen, never kicked, still hittable where it stopped.
@@ -257,6 +260,8 @@ Solved items are left out.
     pass on the client's `WorldView`;
   - `INVALID` reasons `OUT_OF_REACH`, `BLOCKED`, `OCCLUDED`, `MISSED`;
   - an `INEXACT` mirror gives `UNKNOWN`, and in enforce a player target is then not hit (fails safe);
+  - a non-player target (no mirror) gets the block clip only: `BLOCKED` when a block stands between the eye and
+    everywhere it may have been drawn; its reach and aim stay vanilla's (WD-5, 2026-10-24);
   - the eye is the truth's. It follows the client's claim (within `attack-eye-offset-cap`, 0.5 per axis) only for a
     gap the server caused: entries forced at their deadline, a refused window, a denied break, a revert snap
     (`AuthPlayer.gapCaused`). Every claim since the client was last on the truth must also land within
@@ -1153,6 +1158,47 @@ Solved items are left out.
   (localhost and r150j30): 97 block clicks and 24 dig starts per condition, none `unseen-target`, 0 corrections, every
   claim exact. The clicks: a door toggled across a sweep of its wall, a chest, a lectern's top, a trapdoor, placements
   across a sweep, a 4-block sneaking backward bridge, and digs across a sweep of a wall.
+
+### WD-5 Hits on mobs through blocks: a denied break's hole, killaura through walls — Solved {#wd-5}
+
+- **Players:** killing a mob through a wall, or through a hole the client made in protected glass. In HCF the combat
+  logger is a villager: one walled in by a claim was hittable through the wall. Found in a playtest on the NAS
+  (2026-10-24, 10:55-11:02, Chayne, vanilla client, RTT 112 ms): villagers in a glass box; the player broke the glass on
+  its side, the server denied the break and put it back (62 "hole closed" lines), and every swing in the gap landed: 24
+  villagers slain. `revival auth inspect Chayne`: `attacks 184: accepted 0, rejected 0, over cap 0, over cps 0`, not one
+  judged.
+- **Cause:** server. Authority handed non-player targets to vanilla/Paper (design §7.1 until 2026-10-24), and vanilla
+  checks reach on an attack, never line of sight. Killaura through walls on mobs landed the same way.
+- **Today:** the non-player block clip (design §7.1, a scope change of 2026-10-24, pending John's acknowledgement;
+  `auth-combat.md` §2.2). On the server's simulation the block is still there, so it vetoes the hit; where the client
+  drew the mob is the only thing the server can't know (mobs aren't mirrored), so the rule is tolerant there:
+  - the target may have been drawn anywhere in one region: its server box now and a tick ago, and at each position its
+    tracker sent it to over the attacker's view lag (`SentTrail`; `min(rttBase, rtt-ceiling-ms)` + jitter + two update
+    intervals + `rewind-slack-ms`, at most `max-rewind-ms`), grown by 0.1;
+  - INVALID `BLOCKED` when no line from the eye (the player pick's) reaches the region past every block of the attacker's
+    `WorldView`: the client's own crosshair first, then a 5x5 grid on each face toward the eye (OUTLINE, no fluids,
+    `HitValidator.blockClip`). Dropped under enforce, counted in `attacksRejected` and in inspect's "rejected by reason"
+    line (`BLOCKED xN (non-player xN)`), logged with `debug.log`;
+  - the world view is read as the player pick reads it: a break the server denied is the block, though the client still
+    shows the hole; a change the client hasn't acked yet is its old state; its own break the server made too is gone;
+  - reach and aim are never judged on a non-player; mannequins (REDLINE's dummies, NPC plugins), targets that aren't
+    living, spectators, riding or exempt attackers keep vanilla's checks as before;
+  - `authoritative.block-clip-non-player-targets` (on) switches it (`CombatWiring.judgeNonPlayer`).
+- **Fix:** none in code. Shortcut: the grid samples the region's faces, so a sliver in sight between its points reads as
+  hidden; only a swing whose crosshair missed the region (not an honest client's) can meet that.
+- **Proof (exists):** unit `NonPlayerBlockClipTest` (a villager in a glass cell BLOCKED whatever the crosshair; in the
+  open, over a 1-high wall, off the crosshair or past reach not vetoed; the box a tick ago in sight is enough; a denied
+  break's hole on a real `WorldView`: the client's read sees the villager through it, the judge's is BLOCKED),
+  `NonPlayerSweepTest` (the candidates, the span, mannequins left alone), `SentTrailTest`. Cheat rows (`classic-capped`,
+  2026-10-24): "combat: a villager (NoAI) behind a glass wall at 2.5 (WD-5)" (refused, `INVALID BLOCKED`, the villager
+  untouched; with the key off the same swing lands, as every swing did before) and "combat: breaks a protected block on
+  its side, a tick later swings at a villager through the hole (WD-5, the NAS case)" (the client has the gap, the server
+  the block: refused, `BLOCKED`), with their controls "combat: a villager (NoAI) behind a 1-high glass wall at 2.5, in
+  sight over it (WD-5, control)", "combat: breaks a block, a tick later swings at a villager through the gap (WD-5,
+  control)" (its own break, which the server made too) and "combat: a glass wall goes up in front of a villager, the
+  client swings before it has it (WD-5, control)" (15 changes pinned at the client's old state): each lands, `UNKNOWN
+  IN_SIGHT`. The full live suite, `classic-capped`: sync 1102 checks (cheat suite 150/150, cheat suite 2 56/56), async
+  208.
 
 ---
 

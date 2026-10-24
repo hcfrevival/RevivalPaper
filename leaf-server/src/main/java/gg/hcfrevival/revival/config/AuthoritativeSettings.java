@@ -27,6 +27,10 @@ import net.minecraft.resources.Identifier;
  *                                   last on the truth landed within this many blocks of the client's own state stepped
  *                                   with its own inputs (the belief), with no block between the truth and the claim; a
  *                                   gap the claim made up casts from the truth (classic audit #1)
+ * @param blockClipNonPlayerTargets an attack on a living non-player target (a mob, a villager, an armor stand; not a
+ *                                  mannequin) is refused when a block the server has stands between the attacker's eye and
+ *                                  every place the target may have been on its screen (design §7.1, 2026-10-24: villagers
+ *                                  killed through a glass box on the NAS); reach and aim stay vanilla's
  * @param correctionBudget summed small divergences past this send a correction
  * @param correctionBudgetDecay the budget is multiplied by this every client tick, so isolated float noise never adds up
  * @param maxCorrectionsPerSecond corrections sent to one player per second at most
@@ -182,6 +186,7 @@ public record AuthoritativeSettings(
     double correctionThreshold,
     double attackEyeOffsetCap,
     double attackEyeForecastTolerance,
+    boolean blockClipNonPlayerTargets,
     double correctionBudget,
     double correctionBudgetDecay,
     int maxCorrectionsPerSecond,
@@ -332,6 +337,7 @@ public record AuthoritativeSettings(
             Math.max(0.0, reader.getDouble(PATH + "correction-threshold", 1.0E-3)),
             Math.max(0.0, reader.getDouble(PATH + "attack-eye-offset-cap", 0.5)),
             Math.max(0.0, reader.getDouble(PATH + "attack-eye-forecast-tolerance", 0.03)),
+            reader.getBoolean(PATH + "block-clip-non-player-targets", true),
             Math.max(0.0, reader.getDouble(PATH + "correction-budget", 0.01)),
             Math.clamp(reader.getDouble(PATH + "correction-budget-decay", 0.95), 0.0, 1.0),
             Math.max(1, reader.getInt(PATH + "max-corrections-per-second", 5)),

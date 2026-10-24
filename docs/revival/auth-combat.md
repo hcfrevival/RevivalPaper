@@ -18,7 +18,8 @@ on the server.
 | `auth.combat.PickWorld` | The attacker's client blocks for the ray: `blockState(x, y, z)` (the same signature as `auth.sim.SimWorld`, so `WorldView` implements both) and an overridable `outlineShape`. |
 | `auth.combat.AttackerSnapshot` | The attacker at the start of client tick T: `xo`/`x` (eye = `Mth.lerp(1.0, xo, x)`), eye height, raw rotation floats, own box, interaction ranges, spear and riding flags. |
 | `auth.combat.PickRay` | The client's `Minecraft.pick(1.0F)` → `LocalPlayer.pick` for swords, bit for bit, plus the order-free `canPick`. |
-| `auth.combat.HitValidator`, `HitCheck` | VALID / INVALID(reason) / UNKNOWN(reason) for one attack. |
+| `auth.combat.HitValidator`, `HitCheck` | VALID / INVALID(reason) / UNKNOWN(reason) for one attack; for a non-player target the block clip only (`blockClip` over a `Region`, 2026-10-24). |
+| `auth.combat.SentTrail` | Per living non-player entity (`LivingEntity.revivalSentTrail`, patch 1013): the last 16 positions its tracker sent, stamped with the server tick, which every client tracking it steps between. |
 | `auth.replicate.PathFeed` | K = 2 replication (report 03 §6, R1-R6): per target a ring of authoritative steps; per viewer a `Viewer` that builds the packets and tracks that client's codec base and interpolation target. |
 
 ## 2. APIs
@@ -66,6 +67,8 @@ ray.canPick(i, withInexact);                 // is there an order in which the c
 
 HitCheck check = new HitValidator().validate(attacker, targetId, book, T, List<Candidate> nonPlayers, world, nowMillis, rewindCapMillis);
 // check.verdict(): VALID | INVALID | UNKNOWN; check.reason(); check.distance(); check.rewindMillis(); check.capped()
+HitCheck clip = validator.blockClip(attacker, targetId, region /* HitValidator.Region */, world);  // non-player targets
+// INVALID BLOCKED, or UNKNOWN IN_SIGHT (OUT_OF_REACH past 16 blocks): vanilla/Paper decide
 ```
 
 - Order of checks: spear (`ATTACK_RANGE`) or riding attacker → UNKNOWN `UNSUPPORTED`; target never seen → INVALID
@@ -95,6 +98,26 @@ HitCheck check = new HitValidator().validate(attacker, targetId, book, T, List<C
   distance exactly 0), else iff strictly nearer than every other clipped candidate and than `maxDistanceSq`. Then the
   hit must be nearer than the block hit and within entity range (`filterHitResult`). VALID means "the client could have
   picked it"; it never accepts what no order allows.
+- **Non-player targets: the block clip** (design §7.1, a scope change of 2026-10-24 after the NAS playtest, pvp-issues
+  WD-5). Blocks are what the server knows exactly; where a client drew a mob it doesn't (mobs aren't mirrored, §7), so the
+  rule is strict about blocks and tolerant about the target, and never judges reach or aim. `CombatWiring.judgeNonPlayer`
+  builds a `Region`, the box holding every place the attacker's client may have drawn a living non-player: its server box
+  now and a tick ago (`xo/yo/zo`), and each position its tracker sent it to over the attacker's view lag (`SentTrail`,
+  recorded at `Authority.sendMovement`: a 26.3 client steps a mob from one send to the next, so what it shows lies between
+  two of them; the span is `min(rttBase, rtt-ceiling-ms)` + jitter + two of the type's update intervals (the mob's display
+  delay, no mirror to measure it) + `rewind-slack-ms`, at most `max-rewind-ms`, plus the newest send before it, which the
+  client may still be stepping from), all in its size now, grown by 0.1 (1.7's pick margin, which PvP clients put back) and
+  its pick radius. `HitValidator.blockClip` then looks for one line from the eye (`snapshot`, the player pick's) that reaches
+  the region past every block of the attacker's `WorldView`: first the client's own crosshair (`PickRay.cast`: an honest
+  client that picked the target drew it inside the region, so its ray met the region before any block), then a 5x5 grid
+  on each face of the region that faces the eye, centres first (`PickRay.clipTo`, the same OUTLINE clip). None: INVALID
+  `BLOCKED`. Some: UNKNOWN `IN_SIGHT`, and vanilla/Paper's checks run as before. The world view is read as the player pick
+  reads it: what this client was sent and acked, with its own admitted predictions (a block it broke and the server broke
+  too is gone at once); a server change it hasn't acked yet is still its old state (pinned), and a break the server denied
+  is the block (the truth's), though the client still shows the hole. Not clipped (vanilla's checks, as before): the key
+  `authoritative.block-clip-non-player-targets` off, a target that isn't living or is a mannequin, a spectator or riding
+  attacker, keybinds in an exempt tick, an unseeded truth, a region past 16 blocks. Shortcut: the grid samples those faces,
+  so a sliver in sight between its points reads as hidden; only a swing whose crosshair missed the region can meet that.
 - `PickWorld`'s default `outlineShape` is `state.getShape(EmptyBlockGetter, pos, CollisionContext.empty())`: exact for
   every block except light and scaffolding when the attacker holds that item (the only outline shapes that read the
   context: `LightBlock`, `ScaffoldingBlock`) and block-entity shapes (an open shulker box reads as closed). The fluid
@@ -215,6 +238,9 @@ does not change).
 | `MirrorFingerprintTest` (3) | player update interval is 2; both fingerprints |
 | `PickRayTest` (11) | view vector equals `Entity.calculateViewVector` (10,000 rotations), eye lerp, reach strictly below the range (9.0 exactly misses), walls, a box flush with a block face, slabs, nearer of two players, eye inside (and the order quirk), the 1e-7 clip tolerance, block clip vs the server's `VoxelShape.clip` |
 | `HitValidatorTest` (20) | valid, out of reach, missed, blocked, occluded, eye inside the target, eye inside another player, not present / removed, inclusive rewind cap, rewind from the displayed step, inexact target, no sample, spear, exact vs inexact non-player blockers; past the cap (a real `PathFeed` as the truth): a lead lands, the stale box misses, the first step at the capped age and never an older one, REWIND only with no truth that new, the truth never asked inside the cap, an inexact mirror judged on the truth |
+| `NonPlayerBlockClipTest` (6) | the block clip: a villager in a glass cell is BLOCKED, whatever the crosshair; in the open, over a 1-high wall, out of the crosshair or out of reach, not vetoed; a box a tick ago in sight is enough when the box now is behind a wall; a denied break's hole on a real `WorldView` (mocked level): the client's read sees the villager through it, the judge's read is BLOCKED |
+| `SentTrailTest` (4) | the sends in the span and the newest before it, nothing with no send in the span, a 64-tick gap forgets the views before it, the ring keeps the newest 16 |
+| `NonPlayerSweepTest` (4, in `auth`) | `CombatWiring`'s side: the region holds the box now and a tick ago and the trail over the view's lag; the span at 20, 112 and 300 ms and for an unsynced type; a mannequin keeps vanilla's checks |
 | `PathFeedTest` (11) | `positionSince` (the oldest held step at or after a stamp, inclusive; none past the newest; the ring's oldest when it no longer reaches back), PosRot with a 2-tick stepped delta through the real codec, viewer base equals the real `VecDeltaCodec` over 2,000 random ticks (syncs and keep-alives included), grid and exact sync positions, respawn decisions, ring overrun, no freeze for 1 or 2 silent ticks and one for 3, steady state 1.5 steps behind at speed 2, still player kept alive within 1/4096 block (and restarts without keep-alive), pre-roll |
 
 ### 3.4 Cost (this Mac, JDK 25, after warm-up)
@@ -297,7 +323,9 @@ Viewer side (lag compensation):
 4. Attack in `W_T`: `AttackerSnapshot` from the simulation (`xo`/`x` at the end of T-1, the pose's eye height, the
    attacker's own box) and tick T's raw rotation; `validate(..., book, T, nonPlayers, worldView, now, cap)`.
    VALID → `player.attack(target)`; INVALID → drop (log in `observe`); UNKNOWN → vanilla/Paper checks. Pass non-player
-   boxes as `Candidate(exact = false)` only if they should be able to turn a hit into UNKNOWN.
+   boxes as `Candidate(exact = false)` only if they should be able to turn a hit into UNKNOWN. A living non-player
+   target: `blockClip(snapshot, id, region, worldView)`, the region from its boxes and its `SentTrail`; INVALID → drop,
+   UNKNOWN → vanilla/Paper checks.
 5. `PickWorld`: `WorldView` already implements it; override `outlineShape` when the attacker holds scaffolding or a
    light block.
 
@@ -392,8 +420,8 @@ stall), and cheat suite 2's "server lag" row (`auth-cheat-suite-2.md`, "Server l
 
 ## 7. Not covered
 
-- Non-player targets and blockers are not mirrored (no exact interpolation for mobs); spears' `AttackRange` pick and
-  riding attackers are UNKNOWN.
+- Non-player targets and blockers are not mirrored (no exact interpolation for mobs): a non-player target gets only the
+  block clip (§2.2), its reach and aim stay vanilla's; spears' `AttackRange` pick and riding attackers are UNKNOWN.
 - Pistons and shulkers pushing a target on the viewer's client, chunks the viewer doesn't tick, and the snap-shift
   collision test are not modelled (each makes the replay inexact, never wrong silently, except the first two, which no
   packet reveals).

@@ -241,10 +241,17 @@ public final class Authority {
         }
     }
 
-    /** {@code ServerEntity.sendChanges}: the target's vanilla movement packet, withheld from viewers on its feed (R7). */
+    /**
+     * {@code ServerEntity.sendChanges}: the target's vanilla movement packet, withheld from viewers on its feed (R7). A
+     * living non-player's also feeds its trail of sent positions, which the non-player block clip reads
+     * ({@code CombatWiring.sent}), while anyone is under authority.
+     */
     public static void sendMovement(final net.minecraft.world.entity.Entity entity, final net.minecraft.server.level.ServerEntity.Synchronizer synchronizer,
                                     final Packet<? super net.minecraft.network.protocol.game.ClientGamePacketListener> packet) {
         PathWiring.sendMovement(entity, synchronizer, packet);
+        if (!ACTIVE.isEmpty() && entity instanceof final net.minecraft.world.entity.LivingEntity living && CombatWiring.clipped(living)) {
+            CombatWiring.sent(living, packet);
+        }
     }
 
     /** {@code ServerEntity.sendChanges}, every server tick: the target's authoritative steps to each viewer in range. */

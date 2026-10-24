@@ -5,7 +5,9 @@ Subject: [PATCH] Lag-compensated hits
 
 Attack packets join the client-tick window like other gameplay packets
 and are judged at their place in it, from what the attacker's client saw,
-before the original handler runs.
+before the original handler runs. A living non-player keeps the positions
+its tracker sent it to (LivingEntity.revivalSentTrail) for the non-player
+block clip.
 
 diff --git a/net/minecraft/server/network/ServerGamePacketListenerImpl.java b/net/minecraft/server/network/ServerGamePacketListenerImpl.java
 index 8a5e2e1d7b004f78dfc98641a054c304399f5dde..f2f2157f83048c67ba8d96c448759fa914fe4063 100644
@@ -19,3 +21,15 @@ index 8a5e2e1d7b004f78dfc98641a054c304399f5dde..f2f2157f83048c67ba8d96c448759fa9
          if (this.player.isImmobile()) return; // Paper
          if (this.hasClientLoaded() && !this.player.isSpectator()) {
              ServerLevel level = this.player.level();
+diff --git a/net/minecraft/world/entity/LivingEntity.java b/net/minecraft/world/entity/LivingEntity.java
+index 5dece03001aff0a8c49d74b8513821993f6ce5a1..fecfc9a8eda707ac6213ab24e77da110c6de30f7 100644
+--- a/net/minecraft/world/entity/LivingEntity.java
++++ b/net/minecraft/world/entity/LivingEntity.java
+@@ -263,6 +263,7 @@ public abstract class LivingEntity extends Entity implements Attackable, Waypoin
+     public int noActionTime;
+     public float lastHurt;
+     public gg.hcfrevival.revival.combat.@org.jspecify.annotations.Nullable DamageWindows revivalDamageWindows; // Revival - Damage windows
++    public gg.hcfrevival.revival.auth.combat.@org.jspecify.annotations.Nullable SentTrail revivalSentTrail; // Revival - Lag-compensated hits
+     protected boolean jumping;
+     public float xxa; public float getStrafeMot() { return xxa; } public void setStrafeMot(float strafe) { xxa = strafe; } // Purpur - OBFHELPER
+     public float yya; public float getVerticalMot() { return yya; } public void setVerticalMot(float vertical) { yya = vertical; } // Purpur - OBFHELPER

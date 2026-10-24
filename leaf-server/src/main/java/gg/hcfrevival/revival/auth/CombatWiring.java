@@ -5,6 +5,8 @@ import gg.hcfrevival.revival.auth.combat.AttackerSnapshot;
 import gg.hcfrevival.revival.auth.combat.HitCheck;
 import gg.hcfrevival.revival.auth.combat.HitValidator;
 import gg.hcfrevival.revival.auth.combat.MirrorBook;
+import gg.hcfrevival.revival.auth.combat.SentTrail;
+import gg.hcfrevival.revival.auth.net.Transactions;
 import gg.hcfrevival.revival.combat.ProjectileBlocks;
 import gg.hcfrevival.revival.combat.ProjectileViews;
 import gg.hcfrevival.revival.config.AuthoritativeSettings;
@@ -13,7 +15,9 @@ import net.minecraft.core.component.DataComponents;
 import net.minecraft.network.protocol.Packet;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.ai.attributes.Attributes;
+import net.minecraft.world.phys.AABB;
 import org.jspecify.annotations.Nullable;
 
 /**
@@ -22,8 +26,10 @@ import org.jspecify.annotations.Nullable;
  * judged by {@link HitValidator} from the attacker's authoritative eye, its tick rotation, its mirrors and its world
  * view (design §7.1, §15.7).
  * <p>
- * Non-player targets never veto a hit in v1 (§15.7): they get {@link AttackJudge#UNKNOWN} and the vanilla/Paper checks.
- * The rewind cap is {@link #rewindCap}'s (HR-2).
+ * A living non-player target (design §7.1, 2026-10-24) gets the block clip only ({@link HitValidator#blockClip}): INVALID
+ * when a block the server has stands between the eye and everywhere the client may have drawn it, else
+ * {@link AttackJudge#UNKNOWN} and the vanilla/Paper checks, as before. Non-player entities still never block a pick
+ * (§15.7). The rewind cap is {@link #rewindCap}'s (HR-2).
  */
 public final class CombatWiring implements ViewerMirrors, AttackJudge, ProjectileViews {
 
@@ -202,8 +208,7 @@ public final class CombatWiring implements ViewerMirrors, AttackJudge, Projectil
     @Override
     public int judge(final AuthPlayer attacker, final Entity target, final int tick) {
         if (!(target instanceof ServerPlayer)) {
-            attacker.recordHit("UNKNOWN non-player", -1L, Double.NaN);
-            return UNKNOWN;
+            return this.judgeNonPlayer(attacker, target);
         }
         final Simulation sim = attacker.simulation();
         if (!sim.seeded()) {
@@ -219,11 +224,114 @@ public final class CombatWiring implements ViewerMirrors, AttackJudge, Projectil
             check.rewindMillis(), check.distance());
         if (check.verdict() == HitCheck.Verdict.VALID) {
             attacker.noteValidRewind(check.rewindMillis(), attacker.lastDisplayDelay(), settings);
+        } else if (check.invalid()) {
+            attacker.stats().rejected(check.reason(), false);
         }
         return switch (check.verdict()) {
             case VALID -> VALID;
             case INVALID -> INVALID;
             default -> UNKNOWN;
         };
+    }
+
+    // Non-player targets: the block clip (design §7.1, 2026-10-24) ---------------------------------------------------------
+
+    /**
+     * 26.3 picks the bare box (pvp-issues HR-7); PvP clients put 1.7's 0.1 back, and the position a client decodes is up to
+     * 1/8192 off the server's. Grows the region a target may have been drawn in, never the blocks.
+     */
+    static final double NON_PLAYER_MARGIN = 0.1;
+
+    private final HitValidator.Region region = new HitValidator.Region();
+
+    /**
+     * The block clip for a non-player target: the eye the player pick uses ({@link #snapshot}: the truth's, or the claim's
+     * for a gap the server caused), the attacker's world view as the truth reads it (a denied break the client still shows
+     * open is the block there; a block the server changed and this client hasn't acked yet is still the client's old
+     * state, as for the player pick), and the region of {@link #sweep}. INVALID only when it is BLOCKED.
+     * <p>
+     * Left to vanilla's checks alone, as before (UNKNOWN): the key off, a target that isn't living (item frames, boats, end
+     * crystals) or is a mannequin (REDLINE's dummies and NPC plugins stand in for players with it), a spectator or riding
+     * attacker, a window whose keybinds ran exempt (never delivered under enforce, and the truth's eye isn't where the
+     * client picked from), a truth not seeded yet.
+     */
+    private int judgeNonPlayer(final AuthPlayer attacker, final Entity target) {
+        final AuthoritativeSettings settings = Revival.settings().authoritative();
+        if (!settings.blockClipNonPlayerTargets() || !(target instanceof final LivingEntity living) || !clipped(living)
+            || attacker.player().isSpectator() || attacker.view().passenger() || attacker.attackExempt() || !attacker.simulation().seeded()) {
+            attacker.recordHit("UNKNOWN non-player", -1L, Double.NaN);
+            return UNKNOWN;
+        }
+        final AttackerSnapshot snapshot = snapshot(attacker);
+        final Transactions tx = attacker.transactions();
+        final int span = nonPlayerSpanTicks(tx.rttBaseNanos() / 1_000_000L, tx.rttHighNanos() / 1_000_000L, living.getType().updateInterval(), settings);
+        final AttackerSnapshot.Reach reach = snapshot.reach();
+        final double margin = NON_PLAYER_MARGIN + living.getPickRadius() + (reach != null ? Math.max(0.0F, reach.margin()) : 0.0);
+        final HitCheck check = this.validator.blockClip(snapshot, target.getId(),
+            sweep(living, net.minecraft.server.MinecraftServer.currentTick, span, margin, this.region.clear()), attacker.world());
+        attacker.recordHit(check.verdict().name() + " " + check.reason().name(), -1L, check.distance());
+        if (check.invalid()) {
+            attacker.stats().rejected(check.reason(), true);
+            return INVALID;
+        }
+        return UNKNOWN;
+    }
+
+    /** Living non-player targets the block clip judges: every one but a mannequin (it stands in for a player). */
+    static boolean clipped(final LivingEntity living) {
+        return !(living instanceof net.minecraft.world.entity.Avatar);
+    }
+
+    /**
+     * Where the attacker's client may have drawn {@code living}: its server box now and a tick ago ({@code xo/yo/zo}), the
+     * positions its tracker sent it to over the last {@code spanTicks} server ticks ({@link SentTrail}), all in its size
+     * now, grown by {@code margin}.
+     */
+    static HitValidator.Region sweep(final LivingEntity living, final int nowTick, final int spanTicks, final double margin,
+                                     final HitValidator.Region region) {
+        final AABB box = living.getBoundingBox();
+        region.include(box);
+        final double dx = living.xo - living.getX();
+        final double dy = living.yo - living.getY();
+        final double dz = living.zo - living.getZ();
+        region.include(box.minX + dx, box.minY + dy, box.minZ + dz, box.maxX + dx, box.maxY + dy, box.maxZ + dz);
+        final SentTrail trail = living.revivalSentTrail;
+        if (trail != null) {
+            trail.sweep(nowTick, spanTicks, living.getX(), living.getY(), living.getZ(), box.minX, box.minY, box.minZ, box.maxX, box.maxY, box.maxZ, region);
+        }
+        return region.inflate(margin);
+    }
+
+    /**
+     * How far back, in server ticks, a client may be drawing a non-player target when its attack is judged. As the player
+     * cap (HR-2): the round trip made good ({@code min(rttBase, rtt-ceiling-ms)}), the jitter allowance and the tick waits
+     * ({@code rewind-slack-ms}); with no mirror to measure the display delay, the mob's own: 26.3 steps a mob one send at a
+     * time, a send every {@code updateInterval} ticks, so it shows a position up to two intervals old. At most
+     * {@code max-rewind-ms}, rounded up to whole ticks.
+     */
+    static int nonPlayerSpanTicks(final long rttBaseMs, final long rttHighMs, final int updateInterval, final AuthoritativeSettings settings) {
+        final long spreadHigh = Math.min(rttHighMs, rttBaseMs + settings.rttCeilingMs());
+        final long display = 2L * Math.clamp(updateInterval, 1, 20) * 50L;
+        final long span = Math.min(settings.maxRewindMs(),
+            cap(Math.min(rttBaseMs, settings.rttCeilingMs()), rttBaseMs, spreadHigh, display, settings.rewindJitterFactor(), settings.rewindSlackMs()));
+        return (int) ((span + 49L) / 50L);
+    }
+
+    /**
+     * {@code ServerEntity.sendChanges} sent a living non-player's movement ({@link Authority#sendMovement}): with a position,
+     * that is where every client tracking it steps it to next, so its {@link SentTrail} takes it. Main thread (authority
+     * refuses Leaf's async tracker).
+     */
+    static void sent(final LivingEntity living, final Packet<?> packet) {
+        if (!(packet instanceof final net.minecraft.network.protocol.game.MovementPacket<?> movement) || !movement.hasPosition()
+            || !Revival.settings().authoritative().blockClipNonPlayerTargets()) {
+            return;
+        }
+        SentTrail trail = living.revivalSentTrail;
+        if (trail == null) {
+            trail = new SentTrail();
+            living.revivalSentTrail = trail;
+        }
+        trail.record(living.getX(), living.getY(), living.getZ(), net.minecraft.server.MinecraftServer.currentTick);
     }
 }

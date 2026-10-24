@@ -262,7 +262,9 @@ All listed in `scripts/revival/markers.txt`.
 - **Combat:** `CombatWiring` is the default judge and mirror feed. Each viewer's `MirrorBook` lives in
   `AuthPlayer.combatState`; packets about other players arrive through `ViewerMirrors.onApplied` with their arrival
   tick and send time; `onTickEnd(T)` runs before the window's first attack is judged. `AttackerSnapshot` comes from the
-  simulation (`xo/x`, `eyeHeight`, `box`), `tickYRot/tickXRot` and the client's interaction-range attributes.
+  simulation (`xo/x`, `eyeHeight`, `box`), `tickYRot/tickXRot` and the client's interaction-range attributes. A living
+  non-player target gets the block clip only (`judgeNonPlayer`, 2026-10-24): its tracker's sends feed its `SentTrail`
+  through `Authority.sendMovement`.
 - **Replication:** `PathSink.onTick` (`PathWiring`) appends every simulated client tick to the player's `PathFeed` (an
   exempt tick's from where vanilla's handler left the player);
   viewers within `exact-radius` get one 2-tick stepped move per tick in their per-tick bundle and no vanilla movement
@@ -295,6 +297,7 @@ All under `authoritative.` (defaults in brackets):
 | `max-rewind-ms` [600], `rewind-jitter-factor` [1.0], `rewind-slack-ms` [150] | the per-attacker rewind cap (HR-2, one method for melee, Neue's landing and projectiles): `min(rttBase, rtt-ceiling-ms)` + the client's measured display delay + jitter (spread capped at the ceiling) + slack; `max-rewind-ms` is only a sanity bound. Past the cap a hit is judged at the target's truth at the capped age (`HitValidator`): a high-ping shooter leads moving players; a player outside authority is judged where it stands while it hasn't moved since its tracker last sent it (review 3 #3) |
 | `attack-eye-offset-cap` [0.5] | off the truth, attacks are cast from the claim only within this per axis (review E3) |
 | `attack-eye-forecast-tolerance` [0.03] | ...and only for a gap the server caused (entries forced at their deadline, a refused window, a denied break, a revert snap) while every claim since the client was last on the truth landed within this of its belief, with no block between the truth and the claim; a made-up gap casts from the truth and counts as `eye offsets refused` (classic audit #1) |
+| `block-clip-non-player-targets` [true] | design §7.1 (2026-10-24): a hit on a living non-player target (a mob, a villager, an armor stand; not a mannequin) is refused, `INVALID BLOCKED`, when a block on the attacker's world view stands between its eye and everywhere the target may have been drawn over its view lag (`auth-combat.md` §2.2, pvp-issues WD-5); reach and aim stay vanilla's. A new key: no config migration |
 | `timer-drift-ms` [120], `timer-ack-settle-ms` [100], `max-banked-ticks` [10], `timer-queue-cap-ms` [400], `catch-up-gap-ms` [15] | the tick clock; pongs bind the timer for later frames, or after the settle (review timer-backlog); a burst's forfeited time is owed back (F4); catch-up windows don't count for deadlines (F3) |
 | `rtt-ceiling-ms` [250] | the ping lag compensation makes good, and what every slack (deadlines, visibility growth, correction lead) is sized from: `min(rttBase, this)` (review E5) |
 | `ack-jitter-ticks` [4], `max-unacked-ms` [1500] | ack deadline; past `max-unacked-ms` the player is frozen (NW-2: never kicked for a stall) |

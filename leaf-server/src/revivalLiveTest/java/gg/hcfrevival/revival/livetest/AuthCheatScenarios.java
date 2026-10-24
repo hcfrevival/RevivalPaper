@@ -271,6 +271,7 @@ final class AuthCheatScenarios {
 
         // Combat
         this.combatReach();
+        this.villagerBehindBlocks(); // pvp-issues WD-5: no mob is hit through a block the server has (the NAS glass box)
         this.claimReach(); // classic audit #1: an eye offset the server didn't cause
         this.combatTeleportPending();
         this.combatBacktrack();
@@ -1686,6 +1687,124 @@ final class AuthCheatScenarios {
         this.attackCase("combat: 5 attacks in one window (autoclicker)", 0.0, 2.8, null, 5, 1, null);
         this.attackCase("combat: honest hit at 2.5 after the cheats (control)", 0.0, 2.8, null, 1, 1, null);
         this.step(1, id + ": done", this::leaveAll);
+    }
+
+    // How a villager row sets up its swing (villagerCase)
+    private static final int WALL = 0;
+    private static final int DIG_PROTECTED = 1;
+    private static final int DIG_ALLOWED = 2;
+    private static final int LATE_WALL = 3;
+    private static final String CLIP_KEY = "authoritative.block-clip-non-player-targets";
+
+    // pvp-issues WD-5 (the NAS glass box, 2026-10-24): a player broke protected glass on its side and killed villagers through
+    // the hole; vanilla checks reach only. The block clip (design §7.1) refuses a hit on a mob when a block the server has
+    // stands in front of everywhere it may have been drawn, and leaves aim and reach alone. Each row swings from the lane start
+    // (yaw 0, its eye 2.4 from the villager's near face, inside every reach); the controls are the same swing where a vanilla
+    // client sees the villager
+    private void villagerBehindBlocks() {
+        this.villagerCase("combat: a villager (NoAI) behind a glass wall at 2.5 (WD-5)", () -> this.wall(1, 3, Blocks.GLASS.defaultBlockState()), WALL);
+        this.villagerCase("combat: a villager (NoAI) behind a 1-high glass wall at 2.5, in sight over it (WD-5, control)",
+            () -> this.wall(1, 1, Blocks.GLASS.defaultBlockState()), WALL);
+        this.villagerCase("combat: breaks a protected block on its side, a tick later swings at a villager through the hole (WD-5, the NAS case)",
+            () -> this.wall(1, 3, Blocks.TNT.defaultBlockState()), DIG_PROTECTED);
+        this.villagerCase("combat: breaks a block, a tick later swings at a villager through the gap (WD-5, control)",
+            () -> this.wall(1, 3, Blocks.TNT.defaultBlockState()), DIG_ALLOWED);
+        this.villagerCase("combat: a glass wall goes up in front of a villager, the client swings before it has it (WD-5, control)", () -> {
+        }, LATE_WALL);
+    }
+
+    // WALL: the swing in one window. DIG_*: the client breaks the wall block in front of its eye (TNT: at once) in one window
+    // and swings in the next, every clientbound packet 3 ticks late, so its world still has what it broke: a plugin protects
+    // the block (the server keeps it: a hole on the client only) or not (a gap the server made too). LATE_WALL: the server
+    // builds a 3-high glass wall in front of the villager, and the client, its packets 3 ticks late, swings the next tick
+    private void villagerCase(final String id, final Runnable arena, final int mode) {
+        final boolean lands = id.endsWith("control)");
+        final net.minecraft.world.entity.npc.villager.Villager[] villager = {null};
+        final float[] health = {0.0F};
+        final long[] blocked = {0L};
+        final Runnable swing = () -> {
+            this.c.actions.add(new ServerboundAttackPacket(villager[0].getId()));
+            this.c.actions.add(net.minecraft.network.protocol.game.ServerboundPunchPacket.INSTANCE);
+        };
+        this.begin(id, arena);
+        this.step(1, id + ": a villager (NoAI) 2.8 ahead", () -> {
+            villager[0] = EntityTypes.VILLAGER.create(this.level, EntitySpawnReason.COMMAND);
+            villager[0].snapTo(this.ox + 0.5, this.gy, this.oz + 0.5 + 2.8, 180.0F, 0.0F);
+            villager[0].setNoAi(true);
+            this.level.addFreshEntity(villager[0]);
+        });
+        this.step(10, id + ": " + (mode == WALL ? "swing" : mode == LATE_WALL ? "the wall goes up" : "break the block"), () -> {
+            this.base = this.snap(this.c);
+            this.attacksBase = this.attacksOf(this.c);
+            health[0] = villager[0].getHealth();
+            blocked[0] = this.c.auth.stats().attacksRejected(gg.hcfrevival.revival.auth.combat.HitCheck.Reason.BLOCKED);
+            this.c.yaw = 0.0F;
+            this.c.pitch = 0.0F;
+            if (mode == WALL) {
+                swing.run();
+                return;
+            }
+            this.c.latencyTicks = 3;
+            if (mode == LATE_WALL) {
+                this.wall(1, 3, Blocks.GLASS.defaultBlockState());
+                return;
+            }
+            final BlockPos pos = new BlockPos(this.ox, this.gy + 1, this.oz + 1); // the block on the crosshair
+            if (mode == DIG_PROTECTED) {
+                this.protectedBlocks.add(pos.asLong());
+            }
+            this.c.predictBreaks = true;
+            this.c.actions.add(new ServerboundPlayerActionPacket(ServerboundPlayerActionPacket.Action.START_DESTROY_BLOCK, pos, Direction.NORTH,
+                ++this.c.sequence));
+        });
+        if (mode != WALL) {
+            this.step(1, id + ": swing", () -> {
+                final BlockPos front = new BlockPos(this.ox, this.gy + 1, this.oz + 1); // in front of the eye
+                final String server = this.level.getBlockState(front).isAir() ? "a gap" : "the block";
+                if (mode == LATE_WALL) {
+                    // The suite's client model reads the live level where it was sent nothing, so the evidence is the server's
+                    // record of the client's world
+                    this.note("the server has the wall, its record of the client's world " + this.c.auth.world().pinnedCount()
+                        + " changes pinned at their old state until the client acks them");
+                } else {
+                    this.note("the client has " + (this.c.world.blockState(front).isAir() ? "a gap" : "the block") + " in front of its eye, the server "
+                        + server + " (holes open " + this.c.auth.world().holes() + ")");
+                }
+                swing.run();
+            });
+        }
+        this.judge(3, id, () -> {
+            final Snap d = this.delta(this.c);
+            final int landed = this.attacksOf(this.c) - this.attacksBase;
+            final float lost = health[0] - villager[0].getHealth();
+            final long blockedNow = this.c.auth.stats().attacksRejected(gg.hcfrevival.revival.auth.combat.HitCheck.Reason.BLOCKED) - blocked[0];
+            final String detail = "landed " + landed + ", the villager lost " + f(lost) + " health; judged invalid " + d.attacksRejected() + " (BLOCKED "
+                + blockedNow + "), verdict " + this.c.auth.lastHitVerdict();
+            if (lands) {
+                this.label = "CONTROL";
+                this.honestExpect(landed == 1 && lost > 0.0F && d.attacksRejected() == 0, "it lands: " + detail);
+            } else {
+                this.expect(landed == 0 && lost == 0.0F && d.attacksRejected() == 1 && blockedNow == 1, "refused: " + detail);
+            }
+            this.c.latencyTicks = 0;
+            if (mode == WALL && !lands) {
+                // The rule's own switch: off, the same swing lands, as every swing did before 2026-10-24
+                this.configure(CLIP_KEY, false);
+                this.attacksBase = this.attacksOf(this.c);
+                health[0] = villager[0].getHealth();
+                swing.run();
+            }
+        });
+        if (mode == WALL && !lands) {
+            this.step(3, id + ": with " + CLIP_KEY + " off", () -> {
+                final int landed = this.attacksOf(this.c) - this.attacksBase;
+                this.expect(landed == 1 && villager[0].getHealth() < health[0], "with the key off it lands (the old rule): landed " + landed
+                    + ", verdict " + this.c.auth.lastHitVerdict());
+                this.configure(CLIP_KEY, true);
+            });
+        }
+        this.step(1, id + ": the villager goes", () -> villager[0].discard());
+        this.finish(id);
     }
 
     // Classic audit #1: the attack's eye follows a claim off the truth only for a gap the server caused (a forced knock, a

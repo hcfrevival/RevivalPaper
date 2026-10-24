@@ -186,6 +186,25 @@ ran on `316a191f` as well (its main sources, these rows built in, `classic-cappe
 | warm-up: holds its first pongs after PlayerLoaded, claims a flight of 0.5 a tick (review 3 #1) | leaked: the server rose 10.7, the truth started 3.1 up | blocked: the server never moved, the truth starts on the floor |
 | honest: walking at 150 ms when authority starts mid-session (review 3 #1, control) | 3 corrections (the truth starts at rest), exact after; on `d020b2e2` 4, none exact while it walks | the same: 3 on `316a191f`, 4 on `d020b2e2`, exact after |
 
+## Rows added by the non-player block clip, 2026-10-24 (150 of 150 with them)
+
+pvp-issues WD-5 (design §7.1, a scope change of 2026-10-24): on the NAS a player broke protected glass on its side and
+killed villagers through the hole, 184 attacks and none judged. Each row puts a NoAI villager 2.8 blocks ahead of a
+cheater standing at the lane start, which swings once with yaw 0: its eye is 2.4 from the villager's near face, inside
+every reach. The dig and late-wall rows deliver every clientbound packet 3 ticks late (150 ms), so when the client
+swings a tick later its world still holds what it had: the hole it broke, the wall not yet sent. `classic-capped`, sync
+tracker.
+
+| Row | Verdict | Evidence |
+|---|---|---|
+| combat: a villager (NoAI) behind a glass wall at 2.5 (WD-5) | blocked | landed 0, the villager lost 0 health; judged invalid 1, `INVALID BLOCKED`; with `block-clip-non-player-targets` off the same swing lands (`UNKNOWN non-player`, the old rule) |
+| combat: a villager (NoAI) behind a 1-high glass wall at 2.5, in sight over it (WD-5, control) | control | lands, the villager lost 1 health, `UNKNOWN IN_SIGHT` |
+| combat: breaks a protected block on its side, a tick later swings at a villager through the hole (WD-5, the NAS case) | blocked | the client has a gap in front of its eye, the server the block (1 hole open); landed 0, `INVALID BLOCKED` |
+| combat: breaks a block, a tick later swings at a villager through the gap (WD-5, control) | control | the client and the server both have the gap (its own break, the server made it too); lands, `UNKNOWN IN_SIGHT` |
+| combat: a glass wall goes up in front of a villager, the client swings before it has it (WD-5, control) | control | the server has the wall; its record of the client's world holds 15 changes pinned at their old state until the client acks them; lands, `UNKNOWN IN_SIGHT` |
+
+The full live suite with them, `classic-capped`: sync 1102 checks (cheat suite 150/150, cheat suite 2 56/56), async 208.
+
 ## Since the 21:45 run (51 of 70)
 
 Fixed by the netcode, each with its scenario above:

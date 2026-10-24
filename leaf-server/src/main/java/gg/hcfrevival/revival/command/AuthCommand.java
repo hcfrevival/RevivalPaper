@@ -180,6 +180,22 @@ final class AuthCommand {
             auth.blockHits().run(), auth.blockHits().longest(), auth.blockHits().samples(), auth.rewinds().median(),
             auth.rewinds().highest() == Long.MIN_VALUE ? 0L : auth.rewinds().highest(), auth.rewinds().hits(), input.doubleClickRatio() * 100.0,
             input.yawGcd(), input.secondGcd(), input.turns(), input.gcdMisses(), input.smoothedTurns()));
+        if (stats.attacksRejected() > 0) {
+            // The judge's reasons; non-player: the block clip on mobs (design §7.1, 2026-10-24)
+            final StringBuilder rejected = new StringBuilder("rejected by reason:");
+            for (final gg.hcfrevival.revival.auth.combat.HitCheck.Reason reason : gg.hcfrevival.revival.auth.combat.HitCheck.Reason.values()) {
+                final long count = stats.attacksRejected(reason);
+                if (count > 0) {
+                    rejected.append(' ').append(reason.name()).append(" x").append(count);
+                    final long nonPlayer = stats.attacksRejectedNonPlayer(reason);
+                    if (nonPlayer > 0) {
+                        rejected.append(" (non-player x").append(nonPlayer).append(')');
+                    }
+                    rejected.append(';');
+                }
+            }
+            lines.add(rejected.toString());
+        }
         final gg.hcfrevival.revival.auth.input.InputRules rules = auth.inputRules();
         final StringBuilder grammar = new StringBuilder("input grammar: " + rules.total() + " broken, " + stats.grammarDropped() + " dropped");
         for (int rule = 1; rule < gg.hcfrevival.revival.auth.input.InputRules.RULES; rule++) {
