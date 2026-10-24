@@ -2247,6 +2247,7 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
             } catch (final RuntimeException e) {
                 this.simulationError(e); // unjudged: a player target isn't hit
                 verdict = AttackJudge.UNKNOWN;
+                this.recordHit("UNKNOWN error", -1L, Double.NaN);
             }
         }
         if (verdict == AttackJudge.VALID) {
@@ -2259,8 +2260,9 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
                     this.lastHitVerdict == null ? "INVALID" : this.lastHitVerdict,
                     this.lastHitRewindMillis, this.lastHitDistance);
             }
-        } else if (target == null || refused) {
-            this.recordHit(target == null ? "UNKNOWN no-target" : "UNKNOWN refused", -1L, Double.NaN);
+        } else if (target == null || refused || lockedOut || !paced) {
+            final String why = target == null ? "no-target" : refused ? "refused" : lockedOut ? "locked-out" : "over-cps";
+            this.recordHit("UNKNOWN " + why, -1L, Double.NaN);
         }
         final boolean deliver;
         if (this.mode == AuthMode.ENFORCE) {
@@ -2271,6 +2273,12 @@ public final class AuthPlayer implements Transactions.Context, ClientView.EchoSi
             deliver = !refused && admitted && paced && !lockedOut && judged && this.keybindExempt == AuthStats.EXEMPT_NONE && !portExempt(this.lastExempt);
         } else {
             deliver = !refused && paced;
+        }
+        if (target instanceof Player && verdict == AttackJudge.UNKNOWN && settings.debugLog()) {
+            // Under enforce a player is hit only on VALID, so a hit with no verdict is dropped; until 2026-10-24 nothing but
+            // the HUD's last verdict showed it. One line each, with the reason the judge recorded
+            DebugHud.unjudgedHit(this, tick, target.getScoreboardName(), this.lastHitVerdict == null ? "UNKNOWN" : this.lastHitVerdict,
+                this.lastHitRewindMillis, this.lastHitDistance, deliver);
         }
         if (deliver) {
             // Neue's context around the replay: the judge's distance for the tipper (NaN: none), then held/landed/cleared

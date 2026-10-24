@@ -105,4 +105,11 @@ public final class DebugHud {
         LOGGER.info(String.format(Locale.ROOT, "[auth] hit rejected %s -> %s tick %d %s rewind %dms distance %.4f",
             auth.player().getScoreboardName(), target, tick, reason, rewindMillis, distance));
     }
+
+    /** A hit on a player the judge gave no verdict (no sample, inexact mirror, unseeded, refused, over the click cap). */
+    static void unjudgedHit(final AuthPlayer auth, final int tick, final String target, final String verdict, final long rewindMillis,
+                            final double distance, final boolean delivered) {
+        LOGGER.info(String.format(Locale.ROOT, "[auth] hit unjudged %s -> %s tick %d %s rewind %dms distance %.4f%s",
+            auth.player().getScoreboardName(), target, tick, verdict, rewindMillis, distance, delivered ? "" : " (not delivered)"));
+    }
 }

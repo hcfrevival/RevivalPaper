@@ -43,7 +43,7 @@ it decides **when** the client saw what, and feeds the simulation and the mirror
 | `auth.PathWiring` | Replication: `PathFeed` per player, K2 steps to viewers in `exact-radius` (`ranged-radius` for a viewer aiming a ranged item, off by default), handovers, re-pairs (R6 and inexact mirrors) |
 | `auth.ExternalMovers` | Pistons, shulker boxes (block events) and shulker lids opening into the player: claims adopted within a band; a boat/shulker/happy ghast in contact whose client copy isn't exact, and launching geysers: the port's `EXTERNAL_MOVER` exemption, vanilla's claim bounded; rod pulls are modelled velocity |
 | `auth.combat.SolidMirrors` | The boats, shulkers and happy ghasts this client holds, at the boxes it holds them while its player ticks (boats: `LinearInterpolationHandler`; shulkers: snap and peek; ghasts: `RemoteMirror`), in its entity-section order: `WorldView.collectEntityColliders`, the port's colliders (auth-combat §3.5). Fed by `SOLID_ENTITY` entries; copies gone inexact are re-paired |
-| `auth.DebugHud` | `debug.hud` action-bar line and `debug.log` console lines |
+| `auth.DebugHud` | `debug.hud` action-bar line and `debug.log` console lines (corrections, rejected hits, unjudged hits on players) |
 | `auth.trace.TraceRecorder` | RVTR v1 writer (report 07 §4) |
 | `config.AuthoritativeSettings` | `revival.yml` `authoritative:` |
 | `command.AuthCommand` | `/revival auth status | mode | inspect | trace` |

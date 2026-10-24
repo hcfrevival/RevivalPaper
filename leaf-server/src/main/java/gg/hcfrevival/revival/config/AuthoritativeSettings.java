@@ -176,7 +176,8 @@ import net.minecraft.resources.Identifier;
  * @param debugHud playtest HUD: every player under authority sees an action-bar line with mode, RTT, exact ticks,
  *                 corrections, timer bank and the last attack's verdict
  * @param debugHudIntervalTicks server ticks between HUD refreshes
- * @param debugLog one console line per correction and per rejected hit
+ * @param debugLog one console line per correction, per rejected hit and per hit on a player that got no verdict (dropped
+ *                 under enforce)
  */
 public record AuthoritativeSettings(
     AuthMode mode,
