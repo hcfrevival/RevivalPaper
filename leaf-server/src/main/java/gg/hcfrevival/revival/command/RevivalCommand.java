@@ -43,6 +43,7 @@ public final class RevivalCommand extends Command {
         addPermission(pluginManager, new Permission(RELOAD_PERMISSION, "Reload revival.yml", PermissionDefault.OP));
         addPermission(pluginManager, new Permission(VERSION_PERMISSION, "Show the RevivalPaper build", PermissionDefault.OP));
         addPermission(pluginManager, new Permission(KNOCKBACK_PERMISSION, "Edit and assign knockback profiles", PermissionDefault.OP));
+        addPermission(pluginManager, new Permission(gg.hcfrevival.revival.obfuscator.PlayerObfuscator.BYPASS_PERMISSION, "See players the player obfuscator withholds", PermissionDefault.OP));
         addPermission(pluginManager, new Permission(PERMISSION, "Use /revival", PermissionDefault.OP, Map.of(RELOAD_PERMISSION, true, VERSION_PERMISSION, true, KNOCKBACK_PERMISSION, true)));
     }
 

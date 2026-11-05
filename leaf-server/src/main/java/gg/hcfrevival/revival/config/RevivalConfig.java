@@ -192,7 +192,8 @@ public final class RevivalConfig {
             Map.copyOf(worlds),
             profiles,
             reader.getBoolean("knockback-autosave", false),
-            SwordBlockingSettings.read(reader)
+            SwordBlockingSettings.read(reader),
+            PlayerObfuscatorSettings.read(reader)
         );
     }
 

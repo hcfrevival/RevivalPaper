@@ -14,9 +14,16 @@ import net.minecraft.core.component.DataComponentPatch;
 import net.minecraft.core.component.DataComponentMap;
 import net.minecraft.core.component.DataComponents;
 import net.minecraft.network.RegistryFriendlyByteBuf;
+import net.minecraft.core.BlockPos;
+import net.minecraft.network.protocol.Packet;
+import net.minecraft.network.protocol.game.ClientboundAddEntityPacket;
+import net.minecraft.network.protocol.game.ClientboundBundlePacket;
+import net.minecraft.network.protocol.game.ClientboundPlayerInfoRemovePacket;
+import net.minecraft.network.protocol.game.ClientboundRemoveEntitiesPacket;
 import net.minecraft.network.protocol.game.ClientboundSetEntityMotionPacket;
 import net.minecraft.network.protocol.game.ServerboundAttackPacket;
 import net.minecraft.network.protocol.game.ServerboundPlayerCommandPacket;
+import net.minecraft.network.protocol.game.ServerboundPlayerInputPacket;
 import net.minecraft.network.protocol.game.ServerboundPlayerLoadedPacket;
 import net.minecraft.network.protocol.game.ServerboundUseItemPacket;
 import net.minecraft.server.MinecraftServer;
@@ -25,7 +32,11 @@ import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.server.network.CommonListenerCookie;
 import net.minecraft.world.InteractionHand;
+import net.minecraft.world.entity.player.Input;
+import net.minecraft.world.level.GameType;
+import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.damagesource.DamageSource;
+import gg.hcfrevival.revival.obfuscator.LineOfSight;
 import net.minecraft.world.entity.ai.attributes.Attributes;
 import net.minecraft.world.entity.monster.zombie.Zombie;
 import net.minecraft.world.entity.projectile.FishingHook;
@@ -48,7 +59,7 @@ import org.bukkit.event.player.PlayerVelocityEvent;
 import org.bukkit.plugin.java.JavaPlugin;
 
 /**
- * Live-server tests for RevivalPaper's combat layer. Two fake players on recording connections fight through the
+ * Live-server tests for RevivalPaper's combat layer and player obfuscator. Two fake players on recording connections fight through the
  * server's real packet handlers (attack, sprint, use item), on real ticks, with the real event pipeline.
  * <p>
  * Nonce-gated: it only runs when {@code scripts/revival/live-tests.py} starts the server with
@@ -67,6 +78,7 @@ public final class RevivalLiveTests extends JavaPlugin implements Listener {
     private Location spawn;
     private ServerPlayer attacker;
     private ServerPlayer victim;
+    private RecordingConnection attackerConnection;
     private RecordingConnection victimConnection;
     private int checks;
 
@@ -128,9 +140,9 @@ public final class RevivalLiveTests extends JavaPlugin implements Listener {
             this.server = ((CraftServer) this.getServer()).getServer();
             this.level = ((CraftWorld) this.getServer().getWorlds().getFirst()).getHandle();
             this.spawn = this.level.getWorld().getSpawnLocation();
-            final RecordingConnection attackerConnection = new RecordingConnection();
+            this.attackerConnection = new RecordingConnection();
             this.victimConnection = new RecordingConnection();
-            this.attacker = this.fakePlayer("RevivalAttacker", attackerConnection);
+            this.attacker = this.fakePlayer("RevivalAttacker", this.attackerConnection);
             this.victim = this.fakePlayer("RevivalVictim", this.victimConnection);
             // Players tick their physics through their connection; these have none, so tick them here
             this.getServer().getScheduler().runTaskTimer(this, () -> {
@@ -164,6 +176,7 @@ public final class RevivalLiveTests extends JavaPlugin implements Listener {
         this.after(25, "damage windows off: fire inside a sword window is dropped, as in 26.x", this::windowsOffFire);
         this.after(1, "damage windows on", () -> this.damageWindows(true));
         this.damageWindowScenarios();
+        this.obfuscatorScenarios();
         this.next();
     }
 
@@ -432,6 +445,179 @@ public final class RevivalLiveTests extends JavaPlugin implements Listener {
         }
         gg.hcfrevival.revival.config.RevivalConfig.reload();
         this.check(gg.hcfrevival.revival.Revival.settings().legacyCombat(this.level.getWorld().getName()).damageWindows().enabled() == enabled, "damage-windows.enabled is " + enabled + " after /revival reload");
+    }
+
+    // Player obfuscator (player-obfuscator.enabled): a sneaking or invisible victim the attacker can't see is withheld --
+
+    private static final int HIDE_DELAY = 10;
+    private int strafeSpawnTick;
+    private int strafeClearTick;
+
+    private void obfuscatorScenarios() {
+        this.after(1, "obfuscator on", () -> this.obfuscator(true));
+        this.after(1, "obfuscator: a standing player behind a wall stays sent", () -> {
+            this.obfuscatorReset();
+            this.wall(true);
+        });
+        this.after(HIDE_DELAY + 10, "obfuscator: a standing player behind a wall stays sent (check)", () ->
+            this.check(!removed(this.attackerConnection, this.victim), "no remove packet for a standing victim behind a wall"));
+        this.after(1, "obfuscator: a sneaking player behind a wall is withheld", () -> this.sneak(true));
+        this.after(2, "obfuscator: a sneaking player behind a wall is withheld (pose)", () -> {
+            this.check(this.victim.isCrouching(), "the victim is crouching");
+            this.attackerConnection.sent.clear();
+            this.victimConnection.sent.clear();
+        });
+        this.after(HIDE_DELAY + 10, "obfuscator: a sneaking player behind a wall is withheld (check)", () -> {
+            this.check(removed(this.attackerConnection, this.victim), "the attacker got a remove packet for the sneaking victim");
+            this.check(this.attackerConnection.sent.stream().noneMatch(packet -> packet instanceof ClientboundPlayerInfoRemovePacket), "the tab list entry stays");
+            this.check(!removed(this.victimConnection, this.attacker), "the standing attacker is still sent to the victim");
+            this.check(this.victim.revivalObfuscator.hides(this.attacker.getId()), "the victim's state withholds the attacker");
+        });
+        this.after(1, "obfuscator: removing the wall re-sends the player", () -> {
+            this.attackerConnection.sent.clear();
+            this.wall(false);
+        });
+        this.after(4, "obfuscator: removing the wall re-sends the player (check)", () ->
+            this.check(spawned(this.attackerConnection, this.victim), "the attacker got a spawn packet once the wall was gone"));
+        this.after(1, "obfuscator: hidden again behind the rebuilt wall", () -> {
+            this.wall(true);
+            this.attackerConnection.sent.clear();
+        });
+        this.after(HIDE_DELAY + 10, "obfuscator: hidden again behind the rebuilt wall (check)", () -> {
+            this.check(removed(this.attackerConnection, this.victim), "withheld again behind the rebuilt wall");
+            this.attackerConnection.sent.clear();
+            this.strafeSpawnTick = -1;
+            this.strafeClearTick = -1;
+        });
+        for (int tick = 1; tick <= 40; tick++) {
+            final int elapsed = tick;
+            this.after(1, "obfuscator: strafing out is spawned before the eye line clears (tick " + tick + ")", () -> {
+                if (this.strafeSpawnTick < 0 && spawned(this.attackerConnection, this.victim)) {
+                    this.strafeSpawnTick = elapsed;
+                }
+                if (this.strafeClearTick < 0 && this.eyeLineClear()) {
+                    this.strafeClearTick = elapsed;
+                }
+                this.victim.snapTo(this.victim.getX() + 0.2, this.victim.getY(), this.victim.getZ(), 180.0F, 0.0F);
+            });
+        }
+        this.after(1, "obfuscator: strafing out is spawned before the eye line clears (result)", () -> {
+            this.check(this.strafeSpawnTick > 0 && this.strafeClearTick > 0, "the victim was spawned (tick " + this.strafeSpawnTick + ") and the eye line cleared (tick " + this.strafeClearTick + ")");
+            this.check(this.strafeSpawnTick + 2 <= this.strafeClearTick, "spawned at tick " + this.strafeSpawnTick + ", at least 2 ticks before the eye line cleared at " + this.strafeClearTick);
+            this.check(!removed(this.attackerConnection, this.victim), "no remove packet after the reveal (no flicker)");
+        });
+        this.after(1, "obfuscator: un-sneaking behind the wall restores vanilla", () -> {
+            this.victim.snapTo(this.spawn.getX(), this.spawn.getY(), this.spawn.getZ() + 4.5, 180.0F, 0.0F);
+            this.attackerConnection.sent.clear();
+        });
+        this.after(HIDE_DELAY + 10, "obfuscator: un-sneaking behind the wall restores vanilla (hidden)", () -> {
+            this.check(removed(this.attackerConnection, this.victim), "withheld behind the wall again");
+            this.attackerConnection.sent.clear();
+            this.sneak(false);
+        });
+        this.after(4, "obfuscator: un-sneaking behind the wall restores vanilla (check)", () ->
+            this.check(spawned(this.attackerConnection, this.victim), "re-sent once standing, as vanilla shows the nametag through the wall"));
+        this.after(1, "obfuscator: an invisible player behind a wall is withheld", () -> {
+            this.attackerConnection.sent.clear();
+            this.victim.setInvisible(true);
+        });
+        this.after(HIDE_DELAY + 10, "obfuscator: an invisible player behind a wall is withheld (check)", () -> {
+            this.check(removed(this.attackerConnection, this.victim), "the attacker got a remove packet for the invisible victim");
+            this.attackerConnection.sent.clear();
+            this.victim.setInvisible(false);
+        });
+        this.after(4, "obfuscator: an invisible player behind a wall is withheld (visible again)", () ->
+            this.check(spawned(this.attackerConnection, this.victim), "re-sent once the potion wears off"));
+        this.after(1, "obfuscator: spectators see everyone", () -> {
+            this.sneak(true);
+            this.attackerConnection.sent.clear();
+        });
+        this.after(HIDE_DELAY + 10, "obfuscator: spectators see everyone (hidden)", () -> {
+            this.check(removed(this.attackerConnection, this.victim), "withheld from the surviving attacker");
+            this.attackerConnection.sent.clear();
+            this.attacker.setGameMode(GameType.SPECTATOR);
+        });
+        this.after(4, "obfuscator: spectators see everyone (check)", () -> {
+            this.check(spawned(this.attackerConnection, this.victim), "re-sent to the spectating attacker");
+            this.attacker.setGameMode(GameType.SURVIVAL);
+            this.attackerConnection.sent.clear();
+        });
+        this.after(HIDE_DELAY + 10, "obfuscator: creative sees everyone (hidden)", () -> {
+            this.check(removed(this.attackerConnection, this.victim), "withheld again once the attacker is back in survival");
+            this.attackerConnection.sent.clear();
+            this.attacker.setGameMode(GameType.CREATIVE);
+        });
+        this.after(4, "obfuscator: creative sees everyone (check)", () -> {
+            this.check(spawned(this.attackerConnection, this.victim), "re-sent to the creative attacker");
+            this.attacker.setGameMode(GameType.SURVIVAL);
+            this.sneak(false);
+            this.wall(false);
+            this.obfuscator(false);
+        });
+    }
+
+    private void obfuscatorReset() {
+        this.reset(Items.DIAMOND_SWORD, 20);
+        this.victim.snapTo(this.spawn.getX(), this.spawn.getY(), this.spawn.getZ() + 4.5, 180.0F, 0.0F);
+        this.victim.setInvisible(false);
+        this.sneak(false);
+        this.attackerConnection.sent.clear();
+    }
+
+    // A 7-wide, 4-high stone wall 3 blocks in front of the attacker, between the two players
+    private void wall(final boolean build) {
+        final BlockPos base = BlockPos.containing(this.spawn.getX(), this.spawn.getY(), this.spawn.getZ() + 3.0);
+        for (int x = -3; x <= 3; x++) {
+            for (int y = 0; y < 4; y++) {
+                this.level.setBlock(base.offset(x, y, 0), (build ? Blocks.STONE : Blocks.AIR).defaultBlockState(), 3);
+            }
+        }
+    }
+
+    private void sneak(final boolean shift) {
+        this.victim.connection.handlePlayerInput(new ServerboundPlayerInputPacket(new Input(false, false, false, false, false, shift, false)));
+    }
+
+    // A thin ray from the victim's centre to the attacker's eye, with no lead: the line the obfuscator must beat
+    private boolean eyeLineClear() {
+        final var box = this.victim.getBoundingBox();
+        return LineOfSight.blockedAt(new LineOfSight.LevelOccluder().reset(this.level),
+            (box.minX + box.maxX) * 0.5, (box.minY + box.maxY) * 0.5, (box.minZ + box.maxZ) * 0.5,
+            this.attacker.getX(), this.attacker.getEyeY(), this.attacker.getZ()) < 0;
+    }
+
+    private static boolean removed(final RecordingConnection connection, final ServerPlayer player) {
+        return connection.sent.stream().anyMatch(packet -> packet instanceof final ClientboundRemoveEntitiesPacket remove && remove.getEntityIds().contains(player.getId()));
+    }
+
+    private static boolean spawned(final RecordingConnection connection, final ServerPlayer player) {
+        for (final Packet<?> packet : connection.sent) {
+            if (packet instanceof final ClientboundAddEntityPacket add && add.getId() == player.getId()) {
+                return true;
+            }
+            if (packet instanceof final ClientboundBundlePacket bundle) {
+                for (final Packet<?> sub : bundle.subPackets()) {
+                    if (sub instanceof final ClientboundAddEntityPacket add && add.getId() == player.getId()) {
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
+    }
+
+    // Flips player-obfuscator.enabled in revival.yml and reloads it, as an owner would
+    private void obfuscator(final boolean enabled) {
+        try {
+            final File file = new File("revival.yml");
+            final YamlConfiguration yaml = YamlConfiguration.loadConfiguration(file);
+            yaml.set("player-obfuscator.enabled", enabled);
+            yaml.save(file);
+        } catch (final java.io.IOException failure) {
+            throw new IllegalStateException(failure);
+        }
+        gg.hcfrevival.revival.config.RevivalConfig.reload();
+        this.check(gg.hcfrevival.revival.Revival.settings().playerObfuscator().enabled() == enabled, "player-obfuscator.enabled is " + enabled + " after /revival reload");
     }
 
     private boolean hurt(final DamageSource source, final float damage) {
