@@ -1,0 +1,32 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: j-rockwell <john@llewkcor.com>
+Date: Thu, 5 Nov 2026 14:55:11 -0800
+Subject: [PATCH] Player obfuscator
+
+A sneaking or invisible player that another player could not see through
+blocks is not sent to that client at all (the tab list is untouched), so
+ESP and x-ray cheats have nothing to draw. Each such player tests its line
+of sight to every nearby viewer in its own tick and publishes who it is
+withheld from; the entity tracker reads that when pairing. The logic lives
+in gg.hcfrevival.revival.obfuscator; this patch only calls into it.
+
+diff --git a/net/minecraft/server/level/ServerPlayer.java b/net/minecraft/server/level/ServerPlayer.java
+index 8d687ec39a78a6fbe1e887820564a735d49490eb..691b895e060d96ab3918b7767c8195069c4094fb 100644
+--- a/net/minecraft/server/level/ServerPlayer.java
++++ b/net/minecraft/server/level/ServerPlayer.java
+@@ -214,6 +214,7 @@ public class ServerPlayer extends Player implements ca.spottedleaf.moonrise.patc
+     public net.minecraft.world.entity.@org.jspecify.annotations.Nullable Entity revivalBaseKnockTarget; // Revival - Damage immunity
+     public final gg.hcfrevival.revival.combat.LegacyHitRegistration revivalHitRegistration = new gg.hcfrevival.revival.combat.LegacyHitRegistration(); // Revival - Hit registration
+     public @org.jspecify.annotations.Nullable String revivalKnockbackProfile; // Revival - Live profiles
++    public final gg.hcfrevival.revival.obfuscator.ObfuscatorState revivalObfuscator = new gg.hcfrevival.revival.obfuscator.ObfuscatorState(); // Revival - Player obfuscator
+     private static final int NEUTRAL_MOB_DEATH_NOTIFICATION_RADII_XZ = 32;
+     private static final int NEUTRAL_MOB_DEATH_NOTIFICATION_RADII_Y = 10;
+     private static final int FLY_STAT_RECORDING_SPEED = 25;
+@@ -739,6 +740,7 @@ public class ServerPlayer extends Player implements ca.spottedleaf.moonrise.patc
+         hasTickedAtLeastOnceInNewWorld = true; // Leaf - SparklyPaper - parallel world ticking (see: PARALLEL_NOTES.md - Opening an inventory after a world switch)
+         this.revivalMotionShadow.tick(this); // Revival - Consistent knockback
+         this.revivalHitRegistration.tick(this); // Revival - Hit registration
++        gg.hcfrevival.revival.obfuscator.PlayerObfuscator.tick(this); // Revival - Player obfuscator
+         // CraftBukkit start
+         if (this.joining) {
+             this.joining = false;

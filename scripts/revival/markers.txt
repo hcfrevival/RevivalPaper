@@ -58,3 +58,6 @@ leaf-server/src/minecraft/java/net/minecraft/network/HashedStack.java | gg.hcfre
 leaf-server/src/minecraft/java/net/minecraft/world/entity/LivingEntity.java | revivalDamageWindows; // Revival - Damage windows
 leaf-server/src/minecraft/java/net/minecraft/world/entity/LivingEntity.java | if (gg.hcfrevival.revival.combat.DamageWindows.enabled(this)) return true; // Revival - Damage windows
 leaf-server/src/minecraft/java/net/minecraft/world/entity/LivingEntity.java | // Revival start - Damage windows
+leaf-server/src/minecraft/java/net/minecraft/server/level/ServerPlayer.java | public final gg.hcfrevival.revival.obfuscator.ObfuscatorState revivalObfuscator = new gg.hcfrevival.revival.obfuscator.ObfuscatorState(); // Revival - Player obfuscator
+leaf-server/src/minecraft/java/net/minecraft/server/level/ServerPlayer.java | gg.hcfrevival.revival.obfuscator.PlayerObfuscator.tick(this); // Revival - Player obfuscator
+paper-server/src/main/java/org/bukkit/craftbukkit/entity/CraftPlayer.java | && gg.hcfrevival.revival.obfuscator.PlayerObfuscator.canSee(this.getHandle(), ((CraftEntity) entity).getHandle()); // Revival - Player obfuscator

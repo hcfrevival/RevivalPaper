@@ -1,0 +1,26 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: j-rockwell <john@llewkcor.com>
+Date: Thu, 5 Nov 2026 14:55:11 -0800
+Subject: [PATCH] Player obfuscator
+
+A sneaking or invisible player that another player could not see through
+blocks is not sent to that client at all (the tab list is untouched), so
+ESP and x-ray cheats have nothing to draw. Each such player tests its line
+of sight to every nearby viewer in its own tick and publishes who it is
+withheld from; the entity tracker reads that when pairing. The logic lives
+in gg.hcfrevival.revival.obfuscator; this patch only calls into it.
+
+diff --git a/src/main/java/org/bukkit/craftbukkit/entity/CraftPlayer.java b/src/main/java/org/bukkit/craftbukkit/entity/CraftPlayer.java
+index e86b9957c6eb373850b71a3b260ab7ba3edfdd95..35cdcd29351b84e186f7a2f82c3f7365212e3319 100644
+--- a/src/main/java/org/bukkit/craftbukkit/entity/CraftPlayer.java
++++ b/src/main/java/org/bukkit/craftbukkit/entity/CraftPlayer.java
+@@ -2171,7 +2171,8 @@ public class CraftPlayer extends CraftHumanEntity implements Player, PluginMessa
+     // SparklyPaper - optimize canSee checks
+     // The check in ChunkMap#updatePlayer already rejects if it is the same entity, so we don't need to check it twice, especially because CraftPlayer's equals check is a bit expensive
+     public boolean canSeeChunkMapUpdatePlayer(org.bukkit.entity.Entity entity) {
+-        return entity.isVisibleByDefault() ^ (!invertedVisibilityEntities.isEmpty() && this.invertedVisibilityEntities.containsKey(entity.getUniqueId())); // SPIGOT-7312: Can always see self // SparklyPaper - optimize canSee checks
++        return (entity.isVisibleByDefault() ^ (!invertedVisibilityEntities.isEmpty() && this.invertedVisibilityEntities.containsKey(entity.getUniqueId()))) // SPIGOT-7312: Can always see self // SparklyPaper - optimize canSee checks
++            && gg.hcfrevival.revival.obfuscator.PlayerObfuscator.canSee(this.getHandle(), ((CraftEntity) entity).getHandle()); // Revival - Player obfuscator
+     }
+     // SparklyPaper end
+ 

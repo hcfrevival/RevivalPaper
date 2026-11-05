@@ -49,6 +49,8 @@ call into plain Java under `gg.hcfrevival.revival`, where the logic is unit test
 | Live profiles | Knockback profiles edited in game, per-world and per-player profiles, and the plugin events below. | `1007-Live-profiles` |
 | Projectiles | 1.7 rod, bow, snowball and egg hits: 0-damage hits land on players, knock comes from the shooter with Punch folded in, rods hit on impact, cast and fall like 1.7 and reel with the 1.7 pull. | `1008-Projectiles` |
 | Sword blocking | Right click with a sword blocks like 1.7: a blocked hit takes (damage + 1) × 0.5 and full knockback. Clients see the sword as "edible" with the block animation, so the block starts instantly and block-hitting stays fluid; the server's own item is untouched. | `1009-Sword-blocking` |
+| Damage windows | Melee, projectile, mob and other damage each get their own damage window, so a sword combo no longer swallows fire, poison, arrows or mob hits. | `1010-Damage-windows` |
+| Player obfuscator | A sneaking or invisible player that another player could not see through blocks is not sent to that client at all, so ESP and x-ray cheats have nothing to draw. The tab list is untouched, and everyone else keeps vanilla tracking (nametags through walls included). Off by default. | `1011-Player-obfuscator` and paper `1002-Player-obfuscator` |
 
 Paper-side hooks are in `leaf-server/paper-patches/features/1000-RevivalPaper-config.patch` (the
 `--revival-settings` startup option, `/reload` support, branding that still passes Leaf brand checks) and
@@ -139,6 +141,25 @@ Melee keeps the entity's real window, so the no-damage-ticks API and plugins tha
 | `use-speed-multiplier` | `0.2` | Movement speed while blocking (0 to 1). |
 | `rearm-sprint-on-block` | `true` | Blocking re-arms the sprint knock, as releasing W would. |
 
+### `player-obfuscator`
+
+Server-side culling against ESP and x-ray. Every tick, each sneaking or invisible player casts cheap voxel rays from its
+hitbox to every nearby viewer's eye (and third-person camera). A viewer with no line of sight for `hide-delay-ticks`
+stops receiving that player's entity until a line clears, which reveals them at once; the tab list never changes.
+Both players are extrapolated by `lead-ticks` of movement so a player rounding a corner is already on screen, and far
+pairs are re-tested less often. Pairs beyond spigot's `entity-tracking-range.players` are left alone. Non-sneaking
+visible players are never culled, because vanilla shows their nametag through walls. Spectators and players with
+`revival.obfuscator.bypass` (op by default) see everyone. Only full opaque cubes block sight, so glass, leaves, slabs,
+stairs, doors and water are see-through; a sliver visible through a gap narrower than the nine sample points can be
+missed until the eye itself gains line of sight.
+
+| Key | Default | What it does |
+|---|---|---|
+| `enabled` | `false` | Turn the obfuscator on. |
+| `hide-delay-ticks` | `10` | Consecutive occluded ticks before a player is withheld; a brief occlusion never despawns them. |
+| `lead-ticks` | `6` | Ticks of movement both players are extrapolated by before testing. |
+| `camera-distance` | `4.0` | How far the third-person camera is assumed to reach behind and in front of a viewer; `0` tests the eye only. |
+
 ### Knockback profiles
 
 A world picks a profile with `legacy-combat.knockback-profile`. These presets are built in:
@@ -188,7 +209,8 @@ Everything is under `/revival`, op-only by default.
 | `/revival kb save` | | Write the live profiles to `revival.yml`. |
 | `/revival kb debug` | | Toggle a chat line for every legacy knock you deal or take. |
 
-`revival.command` grants all three.
+`revival.command` grants all three. `revival.obfuscator.bypass` (op by default) lets a player see everyone the player
+obfuscator would withhold.
 
 ## Plugin API
 
