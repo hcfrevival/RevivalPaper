@@ -23,16 +23,20 @@ public final class LineOfSight {
         private @Nullable LevelChunk chunk;
         private int chunkX = Integer.MIN_VALUE;
         private int chunkZ = Integer.MIN_VALUE;
+        /** Block lookups since the last reset; the per-tick budget reads it. */
+        public int lookups;
 
         public LevelOccluder reset(final ServerLevel level) {
             this.level = level;
             this.chunk = null;
             this.chunkX = Integer.MIN_VALUE;
+            this.lookups = 0;
             return this;
         }
 
         @Override
         public boolean opaque(final int x, final int y, final int z) {
+            this.lookups++;
             final int chunkX = x >> 4;
             final int chunkZ = z >> 4;
             if (chunkX != this.chunkX || chunkZ != this.chunkZ) {

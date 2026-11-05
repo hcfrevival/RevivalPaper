@@ -22,7 +22,7 @@ class PlayerObfuscatorSettingsTest {
     void defaultsAreOffAndWrittenBack() throws InvalidConfigurationException {
         final ConfigReader reader = reader("");
         final PlayerObfuscatorSettings settings = PlayerObfuscatorSettings.read(reader);
-        assertEquals(new PlayerObfuscatorSettings(false, 10, 6, 4.0), settings);
+        assertEquals(new PlayerObfuscatorSettings(false, 10, 6, 4.0, 8000), settings);
         assertTrue(reader.problems().isEmpty());
         reader.config().options().copyDefaults(true);
         final YamlConfiguration saved = new YamlConfiguration();
@@ -31,6 +31,7 @@ class PlayerObfuscatorSettingsTest {
         assertEquals(10, saved.getInt("player-obfuscator.hide-delay-ticks"));
         assertEquals(6, saved.getInt("player-obfuscator.lead-ticks"));
         assertEquals(4.0, saved.getDouble("player-obfuscator.camera-distance"));
+        assertEquals(8000, saved.getInt("player-obfuscator.block-checks-per-tick"));
     }
 
     @Test
@@ -41,9 +42,11 @@ class PlayerObfuscatorSettingsTest {
               hide-delay-ticks: -3
               lead-ticks: 0
               camera-distance: -1
+              block-checks-per-tick: -5
             """);
-        assertEquals(new PlayerObfuscatorSettings(true, 10, 0, 0.0), PlayerObfuscatorSettings.read(reader));
-        assertEquals(1, reader.problems().size());
+        assertEquals(new PlayerObfuscatorSettings(true, 10, 0, 0.0, 8000), PlayerObfuscatorSettings.read(reader));
+        assertEquals(2, reader.problems().size());
         assertTrue(reader.problems().getFirst().contains("player-obfuscator.hide-delay-ticks"));
+        assertTrue(reader.problems().getLast().contains("player-obfuscator.block-checks-per-tick"));
     }
 }

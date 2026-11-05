@@ -17,17 +17,17 @@ class ObfuscatorStateTest {
     void hidesAfterTheDelayAndRevealsAtOnce() {
         final ObfuscatorState state = new ObfuscatorState();
         state.record(7, true, 100);
-        state.publish(100, DELAY);
+        state.publish(100, DELAY, null);
         assertFalse(state.hides(7), "occluded for 0 ticks");
-        state.publish(109, DELAY);
+        state.publish(109, DELAY, null);
         assertFalse(state.hides(7), "occluded for 9 ticks");
         state.record(7, true, 110); // keeps the first occluded tick
-        state.publish(110, DELAY);
+        state.publish(110, DELAY, null);
         assertTrue(state.hides(7), "occluded for 10 ticks");
         assertTrue(state.occluded(7));
 
         state.record(7, false, 111);
-        state.publish(111, DELAY);
+        state.publish(111, DELAY, null);
         assertFalse(state.hides(7), "one clear test reveals");
         assertFalse(state.occluded(7));
     }
@@ -36,13 +36,13 @@ class ObfuscatorStateTest {
     void publishKeepsTheArrayWhenNothingChanged() {
         final ObfuscatorState state = new ObfuscatorState();
         state.record(7, true, 0);
-        state.publish(DELAY, DELAY);
+        state.publish(DELAY, DELAY, null);
         final int[] hidden = state.hidden();
         assertEquals(1, hidden.length);
-        state.publish(DELAY + 1, DELAY);
+        state.publish(DELAY + 1, DELAY, null);
         assertSame(hidden, state.hidden());
         state.record(8, true, DELAY + 1);
-        state.publish(DELAY + 1, DELAY);
+        state.publish(DELAY + 1, DELAY, null);
         assertSame(hidden, state.hidden(), "a viewer still inside the delay changes nothing");
     }
 
@@ -52,14 +52,14 @@ class ObfuscatorStateTest {
         for (int i = 0; i < 50; i++) {
             state.record(1000 - 7 * i, true, 0);
         }
-        state.publish(DELAY, DELAY);
+        state.publish(DELAY, DELAY, null);
         for (int i = 0; i < 50; i++) {
             assertTrue(state.hides(1000 - 7 * i));
         }
         assertFalse(state.hides(999));
         assertFalse(state.hides(-1));
-        state.forget(1000);
-        state.publish(DELAY, DELAY);
+        state.record(1000, false, DELAY);
+        state.publish(DELAY, DELAY, null);
         assertFalse(state.hides(1000));
         assertTrue(state.hides(993));
     }
@@ -73,7 +73,7 @@ class ObfuscatorStateTest {
     void clearWithholdsFromNobody() {
         final ObfuscatorState state = new ObfuscatorState();
         state.record(7, true, 0);
-        state.publish(DELAY, DELAY);
+        state.publish(DELAY, DELAY, null);
         assertTrue(state.hides(7));
         state.clear();
         assertFalse(state.hides(7));

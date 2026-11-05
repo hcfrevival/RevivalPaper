@@ -146,19 +146,22 @@ Melee keeps the entity's real window, so the no-damage-ticks API and plugins tha
 Server-side culling against ESP and x-ray. Every tick, each sneaking or invisible player casts cheap voxel rays from its
 hitbox to every nearby viewer's eye (and third-person camera). A viewer with no line of sight for `hide-delay-ticks`
 stops receiving that player's entity until a line clears, which reveals them at once; the tab list never changes.
-Both players are extrapolated by `lead-ticks` of movement so a player rounding a corner is already on screen, and far
-pairs are re-tested less often. Pairs beyond spigot's `entity-tracking-range.players` are left alone. Non-sneaking
-visible players are never culled, because vanilla shows their nametag through walls. Spectators and players with
-`revival.obfuscator.bypass` (op by default) see everyone. Only full opaque cubes block sight, so glass, leaves, slabs,
-stairs, doors and water are see-through; a sliver visible through a gap narrower than the nine sample points can be
-missed until the eye itself gains line of sight.
+Both players are extrapolated by `lead-ticks` of movement so a player rounding a corner is already on screen. Pairs are
+re-tested every 2 ticks within 16 blocks, 3 within 32, 4 within 64 and 8 beyond, and every 4 ticks at most while the
+line is clear; pairs beyond the tracker's own range (spigot's `entity-tracking-range.players`, capped by view
+distance) are left alone. Non-sneaking visible players are never culled, because vanilla shows their nametag through
+walls, and neither are glowing players, riders, mounts or spectators. Viewers in creative or spectator mode and
+players with `revival.obfuscator.bypass` (op by default) see everyone. Only full opaque cubes block sight, so glass,
+leaves, slabs, stairs, doors and water are see-through; a sliver visible through a gap narrower than the nine sample
+points can be missed until the eye itself gains line of sight.
 
 | Key | Default | What it does |
 |---|---|---|
 | `enabled` | `false` | Turn the obfuscator on. |
 | `hide-delay-ticks` | `10` | Consecutive occluded ticks before a player is withheld; a brief occlusion never despawns them. |
-| `lead-ticks` | `6` | Ticks of movement both players are extrapolated by before testing. |
+| `lead-ticks` | `6` | Ticks of movement both players are extrapolated by before testing. Keep it at 4 or more, the near re-test interval. |
 | `camera-distance` | `4.0` | How far the third-person camera is assumed to reach behind and in front of a viewer; `0` tests the eye only. |
+| `block-checks-per-tick` | `8000` | Block lookups each sneaking or invisible player may spend per tick (about 0.1 ms); pairs past it keep last tick's answer until the next tick. `0` is no limit. |
 
 ### Knockback profiles
 
