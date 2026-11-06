@@ -46,6 +46,7 @@ import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.phys.Vec3;
+import net.minecraft.world.scores.PlayerTeam;
 import java.io.File;
 import org.bukkit.Location;
 import org.bukkit.craftbukkit.CraftServer;
@@ -528,6 +529,18 @@ public final class RevivalLiveTests extends JavaPlugin implements Listener {
         });
         this.after(4, "obfuscator: an invisible player behind a wall is withheld (visible again)", () ->
             this.check(spawned(this.attackerConnection, this.victim), "re-sent once the potion wears off"));
+        this.after(1, "obfuscator: an invisible teammate stays sent", () -> {
+            final PlayerTeam team = this.level.getScoreboard().addPlayerTeam("revivalLive"); // see-friendly-invisibles is on by default
+            this.level.getScoreboard().addPlayerToTeam(this.attacker.getScoreboardName(), team);
+            this.level.getScoreboard().addPlayerToTeam(this.victim.getScoreboardName(), team);
+            this.attackerConnection.sent.clear();
+            this.victim.setInvisible(true);
+        });
+        this.after(HIDE_DELAY + 10, "obfuscator: an invisible teammate stays sent (check)", () -> {
+            this.check(!removed(this.attackerConnection, this.victim), "no remove packet: vanilla draws a friendly invisible through walls");
+            this.level.getScoreboard().removePlayerTeam(this.level.getScoreboard().getPlayerTeam("revivalLive"));
+            this.victim.setInvisible(false);
+        });
         this.after(1, "obfuscator: spectators see everyone", () -> {
             this.sneak(true);
             this.attackerConnection.sent.clear();
