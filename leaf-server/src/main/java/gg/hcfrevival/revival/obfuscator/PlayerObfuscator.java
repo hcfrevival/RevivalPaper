@@ -1,14 +1,18 @@
 package gg.hcfrevival.revival.obfuscator;
 
+import ca.spottedleaf.moonrise.common.list.ReferenceList;
+import ca.spottedleaf.moonrise.common.misc.NearbyPlayers;
 import gg.hcfrevival.revival.Revival;
 import gg.hcfrevival.revival.config.PlayerObfuscatorSettings;
-import java.util.List;
+import it.unimi.dsi.fastutil.ints.IntIterator;
 import net.minecraft.server.MinecraftServer;
+import net.minecraft.server.level.ChunkMap;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.level.GameType;
+import org.jspecify.annotations.Nullable;
 
 /**
  * Decides, per (viewer, target) pair of players, whether the target is sent to the viewer at all. A sneaking or
@@ -67,33 +71,31 @@ public final class PlayerObfuscator {
             state.bypass = player.getBukkitEntity().hasPermission(BYPASS_PERMISSION);
             state.bypassTick = tick;
         }
-        // As a viewer: where this player's third-person camera could sit, clipped once here instead of by every target
-        state.cameraCount = settings.cameraDistance() > 0.0
-            ? LineOfSight.addCameraEnds(state.occluder.reset(level), player.getX(), player.getEyeY(), player.getZ(), player.getYRot(), player.getXRot(), settings.cameraDistance(), state.camera, 0)
-            : 0;
         if (!sameLevel || !candidate(player)) {
             state.clear();
             return;
         }
-        final List<ServerPlayer> players = level.players();
-        final int n = players.size();
-        // The tracker itself never pairs beyond this
-        final double range = Math.min(level.spigotConfig.playerTrackingRange, level.getChunkSource().chunkMap.serverViewDistance * 16);
+        final ChunkMap chunkMap = level.getChunkSource().chunkMap;
+        // The tracker's own candidates for this chunk, and the flat range it never pairs beyond
+        final @Nullable ReferenceList<ServerPlayer> viewers = level.moonrise$getNearbyPlayers().getPlayers(player.chunkPosition(), NearbyPlayers.NearbyMapType.VIEW_DISTANCE);
+        final double range = Math.min(level.spigotConfig.playerTrackingRange, chunkMap.serverViewDistance * 16);
         final double rangeSq = range * range;
         final int budget = settings.blockChecksPerTick();
         final LineOfSight.LevelOccluder occluder = state.occluder.reset(level);
+        final boolean crouching = player.isCrouching();
+        final int n = viewers == null ? 0 : viewers.size();
         final int start = n == 0 ? 0 : tick % n; // rotate, so a budget cut never starves the same pairs
         for (int k = 0; k < n; k++) {
-            final ServerPlayer viewer = players.get((start + k) % n);
+            final ServerPlayer viewer = viewers.getUnchecked((start + k) % n);
             if (viewer == player) {
                 continue;
             }
             final int viewerId = viewer.getId();
             final double dx = viewer.getX() - player.getX();
-            final double dy = viewer.getY() - player.getY();
             final double dz = viewer.getZ() - player.getZ();
-            final double distanceSq = dx * dx + dy * dy + dz * dz;
-            if (distanceSq > rangeSq || seesEveryone(viewer.gameMode(), viewer.revivalObfuscator.bypass)) {
+            final double distanceSq = dx * dx + dz * dz;
+            // Vanilla for this pair: out of range, a viewer who sees everyone, or an invisible teammate the client draws anyway
+            if (distanceSq > rangeSq || seesEveryone(viewer.gameMode(), viewer.revivalObfuscator.bypass) || !(crouching || player.isInvisibleTo(viewer))) {
                 state.record(viewerId, false, tick);
                 continue;
             }
@@ -103,10 +105,16 @@ public final class PlayerObfuscator {
             if (budget > 0 && occluder.lookups >= budget) {
                 continue; // out of budget: last tick's answer stands until next tick
             }
-            state.record(viewerId, !visible(state, occluder, player, viewer, settings), tick);
+            state.record(viewerId, !visible(state, occluder, player, viewer, settings, tick), tick);
         }
         state.retestAll = false;
-        state.publish(tick, settings.hideDelayTicks(), level);
+        // A viewer the tracker can no longer pair is not in the list above, so nothing else would forget it
+        for (final IntIterator it = state.occludedSince.keySet().intIterator(); it.hasNext(); ) {
+            if (!pairable(level.getEntity(it.nextInt()), player, chunkMap, rangeSq)) {
+                it.remove();
+            }
+        }
+        state.publish(tick, settings.hideDelayTicks());
     }
 
     /**
@@ -123,6 +131,16 @@ public final class PlayerObfuscator {
         return bypass || !mode.isSurvival();
     }
 
+    /** Whether the tracker could still pair the viewer with the target: in its level, within range, with its chunk sent. */
+    private static boolean pairable(final @Nullable Entity viewer, final ServerPlayer target, final ChunkMap chunkMap, final double rangeSq) {
+        if (!(viewer instanceof ServerPlayer p)) {
+            return false;
+        }
+        final double dx = p.getX() - target.getX();
+        final double dz = p.getZ() - target.getZ();
+        return dx * dx + dz * dz <= rangeSq && chunkMap.isChunkTracked(p, target.chunkPosition().x(), target.chunkPosition().z());
+    }
+
     /**
      * Ticks between tests of a pair: more often when close, and at most every {@link #CLEAR_RETEST_TICKS} while clear.
      * Every near value stays within the default {@code lead-ticks}, so the stretched box covers the movement between
@@ -133,7 +151,7 @@ public final class PlayerObfuscator {
         return occluded ? byDistance : Math.max(byDistance, CLEAR_RETEST_TICKS);
     }
 
-    private static boolean visible(final ObfuscatorState state, final LineOfSight.LevelOccluder occluder, final ServerPlayer target, final ServerPlayer viewer, final PlayerObfuscatorSettings settings) {
+    private static boolean visible(final ObfuscatorState state, final LineOfSight.LevelOccluder occluder, final ServerPlayer target, final ServerPlayer viewer, final PlayerObfuscatorSettings settings, final int tick) {
         final int lead = settings.leadTicks();
         final var box = target.getBoundingBox();
         double minX = box.minX;
@@ -164,6 +182,14 @@ public final class PlayerObfuscator {
             ends[4] = eyeY + viewerState.velocityY * lead;
             ends[5] = eyeZ + viewerState.velocityZ * lead;
             count = 2;
+        }
+        if (viewerState.cameraTick != tick) {
+            // Where the viewer's third-person camera could sit: clipped once per tick by the first target that needs it,
+            // on that target's budget, so viewers nobody is hiding from cost nothing
+            viewerState.cameraTick = tick;
+            viewerState.cameraCount = settings.cameraDistance() > 0.0
+                ? LineOfSight.addCameraEnds(occluder, eyeX, eyeY, eyeZ, viewer.getYRot(), viewer.getXRot(), settings.cameraDistance(), viewerState.camera, 0)
+                : 0;
         }
         for (int i = 0, m = viewerState.cameraCount * 3; i < m; i++) {
             ends[count * 3 + i] = viewerState.camera[i];

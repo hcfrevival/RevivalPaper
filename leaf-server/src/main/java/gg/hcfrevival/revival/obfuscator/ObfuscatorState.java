@@ -5,27 +5,28 @@ import it.unimi.dsi.fastutil.ints.Int2IntMaps;
 import it.unimi.dsi.fastutil.ints.Int2IntOpenHashMap;
 import it.unimi.dsi.fastutil.objects.ObjectIterator;
 import java.util.Arrays;
-import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.level.Level;
 import org.jspecify.annotations.Nullable;
 
 /**
  * One player's obfuscator state. As a target, which viewers it is withheld from: the mutable side is owned by the
  * player's tick thread, and the published sorted {@link #hidden} array is the only thing the entity tracker reads, on
- * any thread. As a viewer, its movement this tick, its third-person camera points and its bypass flag, read by other
- * targets on the same tick thread.
+ * any thread. As a viewer, its movement this tick, its bypass flag and its third-person camera points (clipped by the
+ * first target that needs them each tick), read and written by other targets on the same tick thread.
  */
 public final class ObfuscatorState {
 
     private static final int[] NONE = new int[0];
 
     private volatile int[] hidden = NONE;
-    private final Int2IntOpenHashMap occludedSince = new Int2IntOpenHashMap();
+    /** Viewer id to the tick it was first found occluded at. */
+    final Int2IntOpenHashMap occludedSince = new Int2IntOpenHashMap();
     private int[] scratch = NONE;
 
     final double[] ends = new double[12];
     final double[] camera = new double[6];
     int cameraCount;
+    int cameraTick = Integer.MIN_VALUE;
     boolean retestAll;
     final LineOfSight.LevelOccluder occluder = new LineOfSight.LevelOccluder();
     @Nullable Level lastLevel;
@@ -62,11 +63,8 @@ public final class ObfuscatorState {
         }
     }
 
-    /**
-     * Publishes the viewers occluded for at least {@code hideDelay} ticks; the array is replaced only when it changes.
-     * Viewers no longer in the level are dropped on the way.
-     */
-    void publish(final int tick, final int hideDelay, final @Nullable ServerLevel level) {
+    /** Publishes the viewers occluded for at least {@code hideDelay} ticks; the array is replaced only when it changes. */
+    void publish(final int tick, final int hideDelay) {
         final int[] current = this.hidden;
         if (this.occludedSince.isEmpty() && current.length == 0) {
             return;
@@ -77,10 +75,6 @@ public final class ObfuscatorState {
         int n = 0;
         for (final ObjectIterator<Int2IntMap.Entry> it = Int2IntMaps.fastIterator(this.occludedSince); it.hasNext(); ) {
             final Int2IntMap.Entry entry = it.next();
-            if (level != null && level.getEntity(entry.getIntKey()) == null) {
-                it.remove();
-                continue;
-            }
             if (tick - entry.getIntValue() >= hideDelay) {
                 this.scratch[n++] = entry.getIntKey();
             }
