@@ -109,6 +109,11 @@ class LineOfSightTest {
         final Grid viewerEnclosed = new Grid().fill(-1, 0, -1, 1, 3, 1).clear(0, 1, 0).clear(0, 2, 0);
         assertFalse(visible(viewerEnclosed, new double[] {0.5, EYE, 0.5}));
         assertTrue(viewerEnclosed.lookups <= 12 + 8 * 3, "after the centre ray, the corner rays start at the viewer's walls: " + viewerEnclosed.lookups);
+
+        final int oneEnd = viewerEnclosed.lookups;
+        viewerEnclosed.lookups = 0;
+        assertFalse(LineOfSight.visible(viewerEnclosed, 10.2, 0.0, 0.2, 10.8, 1.5, 0.8, new double[] {0.5, EYE, 0.5, 0.5, 2.5, 0.5}, 2, 1));
+        assertTrue(viewerEnclosed.lookups <= oneEnd + 3, "a second end's centre ray starts at the viewer's walls too: " + (viewerEnclosed.lookups - oneEnd) + " more");
     }
 
     @Test

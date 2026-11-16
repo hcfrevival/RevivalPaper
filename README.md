@@ -147,10 +147,12 @@ Server-side culling against ESP and x-ray. Every tick, each sneaking or invisibl
 hitbox to every nearby viewer's eye (and third-person camera). A viewer with no line of sight for `hide-delay-ticks`
 stops receiving that player's entity until a line clears, which reveals them at once; the tab list never changes.
 Both players are extrapolated by `lead-ticks` of movement so a player rounding a corner is already on screen. Pairs are
-re-tested every 2 ticks within 16 blocks, 3 within 32, 4 within 64 and 8 beyond, and every 4 ticks at most while the
+re-tested every 2 ticks within 16 blocks, 3 within 32, 4 within 64 and 8 beyond, and every 8 ticks while the
 line is clear. Only the viewers the tracker itself could pair are tested: those whose view distance covers the
 player's chunk, within spigot's `entity-tracking-range.players` (capped by view distance, measured flat like the
-tracker). Non-sneaking visible players are never culled, because vanilla shows their nametag through walls, and
+tracker). That range defaults to 128 blocks, and the tracker and the obfuscator both do more work the larger it is:
+on a server that expects crowds, set `entity-tracking-range.players: 64` in `spigot.yml`. Non-sneaking visible
+players are never culled, because vanilla shows their nametag through walls, and
 neither are glowing players, riders, mounts or spectators; an invisible player stays sent to teammates whose team can
 see friendly invisibles, as vanilla draws them. Viewers in creative or spectator mode and players with
 `revival.obfuscator.bypass` (op by default) see everyone. Only full opaque cubes block sight, so glass,
@@ -163,7 +165,7 @@ points can be missed until the eye itself gains line of sight.
 | `hide-delay-ticks` | `10` | Consecutive occluded ticks before a player is withheld; a brief occlusion never despawns them. |
 | `lead-ticks` | `6` | Ticks of movement both players are extrapolated by before testing. Keep it at 4 or more, the near re-test interval. |
 | `camera-distance` | `4.0` | How far the third-person camera is assumed to reach behind and in front of a viewer, clipped once per tick for viewers someone is hiding from; `0` tests the eye only. |
-| `block-checks-per-tick` | `8000` | Block lookups each sneaking or invisible player may spend per tick (about 0.1 ms); pairs past it keep last tick's answer until the next tick. `0` is no limit. |
+| `block-checks-per-tick` | `8000` | Block lookups each sneaking or invisible player may spend per tick (about 0.1 ms); viewers past it are sent the player until a test can run, so nobody stays hidden on an old answer. `0` is no limit. |
 
 ### Knockback profiles
 

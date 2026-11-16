@@ -119,7 +119,7 @@ public final class LineOfSight {
             final double vx = ends[e * 3];
             final double vy = ends[e * 3 + 1];
             final double vz = ends[e * 3 + 2];
-            final int blocked = blockedAt(occluder, cx, cy, cz, vx, vy, vz);
+            final int blocked = fromViewer ? blockedAt(occluder, vx, vy, vz, cx, cy, cz) : blockedAt(occluder, cx, cy, cz, vx, vy, vz);
             if (blocked < 0) {
                 return true;
             }

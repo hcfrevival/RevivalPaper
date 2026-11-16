@@ -8,8 +8,8 @@ package gg.hcfrevival.revival.config;
  * @param hideDelayTicks consecutive occluded ticks before a player is withheld; a clear line reveals them at once
  * @param leadTicks ticks of movement both players are extrapolated by, so a player rounding a corner is already spawned
  * @param cameraDistance how far the third-person camera is assumed to reach behind and in front of a viewer; 0 turns it off
- * @param blockChecksPerTick block lookups each sneaking or invisible player may spend per tick; pairs past it keep last tick's
- *     answer until the next tick, so a crowd costs a bounded slice of the tick. 0 is no limit
+ * @param blockChecksPerTick block lookups each sneaking or invisible player may spend per tick; viewers past it are sent the
+ *     player until a test can run, so a crowd costs a bounded slice of the tick and nobody stays hidden on an old answer. 0 is no limit
  */
 public record PlayerObfuscatorSettings(boolean enabled, int hideDelayTicks, int leadTicks, double cameraDistance, int blockChecksPerTick) {
 
