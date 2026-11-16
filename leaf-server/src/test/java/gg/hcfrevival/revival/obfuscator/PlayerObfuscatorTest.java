@@ -23,7 +23,7 @@ class PlayerObfuscatorTest {
         assertEquals(3, PlayerObfuscator.interval(20.0 * 20.0, true));
         assertEquals(4, PlayerObfuscator.interval(50.0 * 50.0, true));
         assertEquals(8, PlayerObfuscator.interval(100.0 * 100.0, true));
-        assertEquals(4, PlayerObfuscator.interval(10.0 * 10.0, false), "clear pairs walk the whole ray, so at most every 4 ticks");
+        assertEquals(8, PlayerObfuscator.interval(10.0 * 10.0, false), "clear pairs walk the whole ray, so at most every 8 ticks");
         assertEquals(8, PlayerObfuscator.interval(100.0 * 100.0, false));
         final int lead = RevivalSettings.DEFAULTS.playerObfuscator().leadTicks();
         for (double distance = 1.0; distance <= 64.0; distance += 1.0) {

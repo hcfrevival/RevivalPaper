@@ -28,7 +28,7 @@ public final class PlayerObfuscator {
     public static final String BYPASS_PERMISSION = "revival.obfuscator.bypass";
 
     /** Clear pairs re-test this often at most: their ray runs the whole distance, and hiding late is never a pop-in. */
-    private static final int CLEAR_RETEST_TICKS = 4;
+    private static final int CLEAR_RETEST_TICKS = 8;
     /** Any faster is a teleport, not a prediction. */
     private static final double MAX_SPEED = 1.0;
     private static final int BYPASS_REFRESH_TICKS = 20;
@@ -103,7 +103,8 @@ public final class PlayerObfuscator {
                 continue;
             }
             if (budget > 0 && occluder.lookups >= budget) {
-                continue; // out of budget: last tick's answer stands until next tick
+                state.record(viewerId, false, tick); // out of budget: shown until a test can run, never left hidden on an old answer
+                continue;
             }
             state.record(viewerId, !visible(state, occluder, player, viewer, settings, tick), tick);
         }
