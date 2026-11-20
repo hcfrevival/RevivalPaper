@@ -431,6 +431,31 @@ public final class RevivalLiveTests extends JavaPlugin implements Listener {
             this.check(this.arrow(3.0F) && this.victim.getHealth() == 14.0F, "an arrow 10 ticks after the first lands (health " + this.victim.getHealth() + ")");
             this.check(this.knockbacks == 2, "with knockback (knock events " + this.knockbacks + ")");
         });
+        this.after(25, "windows on: a fire tick during a knock sends no velocity", () -> {
+            this.reset(Items.DIAMOND_SWORD, 20);
+            this.hit();
+            this.check(this.hurt(this.level.damageSources().onFire(), 1.0F), "the fire tick lands inside the sword window");
+        });
+        this.after(2, "windows on: a fire tick during a knock sends no velocity (packets)", () -> {
+            final List<Vec3> motions = this.motionPackets();
+            this.check(motions.size() == 1 && this.velocityEvents == 1, "only the sword's knock reached the victim: " + motions);
+        });
+        this.after(25, "windows on: a fire tick outside every window sends the victim's motion, as 1.7.10 did", () -> {
+            this.reset(Items.DIAMOND_SWORD, 20);
+            this.check(this.hurt(this.level.damageSources().onFire(), 1.0F), "the fire tick lands");
+        });
+        this.after(2, "windows on: a fire tick outside every window sends the victim's motion, as 1.7.10 did (packets)", () -> {
+            this.check(this.motionPackets().size() == 1, "one velocity packet from the tracker (got " + this.motionPackets().size() + ")");
+            this.revivalYml("world-settings.default.legacy-combat.damage-windows.environment-velocity", "never");
+        });
+        this.after(25, "windows on: environment-velocity never", () -> {
+            this.reset(Items.DIAMOND_SWORD, 20);
+            this.check(this.hurt(this.level.damageSources().onFire(), 1.0F), "the fire tick lands");
+        });
+        this.after(2, "windows on: environment-velocity never (packets)", () -> {
+            this.check(this.motionPackets().isEmpty() && this.velocityEvents == 0, "no velocity packet (got " + this.motionPackets().size() + ")");
+            this.revivalYml("world-settings.default.legacy-combat.damage-windows.environment-velocity", "legacy");
+        });
         this.after(25, "windows on: rod then sword is unchanged", this::rodHit);
         this.after(3, "windows on: rod then sword is unchanged (sword)", this::swordAfterRod);
         this.after(1, "damage windows off", () -> this.damageWindows(false));

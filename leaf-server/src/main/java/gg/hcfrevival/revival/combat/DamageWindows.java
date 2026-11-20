@@ -67,6 +67,40 @@ public final class DamageWindows {
         return Revival.settings().legacyCombat(entity.level().getWorld().getName()).damageWindows().enabled();
     }
 
+    /**
+     * Whether a hit that landed marks the victim hurt, which sends a player their server-side motion as a velocity
+     * packet. 1.7.10 and 26.x send it for every fresh hit, but one shared window swallowed fire, poison and fall
+     * damage for half a window after each hit, so it never reached a player in the middle of a knock. With split
+     * windows that damage lands, and the server's motion for a player doesn't hold the knock they are flying on, so
+     * the packet would replace it. Only damage with no attacker is held back; every other hit carries its own knock.
+     */
+    public static boolean sendsVelocity(final LivingEntity victim, final DamageSource source) {
+        final DamageWindows windows = victim.revivalDamageWindows;
+        if (windows == null || !(victim instanceof Player) || source.getEntity() != null || source.getDirectEntity() != null) {
+            return true;
+        }
+        final DamageWindowSettings settings = Revival.settings().legacyCombat(victim.level().getWorld().getName()).damageWindows();
+        return !settings.enabled() || windows.sendsVelocity(settings.environmentVelocity());
+    }
+
+    boolean sendsVelocity(final DamageWindowSettings.EnvironmentVelocity mode) {
+        return switch (mode) {
+            case ALWAYS -> true;
+            case NEVER -> false;
+            case LEGACY -> !this.heldElsewhere();
+        };
+    }
+
+    // Whether another channel's window is in its first half, where 1.7.10's single window dropped lesser damage
+    private boolean heldElsewhere() {
+        for (int channel = 0; channel < this.expiry.length; channel++) {
+            if (channel != this.active && this.expiry[channel] - this.now > this.duration[channel] / 2.0F) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     /** The window this damage uses. */
     static int channel(final DamageSource source, final DamageWindowSettings settings) {
         final Entity direct = source.getDirectEntity();

@@ -129,6 +129,7 @@ Melee keeps the entity's real window, so the no-damage-ticks API and plugins tha
 | `enabled` | `false` | Split the damage window into the four channels above. `false` keeps 26.x's single window. |
 | `melee-projectiles` | `["minecraft:fishing_bobber", "minecraft:snowball", "minecraft:egg"]` | Projectiles, by entity id, that share the melee window, so 1.7 rod and snowball combos stay as they are. |
 | `projectile-ticks`, `mob-ticks`, `other-ticks` | `-1` | Each channel's window length in ticks; `-1` uses the entity's own (its maximum no-damage ticks). |
+| `environment-velocity` | `legacy` | When fire, poison, fall and other damage with no attacker sends a player the velocity packet every fresh hit sends (their server-side motion, which doesn't hold the knock they are flying on). `legacy`: only when 1.7.10's single window would have let the hit through, which is when no other channel's window is in its first half, so a tick during a combo never replaces a knock. `always`: every time it lands, as 26.x does. `never`: that damage never touches a player's motion. |
 
 ### `sword-blocking`
 

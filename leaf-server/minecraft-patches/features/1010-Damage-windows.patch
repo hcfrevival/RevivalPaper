@@ -11,7 +11,7 @@ lives in gg.hcfrevival.revival.combat.DamageWindows; this patch only calls
 into it.
 
 diff --git a/net/minecraft/world/entity/LivingEntity.java b/net/minecraft/world/entity/LivingEntity.java
-index afa30cd878eaf3fc0e5187f92f9b5d254ef6fc0f..a7ea0307b8a899e3c7033ba9957f43bc404d6972 100644
+index afa30cd878eaf3fc0e5187f92f9b5d254ef6fc0f..908cb9aa354f50e8c6b836b7a72e526ce84e958c 100644
 --- a/net/minecraft/world/entity/LivingEntity.java
 +++ b/net/minecraft/world/entity/LivingEntity.java
 @@ -261,6 +261,7 @@ public abstract class LivingEntity extends Entity implements Attackable, Waypoin
@@ -47,3 +47,12 @@ index afa30cd878eaf3fc0e5187f92f9b5d254ef6fc0f..a7ea0307b8a899e3c7033ba9957f43bc
          if (this.isInvulnerableTo(level, source)) {
              return false;
          }
+@@ -1601,7 +1614,7 @@ public abstract class LivingEntity extends Entity implements Attackable, Waypoin
+                 level.broadcastDamageEvent(this, source);
+             }
+ 
+-            if (!source.is(DamageTypeTags.NO_IMPACT) && !blocked) { // CraftBukkit - Prevent marking hurt if the damage is blocked
++            if (!source.is(DamageTypeTags.NO_IMPACT) && !blocked && gg.hcfrevival.revival.combat.DamageWindows.sendsVelocity(this, source)) { // CraftBukkit - Prevent marking hurt if the damage is blocked // Revival - Damage windows
+                 this.markHurt();
+             }
+ 

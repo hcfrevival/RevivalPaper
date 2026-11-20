@@ -14,14 +14,28 @@ import net.minecraft.resources.Identifier;
  * @param projectileTicks the projectile window's length, or {@link #INHERIT} for the entity's own (maximum no-damage ticks)
  * @param mobTicks the mob window's length, or {@link #INHERIT}
  * @param otherTicks the window for every other damage (fire, poison, drowning, fall, explosions...), or {@link #INHERIT}
+ * @param environmentVelocity when damage with no attacker (fire, poison, fall...) sends a player their server-side motion
  */
 public record DamageWindowSettings(
     boolean enabled,
     Set<Identifier> meleeProjectiles,
     int projectileTicks,
     int mobTicks,
-    int otherTicks
+    int otherTicks,
+    EnvironmentVelocity environmentVelocity
 ) {
+
+    public enum EnvironmentVelocity {
+        /**
+         * As 1.7.10's single window did: only when no other window would have swallowed the hit, so a fire or poison
+         * tick that lands during a combo never replaces the knock the victim is flying on.
+         */
+        LEGACY,
+        /** Every time it lands, as 26.x does. */
+        ALWAYS,
+        /** Never. */
+        NEVER
+    }
 
     public static final int INHERIT = -1;
 
@@ -44,8 +58,20 @@ public record DamageWindowSettings(
             Set.copyOf(melee),
             ticks(reader, world, "projectile-ticks"),
             ticks(reader, world, "mob-ticks"),
-            ticks(reader, world, "other-ticks")
+            ticks(reader, world, "other-ticks"),
+            environmentVelocity(reader, world)
         );
+    }
+
+    private static EnvironmentVelocity environmentVelocity(final ConfigReader reader, final String world) {
+        final String value = reader.getWorldString(world, PATH + "environment-velocity", "legacy");
+        for (final EnvironmentVelocity mode : EnvironmentVelocity.values()) {
+            if (mode.name().equalsIgnoreCase(value)) {
+                return mode;
+            }
+        }
+        reader.problem(ConfigReader.worldPath(world, PATH + "environment-velocity"), value, "legacy, always or never", "legacy");
+        return EnvironmentVelocity.LEGACY;
     }
 
     private static int ticks(final ConfigReader reader, final String world, final String key) {
