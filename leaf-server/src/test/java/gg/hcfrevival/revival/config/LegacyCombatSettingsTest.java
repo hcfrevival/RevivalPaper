@@ -41,6 +41,27 @@ class LegacyCombatSettingsTest {
     }
 
     @Test
+    void environmentVelocityDefaultsToLegacyAndRejectsTypos() throws InvalidConfigurationException {
+        assertEquals(DamageWindowSettings.EnvironmentVelocity.LEGACY, RevivalConfig.read(reader("")).legacyCombat().damageWindows().environmentVelocity());
+
+        final ConfigReader reader = reader("""
+            world-settings:
+              default:
+                legacy-combat:
+                  damage-windows:
+                    environment-velocity: never
+              arena:
+                legacy-combat:
+                  damage-windows:
+                    environment-velocity: sometimes
+            """);
+        final RevivalSettings settings = RevivalConfig.read(reader);
+        assertEquals(DamageWindowSettings.EnvironmentVelocity.NEVER, settings.legacyCombat().damageWindows().environmentVelocity());
+        assertEquals(DamageWindowSettings.EnvironmentVelocity.LEGACY, settings.legacyCombat("arena").damageWindows().environmentVelocity());
+        assertEquals(1, reader.problems().size());
+    }
+
+    @Test
     void worldOverridesSingleKeysAndInheritsTheRest() throws InvalidConfigurationException {
         final RevivalSettings settings = RevivalConfig.read(reader("""
             world-settings:

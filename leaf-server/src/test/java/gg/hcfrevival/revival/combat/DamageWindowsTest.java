@@ -1,6 +1,8 @@
 package gg.hcfrevival.revival.combat;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -33,7 +35,7 @@ class DamageWindowsTest {
 
     private static final DamageWindowSettings SETTINGS = new DamageWindowSettings(true,
         Set.of(Identifier.withDefaultNamespace("fishing_bobber"), Identifier.withDefaultNamespace("snowball"), Identifier.withDefaultNamespace("egg")),
-        DamageWindowSettings.INHERIT, DamageWindowSettings.INHERIT, DamageWindowSettings.INHERIT);
+        DamageWindowSettings.INHERIT, DamageWindowSettings.INHERIT, DamageWindowSettings.INHERIT, DamageWindowSettings.EnvironmentVelocity.LEGACY);
 
     private static DamageSource source(final ResourceKey<DamageType> type, final @Nullable Entity direct, final @Nullable Entity causing) {
         return new DamageSource(RegistryHelper.registryAccess().lookupOrThrow(Registries.DAMAGE_TYPE).getOrThrow(type), direct, causing);
@@ -81,7 +83,7 @@ class DamageWindowsTest {
 
     @Test
     void meleeProjectilesFollowTheList() {
-        final DamageWindowSettings none = new DamageWindowSettings(true, Set.of(), DamageWindowSettings.INHERIT, DamageWindowSettings.INHERIT, DamageWindowSettings.INHERIT);
+        final DamageWindowSettings none = new DamageWindowSettings(true, Set.of(), DamageWindowSettings.INHERIT, DamageWindowSettings.INHERIT, DamageWindowSettings.INHERIT, DamageWindowSettings.EnvironmentVelocity.LEGACY);
         final Snowball snowball = entity(Snowball.class, EntityTypes.SNOWBALL);
         assertEquals(DamageWindows.PROJECTILE, DamageWindows.channel(source(DamageTypes.THROWN, snowball, mock(Player.class)), none));
     }
@@ -122,6 +124,41 @@ class DamageWindowsTest {
         windows.switchTo(victim, DamageWindows.PROJECTILE, 10, 120);
         assertEquals(0, victim.invulnerableTime); // ended at 114
         assertEquals(4.0F, victim.lastHurt);
+    }
+
+    @Test
+    void environmentDamageStaysSilentWhileAnotherWindowIsInItsFirstHalf() {
+        final LivingEntity victim = mock(LivingEntity.class);
+        final DamageWindows windows = new DamageWindows();
+        // A sword hit at tick 100 opened a 20-tick window; 1.7.10 dropped lesser damage until tick 110
+        victim.invulnerableDuration = 20;
+        victim.invulnerableTime = 17;
+        victim.lastHurt = 7.0F;
+
+        windows.switchTo(victim, DamageWindows.OTHER, 20, 103); // a poison tick 3 ticks into the knock
+        assertFalse(windows.sendsVelocity(DamageWindowSettings.EnvironmentVelocity.LEGACY));
+        assertTrue(windows.sendsVelocity(DamageWindowSettings.EnvironmentVelocity.ALWAYS));
+        assertFalse(windows.sendsVelocity(DamageWindowSettings.EnvironmentVelocity.NEVER));
+        windows.switchTo(victim, DamageWindows.MELEE, 20, 103);
+
+        victim.invulnerableTime = 11; // the entity ticks its real (melee) window down itself
+        windows.switchTo(victim, DamageWindows.OTHER, 20, 109); // 11 ticks left: still the first half
+        assertFalse(windows.sendsVelocity(DamageWindowSettings.EnvironmentVelocity.LEGACY));
+        windows.switchTo(victim, DamageWindows.MELEE, 20, 109);
+
+        victim.invulnerableTime = 10;
+        windows.switchTo(victim, DamageWindows.OTHER, 20, 110); // 10 left: 1.7.10 took this as a fresh hit and sent it
+        assertTrue(windows.sendsVelocity(DamageWindowSettings.EnvironmentVelocity.LEGACY));
+        assertFalse(windows.sendsVelocity(DamageWindowSettings.EnvironmentVelocity.NEVER));
+        windows.switchTo(victim, DamageWindows.MELEE, 20, 110);
+
+        // An arrow's window holds it back too: 1.7.10 had one window for everything
+        victim.invulnerableTime = 0;
+        windows.switchTo(victim, DamageWindows.PROJECTILE, 20, 130);
+        victim.invulnerableTime = 20;
+        windows.switchTo(victim, DamageWindows.MELEE, 20, 130);
+        windows.switchTo(victim, DamageWindows.OTHER, 20, 132);
+        assertFalse(windows.sendsVelocity(DamageWindowSettings.EnvironmentVelocity.LEGACY));
     }
 
     @Test
