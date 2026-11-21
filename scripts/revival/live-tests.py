@@ -48,7 +48,7 @@ def run(name: str, async_tracker: bool, server_jar: pathlib.Path, plugin: pathli
         "level-type=minecraft:flat\ngenerator-settings={\"layers\":[{\"block\":\"minecraft:bedrock\",\"height\":1},"
         "{\"block\":\"minecraft:stone\",\"height\":3}],\"biome\":\"minecraft:plains\"}\n"
         "generate-structures=false\nview-distance=2\nsimulation-distance=2\n"
-        "spawn-protection=0\nspawn-monsters=false\nspawn-animals=false\nmax-players=4\npvp=true\n"
+        "spawn-protection=0\nmax-players=4\npvp=true\n"
         "enable-query=false\nenable-rcon=false\n")
 
     nonce = secrets.token_hex(8)

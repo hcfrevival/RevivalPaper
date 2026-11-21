@@ -143,6 +143,9 @@ public final class RevivalLiveTests extends JavaPlugin implements Listener {
             this.server = ((CraftServer) this.getServer()).getServer();
             this.level = ((CraftWorld) this.getServer().getWorlds().getFirst()).getHandle();
             this.spawn = this.level.getWorld().getSpawnLocation();
+            // Slimes spawn at this height in a flat world's slime chunks, a different handful every run, then hop at the
+            // players and shove them mid-scenario. server.properties can't stop them: 26.x has spawn_mobs as a game rule instead
+            this.level.getGameRules().set(net.minecraft.world.level.gamerules.GameRules.SPAWN_MOBS, false, this.level);
             this.attackerConnection = new RecordingConnection();
             this.victimConnection = new RecordingConnection();
             this.attacker = this.fakePlayer("RevivalAttacker", this.attackerConnection);
@@ -478,6 +481,9 @@ public final class RevivalLiveTests extends JavaPlugin implements Listener {
     // Player obfuscator (player-obfuscator.enabled): a sneaking or invisible victim the attacker can't see is withheld --
 
     private static final int HIDE_DELAY = 10;
+    // A hide takes at most 21 ticks: 1 for the pose, 8 for a clear pair's next test, the delay, 2 for the tracker
+    private static final int HIDE_WAIT = HIDE_DELAY + 14;
+    private int hideTick;
     private int strafeSpawnTick;
     private int strafeClearTick;
 
@@ -495,8 +501,7 @@ public final class RevivalLiveTests extends JavaPlugin implements Listener {
             this.attackerConnection.sent.clear();
             this.victimConnection.sent.clear();
         });
-        this.after(HIDE_DELAY + 14, "obfuscator: a sneaking player behind a wall is withheld (check)", () -> {
-            this.check(removed(this.attackerConnection, this.victim), "the attacker got a remove packet for the sneaking victim");
+        this.hidden("obfuscator: a sneaking player behind a wall is withheld (check)", "the attacker got a remove packet for the sneaking victim", () -> {
             this.check(this.attackerConnection.sent.stream().noneMatch(packet -> packet instanceof ClientboundPlayerInfoRemovePacket), "the tab list entry stays");
             this.check(!removed(this.victimConnection, this.attacker), "the standing attacker is still sent to the victim");
             this.check(this.victim.revivalObfuscator.hides(this.attacker.getId()), "the victim's state withholds the attacker");
@@ -511,8 +516,7 @@ public final class RevivalLiveTests extends JavaPlugin implements Listener {
             this.wall(true);
             this.attackerConnection.sent.clear();
         });
-        this.after(HIDE_DELAY + 14, "obfuscator: hidden again behind the rebuilt wall (check)", () -> {
-            this.check(removed(this.attackerConnection, this.victim), "withheld again behind the rebuilt wall");
+        this.hidden("obfuscator: hidden again behind the rebuilt wall (check)", "withheld again behind the rebuilt wall", () -> {
             this.attackerConnection.sent.clear();
             this.strafeSpawnTick = -1;
             this.strafeClearTick = -1;
@@ -538,8 +542,7 @@ public final class RevivalLiveTests extends JavaPlugin implements Listener {
             this.victim.snapTo(this.spawn.getX(), this.spawn.getY(), this.spawn.getZ() + 4.5, 180.0F, 0.0F);
             this.attackerConnection.sent.clear();
         });
-        this.after(HIDE_DELAY + 14, "obfuscator: un-sneaking behind the wall restores vanilla (hidden)", () -> {
-            this.check(removed(this.attackerConnection, this.victim), "withheld behind the wall again");
+        this.hidden("obfuscator: un-sneaking behind the wall restores vanilla (hidden)", "withheld behind the wall again", () -> {
             this.attackerConnection.sent.clear();
             this.sneak(false);
         });
@@ -549,8 +552,7 @@ public final class RevivalLiveTests extends JavaPlugin implements Listener {
             this.attackerConnection.sent.clear();
             this.victim.setInvisible(true);
         });
-        this.after(HIDE_DELAY + 14, "obfuscator: an invisible player behind a wall is withheld (check)", () -> {
-            this.check(removed(this.attackerConnection, this.victim), "the attacker got a remove packet for the invisible victim");
+        this.hidden("obfuscator: an invisible player behind a wall is withheld (check)", "the attacker got a remove packet for the invisible victim", () -> {
             this.attackerConnection.sent.clear();
             this.victim.setInvisible(false);
         });
@@ -572,8 +574,7 @@ public final class RevivalLiveTests extends JavaPlugin implements Listener {
             this.sneak(true);
             this.attackerConnection.sent.clear();
         });
-        this.after(HIDE_DELAY + 14, "obfuscator: spectators see everyone (hidden)", () -> {
-            this.check(removed(this.attackerConnection, this.victim), "withheld from the surviving attacker");
+        this.hidden("obfuscator: spectators see everyone (hidden)", "withheld from the surviving attacker", () -> {
             this.attackerConnection.sent.clear();
             this.attacker.setGameMode(GameType.SPECTATOR);
         });
@@ -582,8 +583,7 @@ public final class RevivalLiveTests extends JavaPlugin implements Listener {
             this.attacker.setGameMode(GameType.SURVIVAL);
             this.attackerConnection.sent.clear();
         });
-        this.after(HIDE_DELAY + 14, "obfuscator: creative sees everyone (hidden)", () -> {
-            this.check(removed(this.attackerConnection, this.victim), "withheld again once the attacker is back in survival");
+        this.hidden("obfuscator: creative sees everyone (hidden)", "withheld again once the attacker is back in survival", () -> {
             this.attackerConnection.sent.clear();
             this.attacker.setGameMode(GameType.CREATIVE);
         });
@@ -611,6 +611,28 @@ public final class RevivalLiveTests extends JavaPlugin implements Listener {
             this.wall(false);
             this.obfuscator(false);
         });
+    }
+
+    // Watches every tick for the victim's remove packet, then checks it on a fixed tick, so the schedule doesn't depend on how long the hide took
+    private void hidden(final String name, final String detail, final Runnable then) {
+        for (int tick = 1; tick <= HIDE_WAIT; tick++) {
+            final int elapsed = tick;
+            this.after(1, name + (tick < HIDE_WAIT ? " (tick " + tick + ")" : ""), () -> {
+                if (elapsed == 1) {
+                    this.hideTick = -1;
+                }
+                if (this.hideTick < 0 && removed(this.attackerConnection, this.victim)) {
+                    this.hideTick = elapsed;
+                }
+                if (elapsed == HIDE_WAIT) {
+                    this.check(this.hideTick > 0, detail + (this.hideTick > 0 ? " (after " + this.hideTick + " ticks)" : ": no remove packet in " + HIDE_WAIT
+                        + " ticks (server tick " + net.minecraft.server.MinecraftServer.currentTick + ", attacker id " + this.attacker.getId()
+                        + ", crouching " + this.victim.isCrouching() + ", invisible " + this.victim.isInvisible()
+                        + ", state hides " + this.victim.revivalObfuscator.hides(this.attacker.getId()) + ", attacker mode " + this.attacker.gameMode() + ")"));
+                    then.run();
+                }
+            });
+        }
     }
 
     private void obfuscatorReset() {
