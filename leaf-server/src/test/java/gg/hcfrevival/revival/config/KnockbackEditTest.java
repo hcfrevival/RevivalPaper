@@ -43,6 +43,7 @@ class KnockbackEditTest {
         assertEquals(ResistanceMode.SCALE, base.with("resistance-mode", "SCALE").resistanceMode());
         assertEquals(MotionModel.VANILLA_1_7, base.with("motion-model", "vanilla-1.7").motionModel());
         assertTrue(base.with("sprint-arm-requires-ground", "true").sprintArmRequiresGround());
+        assertEquals(0.6, base.with("jump-horizontal", "0.6").jumpHorizontal());
     }
 
     @Test

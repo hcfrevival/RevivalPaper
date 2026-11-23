@@ -27,6 +27,8 @@ import org.bukkit.configuration.ConfigurationSection;
  * @param sprintArmedLevel the sprint part of the extra-knockback level on the first sprint hit after a sprint start
  * @param sprintHeldLevel the sprint part on later hits while the sprint is held; 0 in 1.7.10, which needed a w-tap
  * @param sprintArmRequiresGround a sprint start only arms the next sprint hit when the attacker was on the ground
+ * @param jumpHorizontal the knock's horizontal part is multiplied by this when the victim is a player in the air
+ *     because they jumped; 1 changes nothing, as in 1.7.10
  */
 public record KnockbackProfile(
     double friction,
@@ -44,7 +46,8 @@ public record KnockbackProfile(
     double groundPredictionPingOffset,
     double sprintArmedLevel,
     double sprintHeldLevel,
-    boolean sprintArmRequiresGround
+    boolean sprintArmRequiresGround,
+    double jumpHorizontal
 ) {
 
     public enum ResistanceMode {
@@ -67,7 +70,7 @@ public record KnockbackProfile(
 
     public static final String DEFAULT = "legacy-1.7";
 
-    public static final KnockbackProfile LEGACY_1_7 = new KnockbackProfile(2.0, 2.0, 0.4, 0.4, 0.4000000059604645, 0.5, 0.1, 0.6, 3.9, ResistanceMode.NONE, MotionModel.SPORTBUKKIT, 0.0, 25.0, 1.0, 0.0, false);
+    public static final KnockbackProfile LEGACY_1_7 = new KnockbackProfile(2.0, 2.0, 0.4, 0.4, 0.4000000059604645, 0.5, 0.1, 0.6, 3.9, ResistanceMode.NONE, MotionModel.SPORTBUKKIT, 0.0, 25.0, 1.0, 0.0, false, 1.0);
 
     /**
      * Built-in presets. Except legacy-1.7, legacy-1.8 and hcfr, the numbers are archived server configs from
@@ -80,7 +83,7 @@ public record KnockbackProfile(
     static {
         final Map<String, KnockbackProfile> presets = new LinkedHashMap<>();
         presets.put(DEFAULT, LEGACY_1_7);
-        presets.put("legacy-1.8", new KnockbackProfile(2.0, 2.0, 0.4, 0.4, 0.4, 0.5, 0.1, 0.6, 3.9, ResistanceMode.ROLL, MotionModel.SPORTBUKKIT, 0.0, 25.0, 1.0, 0.0, false));
+        presets.put("legacy-1.8", new KnockbackProfile(2.0, 2.0, 0.4, 0.4, 0.4, 0.5, 0.1, 0.6, 3.9, ResistanceMode.ROLL, MotionModel.SPORTBUKKIT, 0.0, 25.0, 1.0, 0.0, false, 1.0));
         presets.put("kohi", preset(2.0, 2.0, 0.35, 0.35, 0.4, 0.425, 0.085));
         presets.put("minehq", preset(2.0, 2.0, 0.36, 0.36, 0.4, 0.45, 0.09));
         presets.put("badlion", preset(2.0, 2.0, 0.34, 0.34, 0.4, 0.48, 0.085));
@@ -89,14 +92,14 @@ public record KnockbackProfile(
         presets.put("velt", preset(10.0, 10.0, 0.325, 0.36, 0.36, 0.5, 0.0));
         // Today's prod numbers from core's environments/factions/plugins/Factions/mechanics.yml (combat.knockback):
         // sprint 0.8 while held, plus sprint-reset 0.5 after a sprint start on the ground (ground-check)
-        presets.put("hcfr", new KnockbackProfile(2.0, 2.0, 0.32, 0.38, 0.36, 0.5, 0.0, 0.6, 3.9, ResistanceMode.NONE, MotionModel.SPORTBUKKIT, 0.0, 25.0, 1.3, 0.8, true));
+        presets.put("hcfr", new KnockbackProfile(2.0, 2.0, 0.32, 0.38, 0.36, 0.5, 0.0, 0.6, 3.9, ResistanceMode.NONE, MotionModel.SPORTBUKKIT, 0.0, 25.0, 1.3, 0.8, true, 1.0));
         // Prod's arrow knock (projectile-horizontal 0.2, projectile-vertical 0.25), for legacy-combat.projectiles.knockback-profile
         presets.put("hcfr-projectile", preset(2.0, 2.0, 0.2, 0.25, 0.36, 0.5, 0.0));
         PRESETS = java.util.Collections.unmodifiableMap(presets);
     }
 
     private static KnockbackProfile preset(final double friction, final double frictionVertical, final double horizontal, final double vertical, final double verticalCap, final double extraHorizontal, final double extraVertical) {
-        return new KnockbackProfile(friction, frictionVertical, horizontal, vertical, verticalCap, extraHorizontal, extraVertical, 0.6, 3.9, ResistanceMode.NONE, MotionModel.SPORTBUKKIT, 0.0, 25.0, 1.0, 0.0, false);
+        return new KnockbackProfile(friction, frictionVertical, horizontal, vertical, verticalCap, extraHorizontal, extraVertical, 0.6, 3.9, ResistanceMode.NONE, MotionModel.SPORTBUKKIT, 0.0, 25.0, 1.0, 0.0, false, 1.0);
     }
 
     /** Reads every profile under {@code knockback-profiles}: each starts from the preset of the same name, or legacy-1.7, and overrides the keys it sets. */
@@ -119,7 +122,8 @@ public record KnockbackProfile(
     public static final List<String> KEYS = List.of(
         "friction", "friction-vertical", "horizontal", "vertical", "vertical-cap", "extra-horizontal", "extra-vertical",
         "attacker-slowdown", "velocity-clamp", "resistance-mode", "motion-model", "ground-prediction-distance",
-        "ground-prediction-ping-offset", "sprint-armed-level", "sprint-held-level", "sprint-arm-requires-ground"
+        "ground-prediction-ping-offset", "sprint-armed-level", "sprint-held-level", "sprint-arm-requires-ground",
+        "jump-horizontal"
     );
 
     /** Every key's value, in {@link #KEYS} order: numbers, booleans, and options as their revival.yml names. */
@@ -141,6 +145,7 @@ public record KnockbackProfile(
         values.put("sprint-armed-level", this.sprintArmedLevel);
         values.put("sprint-held-level", this.sprintHeldLevel);
         values.put("sprint-arm-requires-ground", this.sprintArmRequiresGround);
+        values.put("jump-horizontal", this.jumpHorizontal);
         return values;
     }
 
@@ -203,7 +208,8 @@ public record KnockbackProfile(
             (Double) values.get("ground-prediction-ping-offset"),
             (Double) values.get("sprint-armed-level"),
             (Double) values.get("sprint-held-level"),
-            (Boolean) values.get("sprint-arm-requires-ground")
+            (Boolean) values.get("sprint-arm-requires-ground"),
+            (Double) values.get("jump-horizontal")
         );
     }
 
@@ -235,7 +241,8 @@ public record KnockbackProfile(
             reader.readDouble(path + "ground-prediction-ping-offset", base.groundPredictionPingOffset()),
             reader.readDouble(path + "sprint-armed-level", base.sprintArmedLevel()),
             reader.readDouble(path + "sprint-held-level", base.sprintHeldLevel()),
-            reader.readBoolean(path + "sprint-arm-requires-ground", base.sprintArmRequiresGround())
+            reader.readBoolean(path + "sprint-arm-requires-ground", base.sprintArmRequiresGround()),
+            reader.readDouble(path + "jump-horizontal", base.jumpHorizontal())
         );
     }
 

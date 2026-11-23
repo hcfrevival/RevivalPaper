@@ -21,10 +21,12 @@ public final class MotionShadow {
     static final double LAVA_DRAG = 0.5;
     static final double LIQUID_GRAVITY = 0.02;
     static final int MAX_LANDING_TICKS = 20;
+    static final double JUMP_TOLERANCE = 1.0E-4;
 
     private double x;
     private double y;
     private double z;
+    private boolean jumped;
 
     public Vec3 motion() {
         return new Vec3(this.x, this.y, this.z);
@@ -41,6 +43,25 @@ public final class MotionShadow {
     public void scaleHorizontal(final double factor) {
         this.x *= factor;
         this.z *= factor;
+    }
+
+    /**
+     * A movement packet took the player off the ground, going up by {@code rise}. A jump rises by exactly the jump
+     * power on its first tick (0.42); a knock rises by the lift it was sent (0.3608 standing in 1.7.10), so the two
+     * can be told apart. A jump that hits a ceiling rises less and is not recognised.
+     * shortcut: a block's jump factor (honey) is ignored, so a jump off one isn't recognised; add it if that matters.
+     */
+    public void leftGround(final ServerPlayer player, final double rise) {
+        this.leftGround(rise, player.getAttributeValue(Attributes.JUMP_STRENGTH) + player.getJumpBoostPower());
+    }
+
+    void leftGround(final double rise, final double jumpPower) {
+        this.jumped = Math.abs(rise - jumpPower) < JUMP_TOLERANCE;
+    }
+
+    /** Whether the player left the ground by jumping and hasn't landed or entered a liquid since. */
+    public boolean jumped() {
+        return this.jumped;
     }
 
     /** One server tick for this player, using the onGround flag their client last sent. */
@@ -61,6 +82,9 @@ public final class MotionShadow {
      * shortcut: ladders, flight and walls use the land and air rules; add them if a profile needs them.
      */
     void step(final boolean onGround, final double gravity, final double blockFriction, final double liquidDrag) {
+        if (onGround || liquidDrag > 0.0) {
+            this.jumped = false;
+        }
         if (Math.abs(this.x) < MIN_MOTION) {
             this.x = 0.0;
         }

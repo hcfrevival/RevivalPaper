@@ -44,6 +44,33 @@ class MotionShadowTest {
     }
 
     @Test
+    void leavingTheGroundAtJumpSpeedMarksAJumpUntilLanding() {
+        // EntityLivingBase.jump: motionY = 0.42F, so the first tick off the ground rises 0.41999998688697815
+        final double jump = 0.41999998688697815;
+        final MotionShadow shadow = new MotionShadow();
+        shadow.leftGround(0.3608, jump); // a standing knock's lift
+        assertFalse(shadow.jumped());
+        shadow.leftGround(0.4608, jump); // a sprint knock's lift
+        assertFalse(shadow.jumped());
+        shadow.leftGround(jump - 0.17, jump); // a jump into a ceiling
+        assertFalse(shadow.jumped());
+        shadow.leftGround(jump + 0.1F, jump + 0.1F); // Jump Boost I
+        assertTrue(shadow.jumped());
+        shadow.leftGround(jump, jump);
+        assertTrue(shadow.jumped());
+        shadow.step(false, GRAVITY, 0.6, 0.0);
+        assertTrue(shadow.jumped(), "still in the air");
+        shadow.step(false, GRAVITY, 0.6, 0.8);
+        assertFalse(shadow.jumped(), "in water");
+        shadow.leftGround(jump, jump);
+        shadow.step(true, GRAVITY, 0.6, 0.0);
+        assertFalse(shadow.jumped(), "landed");
+        shadow.leftGround(jump, jump);
+        shadow.leftGround(0.3608, jump); // landed and knocked back up between two ticks
+        assertFalse(shadow.jumped());
+    }
+
+    @Test
     void gravityAttributeChangesTheSteadyState() {
         final MotionShadow shadow = new MotionShadow();
         shadow.step(true, 0.1, 0.6, 0.0); // prod's Guardians

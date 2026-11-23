@@ -60,6 +60,7 @@ class KnockbackProfileTest {
                 ground-prediction-distance: 1.3
                 sprint-held-level: 0.5
                 sprint-arm-requires-ground: true
+                jump-horizontal: 0.6
             world-settings:
               arena:
                 legacy-combat:
@@ -81,6 +82,8 @@ class KnockbackProfileTest {
         assertEquals(1.0, floaty.sprintArmedLevel());
         assertEquals(0.5, floaty.sprintHeldLevel());
         assertTrue(floaty.sprintArmRequiresGround());
+        assertEquals(0.6, floaty.jumpHorizontal());
+        assertEquals(1.0, kohi.jumpHorizontal());
         assertEquals(MotionModel.SPORTBUKKIT, kohi.motionModel());
         assertEquals(0.0, kohi.groundPredictionDistance());
         assertSame(KnockbackProfile.LEGACY_1_7, settings.legacyCombat().knockback());
