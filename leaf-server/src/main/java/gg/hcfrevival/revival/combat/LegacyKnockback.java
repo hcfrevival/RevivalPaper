@@ -39,7 +39,8 @@ import org.jspecify.annotations.Nullable;
  * Called from {@code LivingEntity.knockback} and {@code Player.causeExtraKnockback} (patches 1002 and 1003). A
  * legacy melee hit gets its base and extra knock from {@link KnockbackEngine} in one knockback event; the second,
  * extra-knockback event 26.x sends is skipped. A player victim is knocked from their {@link MotionShadow} and gets
- * one velocity packet. Every other knock stays 26.x.
+ * one velocity packet; one who is in the air because they jumped has the push scaled by the profile's
+ * jump-horizontal ({@code ServerGamePacketListenerImpl.handleMovePlayer}, patch 1012). Every other knock stays 26.x.
  */
 public final class LegacyKnockback {
 
@@ -130,7 +131,12 @@ public final class LegacyKnockback {
             return pushed;
         }
         player.revivalBaseKnockTarget = victim;
-        return KnockbackEngine.knockback(motion(victim, current, profile), xd, zd, player.getYRot(), level, profile, victim.getAttributeValue(Attributes.KNOCKBACK_RESISTANCE), victim.getRandom());
+        final Vec3 from = motion(victim, current, profile);
+        final Vec3 knocked = KnockbackEngine.knockback(from, xd, zd, player.getYRot(), level, profile, victim.getAttributeValue(Attributes.KNOCKBACK_RESISTANCE), victim.getRandom());
+        // knocked == from: a resistance roll skipped the knock
+        return knocked != from && profile.jumpHorizontal() != 1.0 && victim instanceof final ServerPlayer target && !target.onGround() && target.revivalMotionShadow.jumped()
+            ? KnockbackEngine.jumped(knocked, profile)
+            : knocked;
     }
 
     /**

@@ -19,9 +19,12 @@ import net.minecraft.network.protocol.Packet;
 import net.minecraft.network.protocol.game.ClientboundAddEntityPacket;
 import net.minecraft.network.protocol.game.ClientboundBundlePacket;
 import net.minecraft.network.protocol.game.ClientboundPlayerInfoRemovePacket;
+import net.minecraft.network.protocol.game.ClientboundPlayerPositionPacket;
 import net.minecraft.network.protocol.game.ClientboundRemoveEntitiesPacket;
 import net.minecraft.network.protocol.game.ClientboundSetEntityMotionPacket;
+import net.minecraft.network.protocol.game.ServerboundAcceptTeleportationPacket;
 import net.minecraft.network.protocol.game.ServerboundAttackPacket;
+import net.minecraft.network.protocol.game.ServerboundMovePlayerPacket;
 import net.minecraft.network.protocol.game.ServerboundPlayerCommandPacket;
 import net.minecraft.network.protocol.game.ServerboundPlayerInputPacket;
 import net.minecraft.network.protocol.game.ServerboundPlayerLoadedPacket;
@@ -178,6 +181,8 @@ public final class RevivalLiveTests extends JavaPlugin implements Listener {
         this.after(3, "rod then sword in the window: full damage, no second knock (sword)", this::swordAfterRod);
         this.after(25, "snowball knocks away from the thrower", this::snowballHit);
         this.after(2, "snowball knocks away from the thrower (packet)", this::snowballPacket);
+        this.after(25, "a hit on a player who jumped has its push scaled by jump-horizontal", this::jumperHit);
+        this.after(25, "a player knocked off the ground is not a jumper", this::knockedUpHit);
         this.after(25, "sword-block items, packets and damage", this::swordBlock);
         this.after(25, "damage windows off: fire inside a sword window is dropped, as in 26.x", this::windowsOffFire);
         this.after(1, "damage windows on", () -> this.damageWindows(true));
@@ -318,6 +323,41 @@ public final class RevivalLiveTests extends JavaPlugin implements Listener {
         this.check(near(this.victim.revivalMotionShadow.motion(), 0.0, -0.35, 0.5), "its sprint push lands in the victim's 1.7 server motion: " + this.victim.revivalMotionShadow.motion()
             + " (health " + this.victim.getHealth() + ", knock events " + this.knockbacks + ", sprinting " + this.attacker.isSprinting() + ", armed " + this.attacker.revivalSprintLedger.armed(false) + ")");
         this.sprint(false);
+    }
+
+    private void jumperHit() {
+        this.getServer().dispatchCommand(this.getServer().getConsoleSender(), "revival kb set legacy-1.7 jump-horizontal 0.5");
+        this.leaveGround(0.41999998688697815); // EntityLivingBase.jump: motionY = 0.42F
+        this.check(this.victim.revivalMotionShadow.jumped(), "leaving the ground at jump speed marks a jump");
+        this.hit();
+        final List<Vec3> motions = this.motionPackets();
+        this.check(motions.size() == 1 && near(motions.getFirst(), 0.0, 0.3608, 0.2), "a jumper's knock is (0, 0.3608, 0.2), half the push: " + motions);
+    }
+
+    private void knockedUpHit() {
+        this.check(!this.victim.revivalMotionShadow.jumped(), "landing clears the jump");
+        this.leaveGround(0.3608); // the first tick of a standing knock
+        this.check(!this.victim.revivalMotionShadow.jumped(), "leaving the ground at a knock's lift is not a jump");
+        this.hit();
+        final List<Vec3> motions = this.motionPackets();
+        this.check(motions.size() == 1 && near(motions.getFirst(), 0.0, 0.3608, 0.4), "a knocked-up player's knock is the full (0, 0.3608, 0.4): " + motions);
+        this.getServer().dispatchCommand(this.getServer().getConsoleSender(), "revival kb set legacy-1.7 jump-horizontal 1");
+    }
+
+    // The victim's client reports its first tick off the ground, rise blocks up
+    private void leaveGround(final double rise) {
+        this.reset(Items.DIAMOND_SWORD, 20);
+        // The server ignores movement until the client confirms a teleport, and these clients never confirmed their spawn
+        this.victim.connection.teleport(this.victim.getX(), this.victim.getY(), this.victim.getZ(), this.victim.getYRot(), this.victim.getXRot());
+        for (final Packet<?> packet : List.copyOf(this.victimConnection.sent)) {
+            if (packet instanceof final ClientboundPlayerPositionPacket position) {
+                this.victim.connection.handleAcceptTeleportPacket(new ServerboundAcceptTeleportationPacket(position.id()));
+            }
+        }
+        this.check(this.victim.onGround(), "the victim stands on the ground");
+        this.victim.connection.handleMovePlayer(new ServerboundMovePlayerPacket.Pos(this.victim.getX(), this.victim.getY() + rise, this.victim.getZ(), false, false));
+        this.check(!this.victim.onGround(), "the victim is off the ground");
+        this.victimConnection.sent.clear();
     }
 
     private void rodHit() {

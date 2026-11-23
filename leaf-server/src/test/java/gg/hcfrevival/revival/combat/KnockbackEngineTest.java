@@ -73,6 +73,17 @@ class KnockbackEngineTest {
     }
 
     @Test
+    void jumpHorizontalScalesThePushAndKeepsTheLift() {
+        final Vec3 knocked = new Vec3(0.3, 0.3608, -0.4);
+        // Not 1.7.10: the default leaves a jumper's knock alone
+        assertEquals(knocked, KnockbackEngine.jumped(knocked, KnockbackProfile.LEGACY_1_7));
+        final Vec3 scaled = KnockbackEngine.jumped(knocked, KnockbackProfile.LEGACY_1_7.with("jump-horizontal", "0.6"));
+        assertEquals(0.18, scaled.x, 1.0E-9);
+        assertEquals(0.3608, scaled.y);
+        assertEquals(-0.24, scaled.z, 1.0E-9);
+    }
+
+    @Test
     void resultIsClampedToTheVelocityPacketLimit() {
         final Vec3 fast = KnockbackEngine.knockback(new Vec3(20.0, 0.0, 0.0), 0.0, -1.0, 0.0F, 0.0, KnockbackProfile.LEGACY_1_7, 0.0, RandomSource.create(0L));
         assertEquals(3.9, fast.x, 1.0E-9);
@@ -152,7 +163,7 @@ class KnockbackEngineTest {
 
     private static KnockbackProfile withResistance(final ResistanceMode mode) {
         final KnockbackProfile p = KnockbackProfile.LEGACY_1_7;
-        return new KnockbackProfile(p.friction(), p.frictionVertical(), p.horizontal(), p.vertical(), p.verticalCap(), p.extraHorizontal(), p.extraVertical(), p.attackerSlowdown(), p.velocityClamp(), mode, p.motionModel(), p.groundPredictionDistance(), p.groundPredictionPingOffset(), p.sprintArmedLevel(), p.sprintHeldLevel(), p.sprintArmRequiresGround());
+        return new KnockbackProfile(p.friction(), p.frictionVertical(), p.horizontal(), p.vertical(), p.verticalCap(), p.extraHorizontal(), p.extraVertical(), p.attackerSlowdown(), p.velocityClamp(), mode, p.motionModel(), p.groundPredictionDistance(), p.groundPredictionPingOffset(), p.sprintArmedLevel(), p.sprintHeldLevel(), p.sprintArmRequiresGround(), p.jumpHorizontal());
     }
 
     @Test

@@ -57,6 +57,16 @@ public final class KnockbackEngine {
     }
 
     /**
+     * A knock on a player who is in the air because they jumped, with its horizontal part scaled by the profile's
+     * jump-horizontal. A standing or just-landed victim loses 45% of the push to ground friction on the first tick
+     * (× 0.546); a victim hit mid-jump only loses 9% (× 0.91), flies about 1.8 times as far and leaves combo range.
+     * Not in 1.7.10, where the default of 1 leaves the knock as it is.
+     */
+    public static Vec3 jumped(final Vec3 knocked, final KnockbackProfile profile) {
+        return new Vec3(knocked.x * profile.jumpHorizontal(), knocked.y, knocked.z * profile.jumpHorizontal());
+    }
+
+    /**
      * The extra knock alone, for an overflow hit inside the damage window: 1.7.10's attackEntityFrom still returned
      * true, so EntityPlayer added {@code (-sin(yaw) × level × 0.5, 0.1, cos(yaw) × level × 0.5)} with addVelocity,
      * which ignores knockback resistance.

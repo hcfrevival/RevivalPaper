@@ -51,6 +51,7 @@ call into plain Java under `gg.hcfrevival.revival`, where the logic is unit test
 | Sword blocking | Right click with a sword blocks like 1.7: a blocked hit takes (damage + 1) × 0.5 and full knockback. Clients see the sword as "edible" with the block animation, so the block starts instantly and block-hitting stays fluid; the server's own item is untouched. | `1009-Sword-blocking` |
 | Damage windows | Melee, projectile, mob and other damage each get their own damage window, so a sword combo no longer swallows fire, poison, arrows or mob hits. | `1010-Damage-windows` |
 | Player obfuscator | A sneaking or invisible player that another player could not see through blocks is not sent to that client at all, so ESP and x-ray cheats have nothing to draw. The tab list is untouched, and everyone else keeps vanilla tracking (nametags through walls included). Off by default. | `1011-Player-obfuscator` and paper `1002-Player-obfuscator` |
+| Jump knockback | Optional, off by default: a hit on a player who is in the air because they jumped has its push multiplied by the profile's `jump-horizontal`, so jumping into a fight no longer carries the jumper out of combo range. Players who were knocked up, are falling or are standing get the same knock as before. | `1012-Jump-knockback` |
 
 Paper-side hooks are in `leaf-server/paper-patches/features/1000-RevivalPaper-config.patch` (the
 `--revival-settings` startup option, `/reload` support, branding that still passes Leaf brand checks) and
@@ -192,6 +193,7 @@ preset fixes keep reaching servers that never edited them.
 | `sprint-armed-level` | Sprint part of the extra-knock level on the first hit after a sprint start. |
 | `sprint-held-level` | Sprint part on later hits while sprint is held; `0` in 1.7.10, which needed a w-tap. |
 | `sprint-arm-requires-ground` | A sprint start only arms the next hit when the attacker was on the ground. |
+| `jump-horizontal` | Multiplies the push on a player who is in the air because they jumped; `1` changes nothing, as in 1.7.10. A knock that lands mid-jump skips the ground friction a standing or just-landed victim gets, so it carries about 1.8 times as far and out of combo range; about `0.6` evens that out. Knocked, falling and standing victims are untouched. |
 
 The presets other than `legacy-1.7`, `legacy-1.8` and `hcfr*` come from archived server configs as curated by
 [Mental](https://github.com/owengregson/Mental) (MIT); their authenticity can't be verified.

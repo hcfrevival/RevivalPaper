@@ -62,3 +62,4 @@ leaf-server/src/minecraft/java/net/minecraft/world/entity/LivingEntity.java | &&
 leaf-server/src/minecraft/java/net/minecraft/server/level/ServerPlayer.java | public final gg.hcfrevival.revival.obfuscator.ObfuscatorState revivalObfuscator = new gg.hcfrevival.revival.obfuscator.ObfuscatorState(); // Revival - Player obfuscator
 leaf-server/src/minecraft/java/net/minecraft/server/level/ServerPlayer.java | gg.hcfrevival.revival.obfuscator.PlayerObfuscator.tick(this); // Revival - Player obfuscator
 paper-server/src/main/java/org/bukkit/craftbukkit/entity/CraftPlayer.java | && gg.hcfrevival.revival.obfuscator.PlayerObfuscator.canSee(this.getHandle(), ((CraftEntity) entity).getHandle()); // Revival - Player obfuscator
+leaf-server/src/minecraft/java/net/minecraft/server/network/ServerGamePacketListenerImpl.java | this.player.revivalMotionShadow.leftGround(this.player, yDist); // Revival - Jump knockback

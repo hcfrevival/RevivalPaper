@@ -1,0 +1,23 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: j-rockwell <john@llewkcor.com>
+Date: Sun, 22 Nov 2026 20:36:16 -0800
+Subject: [PATCH] Jump knockback
+
+A movement packet that takes a player off the ground tells their
+MotionShadow how far up it went, so a legacy hit can tell a player who
+jumped (0.42 on the first tick) from one who was knocked up (the lift
+they were sent). The logic lives in gg.hcfrevival.revival.combat; this
+patch only calls into it.
+
+diff --git a/net/minecraft/server/network/ServerGamePacketListenerImpl.java b/net/minecraft/server/network/ServerGamePacketListenerImpl.java
+index 1b6784d03090c5c585b01ba964538aaaf5f5242e..e2999d9f3c3e212e412d4050b5544b55397f19aa 100644
+--- a/net/minecraft/server/network/ServerGamePacketListenerImpl.java
++++ b/net/minecraft/server/network/ServerGamePacketListenerImpl.java
+@@ -1649,6 +1649,7 @@ public class ServerGamePacketListenerImpl
+                                 zDist = targetZ - this.lastGoodZ; // Paper - diff on change, used for checking large move vectors above
+                                 boolean movedUpwards = yDist > 0.0;
+                                 if (this.player.onGround() && !packet.isOnGround() && movedUpwards) {
++                                    this.player.revivalMotionShadow.leftGround(this.player, yDist); // Revival - Jump knockback
+                                     // Paper start - Add PlayerJumpEvent
+                                     org.bukkit.entity.Player player = this.getCraftPlayer();
+                                     Location from = new Location(player.getWorld(), this.lastPosX, this.lastPosY, this.lastPosZ, this.lastYRot, this.lastXRot); // Get the Players previous Event location.
