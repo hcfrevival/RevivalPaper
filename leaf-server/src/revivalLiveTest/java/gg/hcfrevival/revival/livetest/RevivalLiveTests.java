@@ -39,6 +39,8 @@ import net.minecraft.world.entity.player.Input;
 import net.minecraft.world.level.GameType;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.damagesource.DamageSource;
+import net.minecraft.world.effect.MobEffectInstance;
+import net.minecraft.world.effect.MobEffects;
 import gg.hcfrevival.revival.obfuscator.LineOfSight;
 import net.minecraft.world.entity.ai.attributes.Attributes;
 import net.minecraft.world.entity.monster.zombie.Zombie;
@@ -177,6 +179,8 @@ public final class RevivalLiveTests extends JavaPlugin implements Listener {
         this.after(3, "overflow hit deals the excess with no knock (stronger hit)", this::overflowSecond);
         this.after(25, "a w-tapped overflow hit on a falling player sends no velocity", this::wTapOverflowFirst);
         this.after(3, "a w-tapped overflow hit on a falling player sends no velocity (w-tap hit)", this::wTapOverflowSecond);
+        this.after(25, "a hit on a levitating player lifts them", this::levitationStart);
+        this.after(20, "a hit on a levitating player lifts them (hit)", this::levitationHit);
         this.after(25, "rod then sword in the window: full damage, no second knock", this::rodHit);
         this.after(3, "rod then sword in the window: full damage, no second knock (sword)", this::swordAfterRod);
         this.after(25, "snowball knocks away from the thrower", this::snowballHit);
@@ -358,6 +362,20 @@ public final class RevivalLiveTests extends JavaPlugin implements Listener {
         this.victim.connection.handleMovePlayer(new ServerboundMovePlayerPacket.Pos(this.victim.getX(), this.victim.getY() + rise, this.victim.getZ(), false, false));
         this.check(!this.victim.onGround(), "the victim is off the ground");
         this.victimConnection.sent.clear();
+    }
+
+    // Levitation used to leave the victim's 1.7 server motion falling with air gravity, so a hit pushed them down
+    private void levitationStart() {
+        this.reset(Items.DIAMOND_SWORD, 20);
+        this.victim.addEffect(new MobEffectInstance(MobEffects.LEVITATION, 200, 0));
+    }
+
+    private void levitationHit() {
+        this.check(!this.victim.onGround(), "the levitating victim left the ground");
+        this.hit();
+        final List<Vec3> motions = this.motionPackets();
+        this.check(motions.size() == 1 && near(motions.getFirst(), 0.0, 0.4, 0.4), "a hit after 20 ticks of levitation knocks (0, 0.4, 0.4): " + motions);
+        this.victim.removeEffect(MobEffects.LEVITATION);
     }
 
     private void rodHit() {
