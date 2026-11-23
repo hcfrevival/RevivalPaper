@@ -123,6 +123,38 @@ class MotionShadowTest {
     }
 
     @Test
+    void levitatingPlayerRisesSoAHitLiftsThem() {
+        // 26.2 LivingEntity.travelInAir (1.7.10 has no levitation): motY += (0.05 x level - motY) x 0.2, then x 0.98,
+        // so level 1 settles at 0.0098 / 0.216, not air's -3.92, and a hit lifts to the 0.4 cap
+        final MotionShadow shadow = new MotionShadow();
+        for (int tick = 0; tick < 100; tick++) {
+            shadow.step(false, MotionShadow.airGravity(shadow.motion().y, GRAVITY, 1, false), 0.6, 0.0);
+        }
+        assertEquals(0.0098 / 0.216, shadow.motion().y, 1.0E-6);
+        final Vec3 knock = KnockbackEngine.knockback(shadow.motion(), 0.0, -1.0, 0.0F, 0.0, KnockbackProfile.LEGACY_1_7, 0.0, RandomSource.create(0L));
+        assertEquals(0.4, knock.y, 1.0E-6);
+    }
+
+    @Test
+    void slowFallingPlayerFallsSlowlySoAHitLiftsThem() {
+        // 26.2 LivingEntity.getEffectiveGravity (1.7.10 has no slow falling): gravity is min(gravity, 0.01) while
+        // motY <= 0, so a fall ends at -0.01 x 0.98 / 0.02 = -0.49, not air's -3.92
+        final MotionShadow shadow = new MotionShadow();
+        for (int tick = 0; tick < 1000; tick++) {
+            shadow.step(false, MotionShadow.airGravity(shadow.motion().y, GRAVITY, 0, true), 0.6, 0.0);
+        }
+        assertEquals(-0.49, shadow.motion().y, 1.0E-6);
+        final Vec3 knock = KnockbackEngine.knockback(shadow.motion(), 0.0, -1.0, 0.0F, 0.0, KnockbackProfile.LEGACY_1_7, 0.0, RandomSource.create(0L));
+        assertEquals(0.155, knock.y, 1.0E-6);
+    }
+
+    @Test
+    void airGravityIsPlainGravityWithoutAnEffectOrWhileRising() {
+        assertEquals(GRAVITY, MotionShadow.airGravity(-1.0, GRAVITY, 0, false));
+        assertEquals(GRAVITY, MotionShadow.airGravity(0.3, GRAVITY, 0, true)); // slow falling only slows a fall
+    }
+
+    @Test
     void tinyMotionSnapsToZero() {
         final MotionShadow shadow = new MotionShadow();
         shadow.set(new Vec3(0.004, 0.0, -0.004));

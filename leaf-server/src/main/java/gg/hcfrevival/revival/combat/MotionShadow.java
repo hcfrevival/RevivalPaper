@@ -1,6 +1,8 @@
 package gg.hcfrevival.revival.combat;
 
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.effect.MobEffectInstance;
+import net.minecraft.world.effect.MobEffects;
 import net.minecraft.world.entity.ai.attributes.Attributes;
 import net.minecraft.world.phys.Vec3;
 
@@ -20,6 +22,9 @@ public final class MotionShadow {
     static final double WATER_DRAG = 0.8;
     static final double LAVA_DRAG = 0.5;
     static final double LIQUID_GRAVITY = 0.02;
+    static final double LEVITATION_SPEED = 0.05;
+    static final double LEVITATION_PULL = 0.2;
+    static final double SLOW_FALLING_GRAVITY = 0.01;
     static final int MAX_LANDING_TICKS = 20;
     static final double JUMP_TOLERANCE = 1.0E-4;
 
@@ -72,7 +77,25 @@ public final class MotionShadow {
             ? player.level().getBlockState(player.getBlockPosBelowThatAffectsMyMovement()).getBlock().getFriction()
             : 0.6;
         final double liquidDrag = player.isInWater() ? WATER_DRAG : player.isInLava() ? LAVA_DRAG : 0.0;
-        this.step(onGround, player.getAttributeValue(Attributes.GRAVITY), blockFriction, liquidDrag);
+        double gravity = player.getAttributeValue(Attributes.GRAVITY);
+        if (!onGround && liquidDrag == 0.0) {
+            final MobEffectInstance levitation = player.getEffect(MobEffects.LEVITATION);
+            gravity = airGravity(this.y, gravity, levitation == null ? 0 : levitation.getAmplifier() + 1, player.hasEffect(MobEffects.SLOW_FALLING));
+        }
+        this.step(onGround, gravity, blockFriction, liquidDrag);
+    }
+
+    /**
+     * The gravity {@link #step} subtracts for a player in the air with levitation ({@code levitation} is its level,
+     * 0 for none) or slow falling. 1.7.10 has neither effect, so these are 26.x's LivingEntity.travelInAir and
+     * getEffectiveGravity: levitation steers motion toward 0.05 per level, slow falling caps a fall's gravity at 0.01.
+     * Without them the motion would fall toward -3.92 and a hit would push the player down.
+     */
+    static double airGravity(final double motionY, final double gravity, final int levitation, final boolean slowFalling) {
+        if (levitation > 0) {
+            return (motionY - LEVITATION_SPEED * levitation) * LEVITATION_PULL;
+        }
+        return slowFalling && motionY <= 0.0 ? Math.min(gravity, SLOW_FALLING_GRAVITY) : gravity;
     }
 
     /**
